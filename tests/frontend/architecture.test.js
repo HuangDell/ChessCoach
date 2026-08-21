@@ -35,6 +35,31 @@ test("main.js remains a composition-only entrypoint", async () => {
   assert.match(source, /createApp[(][)][.]mount[(][)]/);
 });
 
+test("review controller delegates feature responsibilities", async () => {
+  const directory = path.join(frontend, "modules", "review");
+  const controller = await readFile(path.join(directory, "controller.js"), "utf8");
+  assert.ok(
+    controller.trim().split("\n").length <= 700,
+    "review/controller.js should remain an orchestration layer"
+  );
+  for (const moduleName of [
+    "analysis-runner.js",
+    "artifacts.js",
+    "chat.js",
+    "coach.js",
+    "graph.js",
+    "navigation.js",
+    "notation.js",
+    "progress.js",
+    "retry.js",
+    "summary-view.js",
+    "variation.js",
+    "workspace-view.js",
+  ]) {
+    assert.match(controller, new RegExp(`from ["']\\./${moduleName.replace(".", "\\.")}["']`));
+  }
+});
+
 test("business modules do not bypass the HTTP client", async () => {
   const files = await javascriptFiles(path.join(frontend, "modules"));
   for (const file of files) {
