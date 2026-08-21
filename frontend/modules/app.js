@@ -5,11 +5,12 @@ import { createPuzzleController } from "./puzzles/controller.js";
 import { createReviewController } from "./review/controller.js";
 import { createSettingsController } from "./settings/controller.js";
 import { createSystemController } from "./system/controller.js";
+import { chatApi } from "./api/chat.js";
 import { puzzleApi } from "./api/puzzles.js";
 import { reviewApi } from "./api/review.js";
 import { systemApi } from "./api/system.js";
 import { byId } from "./core/dom.js";
-import { categoryLabel, renderMarkdown } from "./core/format.js";
+import { storageGet, storageSet } from "./core/storage.js";
 
 export function createApp() {
   const $ = byId;
@@ -22,57 +23,53 @@ export function createApp() {
   let system;
   let startupGeneration = 0;
 
+  const supersedeStartup = (action) => (...args) => {
+    startupGeneration += 1;
+    return action(...args);
+  };
+
   const reviewPort = {
-    openGame(...args) {
-      startupGeneration++;
-      return review.openGame(...args);
-    },
-    openBatch(...args) {
-      startupGeneration++;
-      return review.openBatch(...args);
-    },
-    startSyncedBatch(info) {
-      startupGeneration++;
-      return review.startSyncedBatch(info);
-    },
+    openGame: supersedeStartup((...args) => review.openGame(...args)),
+    openBatch: supersedeStartup((...args) => review.openBatch(...args)),
+    startSyncedBatch: supersedeStartup((...args) => review.startSyncedBatch(...args)),
     setWorkflowState: (...args) => review.setWorkflowState(...args),
     setPendingCritical: (id) => review.setPendingCritical(id),
   };
 
-  function reviewPreferences(config = {}) {
+  function featurePreferences(config = {}) {
     return {
-      coachAiAuto: !!config.coach_ai_auto,
-      personalizeHistory: config.personalize_history !== false,
-      defaultReviewSide: config.default_review_side || "auto",
-      boardOrientation: config.board_orientation || "review",
-      analysisPreset: config.analysis_preset || "balanced",
-      explanationProvider: config.explanation_provider || "auto",
-      explanationLanguage: config.explanation_language || "zh-CN",
-      showThreats: config.show_threat_arrows === true,
-    };
-  }
-
-  function puzzlePreferences(config = {}) {
-    return {
-      personalizeHistory: config.personalize_history !== false,
-      animations: config.puzzle_animations !== false,
-      autoAdvance: config.puzzle_auto_advance === true,
+      review: {
+        coachAiAuto: !!config.coach_ai_auto,
+        personalizeHistory: config.personalize_history !== false,
+        defaultReviewSide: config.default_review_side || "auto",
+        boardOrientation: config.board_orientation || "review",
+        analysisPreset: config.analysis_preset || "balanced",
+        explanationProvider: config.explanation_provider || "auto",
+        explanationLanguage: config.explanation_language || "zh-CN",
+        showThreats: config.show_threat_arrows === true,
+      },
+      puzzles: {
+        personalizeHistory: config.personalize_history !== false,
+        animations: config.puzzle_animations !== false,
+        autoAdvance: config.puzzle_auto_advance === true,
+      },
     };
   }
 
   function applySettings(config) {
+    const preferences = featurePreferences(config);
     games.applySavedSettings(config);
-    review.setPreferences(reviewPreferences(config));
-    puzzles.setPreferences(puzzlePreferences(config));
+    review.setPreferences(preferences.review);
+    puzzles.setPreferences(preferences.puzzles);
     $("paste-side").value = config.default_review_side || "auto";
     review.refreshAfterSettings();
   }
 
   async function loadInitialState() {
     try {
-      if (!sessionStorage.getItem("chessAppSession")) {
-        sessionStorage.setItem("chessAppSession", "1");
-        await reviewApi.resetChat().catch(() => {});
+      if (!storageGet(sessionStorage, "chessAppSession")) {
+        storageSet(sessionStorage, "chessAppSession", "1");
+        await chatApi.reset().catch(() => {});
       }
     } catch (_) {}
 
@@ -81,8 +78,9 @@ export function createApp() {
       config = await systemApi.appConfig();
     } catch (_) {}
     games.setConfig(config);
-    review.setPreferences(reviewPreferences(config));
-    puzzles.setPreferences(puzzlePreferences(config));
+    const preferences = featurePreferences(config);
+    review.setPreferences(preferences.review);
+    puzzles.setPreferences(preferences.puzzles);
     $("paste-side").value = config.default_review_side || "auto";
     if (games.appMode) system.startHeartbeat();
 
@@ -125,7 +123,7 @@ export function createApp() {
   }
 
   function mount() {
-    board.mount($("board"), { orientation: "white" });
+    board.mount($("board"));
     layout = createBoardLayoutController(board);
     layout.mount();
 
@@ -142,8 +140,6 @@ export function createApp() {
 
     puzzles = createPuzzleController({
       board,
-      categoryLabel,
-      renderMarkdown,
       lifecycle: {
         layoutChanged: () => layout.modeChanged(),
         positionResizer: () => layout.positionResizer(),
@@ -161,7 +157,6 @@ export function createApp() {
     });
 
     games = createGamesController({
-      board,
       bridge: {
         review: reviewPort,
         puzzles: {

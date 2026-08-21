@@ -4,7 +4,6 @@ export const puzzleApi = {
   config: (options) => http.get("/api/puzzle/config", options),
   current: (options) => http.get("/api/puzzle/current", options),
   next: (query, options) => http.get("/api/puzzle/next", { ...options, query }),
-  chat: (body, options) => http.post("/api/chat", body, options),
   move: (body, options) => http.post("/api/puzzle/move", body, options),
   stormStart: (options) => http.post("/api/puzzle/storm/start", undefined, options),
   stormNext: (options) => http.get("/api/puzzle/storm/next", options),

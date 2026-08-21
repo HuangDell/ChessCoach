@@ -1,4 +1,5 @@
-import { escapeHtml, sleep } from "../core/dom.js";
+import { sleep } from "../core/async.js";
+import { escapeHtml } from "../core/dom.js";
 
 export function createRetryController({
   $,

@@ -203,7 +203,7 @@ main {
    last-resort fallback). */
 .board-col > * { flex-shrink: 0; }
 
-.board-wrap { display: flex; gap: 8px; }
+.board-wrap { display: flex; gap: 8px; position: relative; }
 
 .cg-wrap {
   width: var(--board-size);
@@ -721,9 +721,7 @@ main {
   font-size: 12.5px;
   line-height: 1.45;
 }
-.variation-block { display: flex; flex-direction: column; gap: 6px; }
 .variation-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: start; }
-.variation-name { color: var(--muted); font-size: 12px; padding-top: 3px; }
 .san-line { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
 .san-move {
   border: 0;
@@ -1117,8 +1115,6 @@ body.history-hidden .history-col { display: none; }
   background: var(--panel2); color: var(--text); border: 1px solid #000;
   border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px;
 }
-.auto-open-toggle { font-size: 12px; }
-
 /* Paste-PGN mode (so Chess.com users can analyze without the Lichess fetch). */
 .paste-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .paste-form textarea {
@@ -1403,7 +1399,6 @@ body.history-hidden .history-col { display: none; }
   .critical-head { align-items: flex-start; }
   .critical-head h2 { font-size: 17px; }
   .variation-row { grid-template-columns: 1fr; gap: 2px; }
-  .variation-name { padding-top: 0; }
 }
 
 /* ===================== Puzzle mode ===================================================== */
@@ -1433,7 +1428,6 @@ body.history-hidden .history-col { display: none; }
 /* The board feedback overlay lives over the board (eval bar is hidden in puzzle mode, so the board
    sits at the wrap's left edge and the overlay aligns at left:0). pointer-events:none so it never
    eats clicks meant for the board. */
-.board-wrap { position: relative; }
 .board-overlay {
   position: absolute;
   top: 0;
@@ -1812,10 +1806,9 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
   background: transparent; color: var(--muted);
   border: 1px solid var(--panel2); border-radius: 7px;
   font-size: 22px; line-height: 1; cursor: pointer;
+  padding-bottom: 2px;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-/* The ‹ › glyphs sit a hair high in most fonts; nudge them onto the optical centre of the box. */
-.pz-review-nav button { padding-bottom: 2px; }
 .pz-review-nav button:hover:not(:disabled) { color: var(--text); border-color: var(--puzzle-accent); background: var(--panel2); }
 .pz-review-nav button:disabled { opacity: 0.35; cursor: default; }
 .pz-review-label { min-width: 150px; text-align: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -1873,7 +1866,6 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
   flex-wrap: wrap;
   margin-top: 8px;
 }
-.pz-statcard-h { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 .pz-weak-theme {
   background: var(--panel2);
   border-radius: 6px;

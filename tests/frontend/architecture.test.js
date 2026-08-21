@@ -60,6 +60,53 @@ test("review controller delegates feature responsibilities", async () => {
   }
 });
 
+test("games controller remains orchestration-only", async () => {
+  const controller = await readFile(
+    path.join(frontend, "modules", "games", "controller.js"),
+    "utf8"
+  );
+  assert.ok(controller.trim().split("\n").length <= 350);
+  for (const moduleName of ["importer.js", "insights.js", "library.js"]) {
+    assert.match(controller, new RegExp(`from ["']\\./${moduleName.replace(".", "\\.")}["']`));
+  }
+  assert.doesNotMatch(controller, /\bboard\b/);
+});
+
+test("puzzles controller delegates stateful activities", async () => {
+  const controller = await readFile(
+    path.join(frontend, "modules", "puzzles", "controller.js"),
+    "utf8"
+  );
+  assert.ok(controller.trim().split("\n").length <= 400);
+  for (const moduleName of [
+    "board-view.js",
+    "chat.js",
+    "progress.js",
+    "solution-playback.js",
+    "storm.js",
+    "trainer.js",
+  ]) {
+    assert.match(controller, new RegExp(`from ["']\\./${moduleName.replace(".", "\\.")}["']`));
+  }
+  assert.match(controller, /createPuzzleController\(\{ board, lifecycle \}\)/);
+});
+
+test("chat and settings endpoints have single API owners", async () => {
+  const apiDirectory = path.join(frontend, "modules", "api");
+  const sources = await Promise.all(
+    (await readdir(apiDirectory)).filter((name) => name.endsWith(".js")).map(async (name) => ({
+      name,
+      source: await readFile(path.join(apiDirectory, name), "utf8"),
+    }))
+  );
+  assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/chat"')).map(({ name }) => name), ["chat.js"]);
+  assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/settings"')).map(({ name }) => name), ["settings.js"]);
+  assert.deepEqual(
+    sources.filter(({ source }) => source.includes('"/api/data/engine-cache/clear"')).map(({ name }) => name),
+    ["system.js"]
+  );
+});
+
 test("business modules do not bypass the HTTP client", async () => {
   const files = await javascriptFiles(path.join(frontend, "modules"));
   for (const file of files) {

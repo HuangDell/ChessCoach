@@ -7,6 +7,7 @@ export const systemApi = {
   connectivity: (options) => http.get("/api/connectivity", options),
   updateCheck: (options) => http.get("/api/update-check", options),
   applyUpdate: (options) => http.post("/api/apply-update", undefined, options),
+  clearEngineCache: (options) => http.post("/api/data/engine-cache/clear", undefined, options),
   ping: (options = {}) => http.post("/api/ping", undefined, { ...options, keepalive: true }),
   closing: () => http.beacon("/api/closing"),
 };

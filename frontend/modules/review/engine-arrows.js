@@ -1,4 +1,4 @@
-import { sleep } from "../core/dom.js";
+import { sleep } from "../core/async.js";
 import { movesToArrows } from "./helpers.js";
 
 const THREAT_DEPTH = 16;

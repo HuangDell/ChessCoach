@@ -1,3 +1,5 @@
+import { errorMessage } from "./errors.js";
+
 export class ApiError extends Error {
   constructor(message, { status = 0, payload = null, cause = null } = {}) {
     super(message, cause ? { cause } : undefined);
@@ -17,13 +19,6 @@ function withQuery(path, query) {
   }
   const encoded = params.toString();
   return encoded ? `${path}${path.includes("?") ? "&" : "?"}${encoded}` : path;
-}
-
-function errorMessage(payload, status) {
-  if (payload && typeof payload === "object") {
-    return payload.detail || payload.error || payload.message || `Request failed (${status})`;
-  }
-  return typeof payload === "string" && payload.trim() ? payload.trim() : `Request failed (${status})`;
 }
 
 export function createHttpClient(fetchImpl = globalThis.fetch.bind(globalThis)) {
@@ -51,7 +46,10 @@ export function createHttpClient(fetchImpl = globalThis.fetch.bind(globalThis)) 
       if (response.ok) throw new ApiError("The server returned an invalid response.", { status: response.status, cause: error });
     }
     if (!response.ok) {
-      throw new ApiError(errorMessage(payload, response.status), { status: response.status, payload });
+      throw new ApiError(errorMessage(payload, `Request failed (${response.status})`), {
+        status: response.status,
+        payload,
+      });
     }
     return payload;
   }

@@ -1,4 +1,5 @@
 import { reviewApi } from "../api/review.js";
+import { chatApi } from "../api/chat.js";
 import { byId, clamp } from "../core/dom.js";
 import { createAnalysisRunner } from "./analysis-runner.js";
 import { createReviewChat } from "./chat.js";
@@ -54,7 +55,10 @@ let showThreatsByDefault = false;
 
   const chat = createReviewChat({
     $,
-    api: reviewApi,
+    api: {
+      chatHistory: chatApi.history,
+      chat: chatApi.send,
+    },
     getBoardFen: () => chess.fen(),
     usePersonalHistory: () => personalizeHistory,
   });
@@ -630,7 +634,6 @@ function onAnalysisError(msg) {
       else if (mistakes.length) selectMistake(session.current_index ?? 0);
       else gotoNode(0);
     },
-    applySavedPreferences: setPreferences,
     refreshAfterSettings() {
       if (timeline.length) {
         navigation.patch({
@@ -643,8 +646,5 @@ function onAnalysisError(msg) {
       }
       coach.refreshAfterSettings();
     },
-    get hasTimeline() { return timeline.length > 0; },
-    get gameId() { return currentGameId; },
-    get generation() { return chat.generation; },
   };
 }

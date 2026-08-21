@@ -1,4 +1,4 @@
-import { gamesApi } from "../api/games.js";
+import { settingsApi } from "../api/settings.js";
 import { byId } from "../core/dom.js";
 
 export function createSettingsController({ isPuzzleMode, onSaved }) {
@@ -99,7 +99,7 @@ async function openSettings() {
   $("settings-status").textContent = "";
   let data;
   try {
-    data = await gamesApi.settings();
+    data = await settingsApi.get();
   } catch (_) {
     $("settings-status").textContent = "Could not load settings.";
     $("settings").hidden = false;
@@ -172,7 +172,7 @@ async function detectOllama() {
   const url = $("set-local-llm-url").value.trim();
   let data;
   try {
-    data = await gamesApi.ollamaModels(url);
+    data = await settingsApi.ollamaModels(url);
   } catch (_) {
     status.textContent = "Could not reach the server.";
     return;
@@ -237,7 +237,7 @@ async function saveSettings(e) {
   patch.player_elo = $("set-skill-auto").checked ? "" : $("set-elo").value.trim();
   let res;
   try {
-    res = await gamesApi.saveSettings(patch);
+    res = await settingsApi.save(patch);
   } catch (_) {
     $("settings-status").textContent = "Could not save settings.";
     return;
@@ -270,5 +270,5 @@ async function saveSettings(e) {
     });
   }
 
-  return { mount, open: openSettings };
+  return { mount };
 }

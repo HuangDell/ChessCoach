@@ -409,7 +409,6 @@ export function createReviewNavigation({
     refreshEngineArrows,
     reviewedMoveNode,
     resetVisualState,
-    get snapshot() { return { ...state }; },
     get orient() { return state.orient; },
     get cur() { return state.cur; },
     get anchorNode() { return state.anchorNode; },
