@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chess Review Coach</title>
+    <!-- Chess Review Coach favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#1f2733" />
+    <!-- Vendored locally (frontend/vendor) so the board renders fully offline — no CDN. -->
+    <link rel="stylesheet" href="/vendor/chessground.base.css" />
+    <link rel="stylesheet" href="/vendor/chessground.brown.css" />
+    <link rel="stylesheet" href="/vendor/chessground.cburnett.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>
+        Chess Review Coach
+        <span class="help" tabindex="0" aria-label="Keyboard shortcuts">?
+          <span class="help-tip" role="tooltip">
+            <b>Keyboard shortcuts</b>
+            <span><kbd>←</kbd> / <kbd>→</kbd> previous / next move</span>
+            <span><kbd>↑</kbd> / <kbd>↓</kbd> start / end of game</span>
+            <span><kbd>Space</kbd> next move</span>
+            <span><kbd>n</kbd> / <kbd>p</kbd> next / previous mistake</span>
+            <span><kbd>f</kbd> flip board</span>
+            <span><kbd>l</kbd> toggle best move</span>
+          </span>
+        </span>
+      </h1>
+      <!-- Top-level activity switch (Analyze vs Puzzles). Hidden until /api/puzzle/config says
+           puzzles are available. Switching swaps the whole workspace to the focused solve layout. -->
+      <div id="mode-switch" class="mode-switch" hidden role="tablist" aria-label="Mode">
+        <button id="mode-analyze" class="mode-seg active" type="button">Analyze</button>
+        <button id="mode-puzzles" class="mode-seg" type="button">Puzzles</button>
+      </div>
+      <div id="game-meta" class="muted">Waiting to open a game…</div>
+      <button id="settings-toggle" class="hist-toggle" title="Settings"
+        aria-label="Settings">⚙ Settings</button>
+      <button id="history-toggle" class="hist-toggle" title="Show / hide the games panel"
+        aria-label="Toggle games panel">☰ Games</button>
+    </header>
+
+    <!-- Setup self-check banner (filled by checkSetup() from /api/doctor): shown only when an
+         environment dependency is missing — red for a blocker (Stockfish), amber for the optional
+         claude CLI (AI chat / coach summary). Dismissible. -->
+    <div id="setup-banner" class="setup-banner" hidden></div>
+
+    <!-- Update-available notice (filled by checkUpdates() from /api/update-check, app mode only):
+         info-blue for a minor/patch release, red for a major one. Offers a one-click "Update now"
+         on git/zip installs, or a download link on the read-only .app. Dismissible per version. -->
+    <div id="update-banner" class="setup-banner update" hidden></div>
+
+    <!-- Offline notice (filled by checkOnline() from /api/connectivity): no internet was detected,
+         so the network-only features (Lichess fetch + endgame tablebase, and Claude AI unless a
+         local LLM is configured) won't work. Amber, informational, dismissible. -->
+    <div id="offline-banner" class="setup-banner" hidden></div>
+
+    <main>
+      <section class="board-col">
+        <div id="scoreboard" class="scoreboard" hidden></div>
+        <div class="board-wrap">
+          <div id="evalbar"><div id="evalbar-fill"></div></div>
+          <div id="board" class="cg-wrap"></div>
+          <!-- Decoupled feedback layer for puzzle mode: square-blink pulses (green/yellow) and the
+               wrong-move red flash live here, positioned over the board independent of chessground's
+               internals so they survive its redraws + orientation flips. Shown only in puzzle mode. -->
+          <div id="board-overlay" class="board-overlay" aria-hidden="true"></div>
+        </div>
+
+        <!-- Storm review: step through a finished puzzle's solution on the board. Puzzle mode only,
+             shown while reviewing one storm puzzle (see openStormReview in main.js). -->
+        <div id="pz-review-nav" class="pz-review-nav" hidden>
+          <button type="button" id="pz-review-prev" title="Previous move (←)">‹</button>
+          <span id="pz-review-label" class="pz-review-label">Start position</span>
+          <button type="button" id="pz-review-next" title="Next move (→)">›</button>
+        </div>
+
+        <div class="timeline-meta" aria-hidden="true">
+          <span>White win chance</span>
+          <span id="timeline-readout">Start position</span>
+        </div>
+        <div id="graph-wrap">
+          <svg id="graph" preserveAspectRatio="none"></svg>
+          <div id="analysis-progress" hidden>
+            <div id="analysis-progress-label">Analyzing…</div>
+            <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <div class="ctrl-group">
+            <button id="start" class="icon-btn" title="Go to start (↑)" aria-label="Go to start">|◀</button>
+            <button id="back" class="icon-btn" title="Previous move (←)" aria-label="Previous move">◀</button>
+            <button id="fwd" class="icon-btn" title="Next move (→ or Space)" aria-label="Next move">▶</button>
+            <button id="end" class="icon-btn" title="Go to end (↓)" aria-label="Go to end">▶|</button>
+            <button id="flip-board" class="icon-btn" title="Flip board (f)" aria-label="Flip board">↕</button>
+          </div>
+          <div class="ctrl-group">
+            <button id="prev-mistake" title="Previous key position (p)">‹ Key</button>
+            <button id="next-mistake" title="Next key position (n)">Key ›</button>
+            <button id="reset" title="Return to the main line">↩ Main line</button>
+          </div>
+          <label class="toggle" title="Toggle best-move arrows (l)">
+            <input type="checkbox" id="best-toggle" /> Show best move
+          </label>
+          <label class="toggle" title="Toggle threat arrows (t) — what the side that just moved is threatening, in yellow">
+            <input type="checkbox" id="threat-toggle" /> Show threats
+          </label>
+          <button id="flip-review" type="button" hidden
+            title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Review other side</button>
+        </div>
+
+        <div id="status" class="status"></div>
+      </section>
+
+      <!-- Puzzle mode: a single slim rail beside the board (the dense 3-column analysis layout is
+           hidden in puzzle mode). The prompt card is the hero; the result block replaces it in
+           place after solving. Shown only when body.puzzle-mode is set. -->
+      <aside class="puzzle-rail" id="puzzle-rail" hidden>
+        <div class="pz-stats">
+          <span class="pz-rating" id="pz-rating">Puzzle · 1500</span>
+          <span class="pz-stats-right">
+            <span class="pz-daily" id="pz-daily" hidden></span>
+            <span class="pz-streak" id="pz-streak"></span>
+          </span>
+        </div>
+
+        <!-- Solve (per-puzzle trainer) vs Storm (timed rush). Switching to Storm hides the
+             per-puzzle controls and shows the storm scoreboard; the board is shared. -->
+        <div class="pz-mode-seg" id="pz-mode-seg" role="tablist" aria-label="Puzzle activity">
+          <button type="button" id="pz-mode-solve" class="pz-mode-btn active" role="tab">Solve</button>
+          <button type="button" id="pz-mode-storm" class="pz-mode-btn" role="tab" title="Timed rush: solve as many as you can before the clock runs out">⚡ Storm</button>
+        </div>
+
+        <!-- Everything below (down to the stat card) is the per-puzzle "Solve" trainer; hidden as a
+             block while a storm run is on so the scoreboard becomes the single focal point. -->
+        <div id="pz-solve">
+        <!-- Source: curated tactics vs the player's own past mistakes. "From your games" is
+             disabled (with a tooltip) when the engine is missing, since it validates moves live. -->
+        <div class="pz-source" id="pz-source" role="tablist" aria-label="Puzzle source">
+          <button type="button" id="pz-src-tactics" class="pz-src-seg active" role="tab">Tactics</button>
+          <button type="button" id="pz-src-mine" class="pz-src-seg" role="tab">From your games</button>
+        </div>
+
+        <!-- Difficulty + weakness bias. Kept low-emphasis so solve mode stays calm. -->
+        <div class="pz-controls" id="pz-controls">
+          <label class="pz-weakness" title="Bias puzzles toward the tactics you miss most (from your games + your puzzle history)">
+            <input type="checkbox" id="pz-weakness" /> Train my weaknesses
+          </label>
+          <div class="pz-diff">
+            <button type="button" id="pz-easier" class="pz-ghost" title="Slightly easier puzzles">◂ easier</button>
+            <button type="button" id="pz-harder" class="pz-ghost" title="Slightly harder puzzles">harder ▸</button>
+          </div>
+        </div>
+
+        <label class="pz-mine-filter" id="pz-mine-filter" hidden>
+          <span>Category</span>
+          <select id="pz-category" aria-label="Filter personal training by category">
+            <option value="">All categories</option>
+          </select>
+        </label>
+
+        <!-- "From your game" badge (mistake puzzles only); hidden for curated tactics. -->
+        <div class="pz-source-badge" id="pz-source-badge" hidden></div>
+
+        <div class="pz-card" id="pz-prompt">
+          <div class="pz-prompt-line" id="pz-prompt-line">Loading puzzle…</div>
+          <div class="pz-prompt-sub" id="pz-prompt-sub">Find the best move</div>
+        </div>
+
+        <div class="pz-ghosts" id="pz-ghosts">
+          <!-- Shown only right after an auto-advance: jumps back to the puzzle you just solved so you
+               can still ask "why?" once the trainer has already moved you on. -->
+          <button type="button" id="pz-prev" class="pz-ghost" hidden
+            title="Go back to the puzzle you just solved (to review it or ask why)">‹ Previous</button>
+          <button type="button" id="pz-hint" class="pz-ghost">Hint</button>
+          <button type="button" id="pz-solution" class="pz-ghost">Show solution</button>
+          <button type="button" id="pz-skip" class="pz-ghost">Skip ›</button>
+        </div>
+
+        <div class="pz-result" id="pz-result" hidden>
+          <div class="pz-verdict" id="pz-verdict"></div>
+          <div class="pz-theme" id="pz-theme"></div>
+          <div class="pz-actions">
+            <button type="button" id="pz-explain" class="pz-explain">✨ Explain why</button>
+            <a href="#" id="pz-replay" class="pz-replay" hidden>↩ replay in full game</a>
+            <button type="button" id="pz-next" class="pz-next">Next puzzle →</button>
+          </div>
+          <div class="pz-explain-out" id="pz-explain-out" hidden></div>
+          <!-- Follow-up chat: appears only after "Explain why", threaded on that explanation. -->
+          <div class="pz-chat" id="pz-chat" hidden>
+            <div id="pz-chat-messages" class="chat-messages"></div>
+            <form id="pz-chat-form" class="chat-form">
+              <input id="pz-chat-input" type="text" autocomplete="off"
+                placeholder="Ask a follow-up…" aria-label="Ask a follow-up question" />
+              <button type="submit" id="pz-chat-send" aria-label="Send" title="Send">→</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Rating progress from /api/puzzle/state: collapsed to "Rating <current>"; pressing the
+             header reveals a quiet white trend line. Hidden until there are >=2 rated points. -->
+        <div class="pz-progress" id="pz-progress" hidden></div>
+
+        <!-- Weakest themes from /api/puzzle/state, shown under the rail (quiet). -->
+        <div class="pz-statcard" id="pz-statcard" hidden></div>
+        </div><!-- /#pz-solve -->
+
+        <!-- Storm (timed rush) scoreboard: the hero while a run is on. Hidden in Solve mode. -->
+        <div class="pz-storm" id="pz-storm" hidden>
+          <div class="pz-storm-clock" id="pz-storm-clock">3:00</div>
+          <div class="pz-storm-line">
+            <span class="pz-storm-score"><b id="pz-storm-score">0</b> solved</span>
+            <span class="pz-storm-combo" id="pz-storm-combo" hidden></span>
+          </div>
+          <div class="pz-storm-side" id="pz-storm-side" hidden></div>
+          <div class="pz-storm-results" id="pz-storm-results"></div>
+          <div class="pz-storm-msg" id="pz-storm-msg">Solve as many as you can before the clock runs out. A combo earns bonus time; a wrong move costs time.</div>
+          <div class="pz-storm-bests" id="pz-storm-bests"></div>
+          <button type="button" id="pz-storm-start" class="pz-next">⚡ Start storm</button>
+
+          <!-- Post-run review: shown on the game-over card so the rush turns into study time. Each
+               row opens that puzzle on the board with the AI coach; "Summarize" recaps the misses. -->
+          <div class="pz-storm-review" id="pz-storm-review" hidden>
+            <div class="pz-storm-review-head">Review your puzzles</div>
+            <button type="button" id="pz-storm-summary-btn" class="pz-explain">✨ Summarize my run</button>
+            <div class="pz-explain-out" id="pz-storm-summary-out" hidden></div>
+            <div class="pz-storm-review-list" id="pz-storm-review-list"></div>
+          </div>
+        </div>
+
+        <div id="pz-status" class="pz-status"></div>
+      </aside>
+
+      <!-- iPad-split-view-style drag handle: drag left/right to resize the board (and reflow the
+           analysis column); double-click to reset to the responsive default. position:fixed in CSS,
+           so its DOM position here doesn't affect layout. Behaviour: main.js initBoardResizer(). -->
+      <div id="col-resizer" class="col-resizer" role="separator" aria-orientation="vertical"
+        aria-label="Resize board — drag, or double-click to reset" tabindex="0"
+        title="Drag to resize the board · double-click to reset">
+        <div class="grip"><span></span><span></span><span></span></div>
+      </div>
+
+      <aside class="side-col">
+        <section id="review-workspace" class="review-workspace">
+          <div id="workflow-status" class="workflow-status" data-state="empty" aria-live="polite">
+            <span class="workflow-dot"></span>
+            <span class="workflow-copy">
+              <strong id="workflow-label">Import a PGN to begin</strong>
+              <span id="workflow-detail">Engine review stays available even without AI.</span>
+            </span>
+            <span id="workflow-count"></span>
+          </div>
+
+          <div class="review-tabs" role="tablist" aria-label="Review view">
+            <button type="button" id="review-tab-key" class="active" data-view="key" role="tab">Key positions</button>
+            <button type="button" id="review-tab-mistakes" data-view="mistakes" role="tab">My mistakes</button>
+            <button type="button" id="review-tab-all" data-view="all" role="tab">All moves</button>
+          </div>
+
+          <div id="review-position-list" class="review-position-list"></div>
+
+          <section id="movelist-panel" class="movelist-panel" hidden>
+            <div class="movelist-head">
+              <h2>All moves</h2>
+              <button id="movelist-expand" type="button" class="movelist-expand">Show all ▾</button>
+            </div>
+            <ol id="movelist" class="movelist compact"></ol>
+          </section>
+
+          <article id="critical-review" class="critical-review" hidden>
+            <header class="critical-head">
+              <div>
+                <div class="critical-kicker">
+                  <span id="critical-class" class="review-class"></span>
+                  <span id="critical-swing"></span>
+                </div>
+                <h2 id="critical-title"></h2>
+              </div>
+              <div class="critical-nav">
+                <button type="button" id="critical-prev" class="icon-btn" title="Previous key position" aria-label="Previous key position">‹</button>
+                <span id="critical-count">0 / 0</span>
+                <button type="button" id="critical-next" class="icon-btn" title="Next key position" aria-label="Next key position">›</button>
+              </div>
+            </header>
+
+            <section id="retry-panel" class="retry-panel" hidden aria-live="polite">
+              <div class="retry-heading">
+                <div>
+                  <span class="retry-kicker">Retry this position</span>
+                  <h2 id="retry-title">Your move</h2>
+                </div>
+                <span id="retry-state" class="retry-state">Awaiting move</span>
+              </div>
+              <p id="retry-prompt" class="retry-prompt">Choose a legal move directly on the board.</p>
+              <div id="retry-hints" class="retry-hints"></div>
+              <div id="retry-feedback" class="retry-feedback" hidden></div>
+              <div class="retry-actions">
+                <button type="button" id="retry-hint">Hint: Think</button>
+                <button type="button" id="retry-again" hidden>↻ Try again</button>
+                <button type="button" id="retry-exit">Back to review</button>
+              </div>
+            </section>
+
+            <div id="explanation-content" class="explanation-content"></div>
+
+            <div id="variation-controls" class="variation-controls" hidden>
+              <button type="button" id="variation-play" class="icon-btn" title="Play or pause variation" aria-label="Play or pause variation">▶</button>
+              <span id="variation-label"></span>
+              <button type="button" id="variation-mainline" title="Return to main line">↩ Main line</button>
+            </div>
+
+            <div id="explanation-action" class="explanation-action">
+              <button type="button" id="retry-critical" class="review-secondary">↻ Retry</button>
+              <button type="button" id="train-critical" class="review-secondary">Practice</button>
+              <button type="button" id="generate-explanation">Generate AI explanation</button>
+              <span id="explanation-status" class="muted"></span>
+            </div>
+          </article>
+
+          <div id="review-empty" class="review-empty">
+            <strong>No game loaded</strong>
+            <span>Open Games and import a PGN to start reviewing.</span>
+          </div>
+        </section>
+
+        <div class="legacy-review" hidden>
+        <!-- Templated "quick" summary. Once the fuller AI (Snowie) summary is on screen it's
+            collapsed behind this toggle, expandable on demand (syncQuickSummary in main.js). -->
+        <button id="coach-toggle" class="coach-toggle" type="button" hidden></button>
+        <div id="coach" class="coach" hidden></div>
+        <!-- AI summary lives in this scrolling column so the board column stays short enough to pin
+             (see .board-col position:sticky in styles.css). Per-move feedback (#comment / #verdict)
+             sits lower, between the Moves list and Mistakes. -->
+        <div class="coach-ai-wrap">
+          <button id="coach-ai-btn" class="coach-ai-btn" hidden
+            title="Have Snowie write a fuller coaching summary of this game (uses your Claude subscription)">
+            ✨ Generate AI coach (Snowie) summary
+          </button>
+          <div id="coach-ai" class="coach-ai" hidden></div>
+        </div>
+        <!-- Per-move feedback: the mistake explanation (#comment) + technical verdict (#verdict),
+             between Moves and Mistakes. Both update as you step through the moves. -->
+        <div id="comment" class="comment"></div>
+        <div id="verdict" class="verdict"></div>
+        <h2>Mistakes</h2>
+        <ol id="mistakes" class="mistakes"></ol>
+        <div class="chat-panel">
+          <h2>Ask your AI coach (Snowie)</h2>
+          <p class="muted chat-hint">
+            Ask Snowie about the current board position (uses your Claude subscription).
+          </p>
+          <div id="chat-messages" class="chat-messages"></div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" type="text" autocomplete="off"
+              placeholder="e.g. why is this bad? · what should I do here?" />
+            <button type="submit" id="chat-send" aria-label="Send" title="Send">→</button>
+          </form>
+        </div>
+        </div>
+      </aside>
+
+      <aside class="history-col" id="history-col">
+        <div class="hist-head">
+          <h2>Games</h2>
+          <button id="history-collapse" class="hist-x" title="Hide panel" aria-label="Hide panel">×</button>
+        </div>
+        <div class="seg" role="tablist">
+          <button id="mode-normal" class="active" type="button">My games</button>
+          <button id="mode-lichess" type="button">Lichess</button>
+          <button id="mode-chesscom" type="button">Chess.com</button>
+          <button id="mode-paste" type="button">Import</button>
+        </div>
+        <form id="lichess-form" class="lichess-form" style="display:none">
+          <div class="lichess-row">
+            <input id="lichess-user" type="text" autocomplete="off" placeholder="lichess username" />
+            <button type="submit">Load</button>
+          </div>
+          <button type="button" id="set-as-me" class="set-as-me"
+            title="Make this your account: used for 'My games', your profile, and auto-open on launch">
+            Set as my account
+          </button>
+        </form>
+        <form id="chesscom-form" class="lichess-form" style="display:none">
+          <div class="lichess-row">
+            <input id="chesscom-user" type="text" autocomplete="off" placeholder="chess.com username" />
+            <button type="submit">Load</button>
+          </div>
+          <button type="button" id="chesscom-sync" class="set-as-me"
+            title="Fetch your chess.com games and analyze any new games">
+            ⟳ Sync new games
+          </button>
+          <p id="chesscom-hint" class="chesscom-hint" hidden>
+            Chess.com can take a minute or two to publish a game you just finished, so a fresh game
+            may not show up right away. If you need it now,
+            <button type="button" id="chesscom-hint-paste" class="linklike">upload its PGN instead</button>.
+          </p>
+        </form>
+        <form id="paste-form" class="paste-form" style="display:none">
+          <textarea id="paste-pgn" rows="8" autocomplete="off" spellcheck="false"
+            placeholder="Paste PGN text here, or upload a .pgn file"></textarea>
+          <input id="paste-file" type="file" accept=".pgn,.txt" hidden />
+          <div class="paste-row">
+            <button type="button" id="paste-upload" title="Load a .pgn file (one or many games)">Upload .pgn</button>
+            <label class="paste-side">Review
+              <select id="paste-side">
+                <option value="auto">auto</option>
+                <option value="white">White</option>
+                <option value="black">Black</option>
+              </select>
+            </label>
+            <button type="submit" id="paste-submit">Import &amp; analyze</button>
+          </div>
+          <input id="paste-username" type="text" autocomplete="off"
+            placeholder="your username (optional — for multi-game files)" />
+        </form>
+        <div id="history-status" class="hist-status"></div>
+        <ol id="history-list" class="history"></ol>
+
+
+        <!-- Cross-game insights: recurring themes + stats aggregated from every analyzed game in
+             the chosen time window (GET /api/insights). Refreshes as new games are analyzed. -->
+        <section id="insights" class="insights">
+          <div class="insights-head">
+            <h2>Personal coach</h2>
+            <select id="insights-period" title="Time period" aria-label="Insights time period">
+              <option value="1">Today</option>
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="0">All time</option>
+            </select>
+          </div>
+          <div id="insights-body" class="insights-body"></div>
+          <div class="insights-data-actions">
+            <button id="clear-engine-cache" type="button" title="Clear recomputable Engine analysis cache">
+              Clear Engine cache
+            </button>
+            <span id="data-action-status" class="muted" role="status"></span>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <!-- First-run prompt (app mode only): shown when there's no configured/saved account. Two
+         fields — fill in either. A Lichess handle auto-opens your latest game; a Chess.com handle
+         auto-syncs your recent games on every launch. More accounts can be
+         added later in ⚙ Settings → Advanced. -->
+    <div id="firstrun" class="firstrun-overlay" hidden>
+      <form id="firstrun-form" class="firstrun-card">
+        <h2>Welcome to Chess Review Coach</h2>
+        <p class="muted">Enter your chess username so we can find your games. Fill in whichever you use.</p>
+        <label class="set-field">
+          <span class="set-label">Lichess username</span>
+          <input id="firstrun-user" type="text" autocomplete="off" placeholder="lichess username" />
+        </label>
+        <label class="set-field">
+          <span class="set-label">Chess.com username</span>
+          <input id="firstrun-chesscom-user" type="text" autocomplete="off" placeholder="ChessComUsername" />
+        </label>
+        <button type="submit">Continue</button>
+      </form>
+    </div>
+
+    <!-- Settings are persisted locally so the Web app remains standalone. -->
+    <div id="settings" class="firstrun-overlay" hidden>
+      <form id="settings-form" class="firstrun-card settings-card">
+        <h2>Settings</h2>
+        <div class="set-tabs" role="tablist">
+          <button type="button" class="set-tab-btn active" data-tab="account" role="tab">Account</button>
+          <button type="button" class="set-tab-btn" data-tab="coaching" role="tab">Coaching</button>
+          <button type="button" class="set-tab-btn" data-tab="puzzles" role="tab">Puzzles</button>
+          <button type="button" class="set-tab-btn" data-tab="system" role="tab">Engine &amp; AI</button>
+        </div>
+
+        <!-- Scrolling content area: the tab bar above and the actions below stay pinned. -->
+        <div class="set-body">
+        <!-- Account: who "you" are across sites. -->
+        <div class="set-panel active" data-panel="account">
+          <label class="set-field">
+            <span class="set-label">Lichess username <span class="set-opt">(optional)</span></span>
+            <input id="set-username" type="text" autocomplete="off" placeholder="your Lichess handle" />
+            <span class="set-hint">Lets the app auto-open your latest game, and decides which side is
+              “you”, your <b>My games</b>, and your coaching profile.</span>
+          </label>
+
+          <label class="set-field">
+            <span class="set-label">Chess.com username <span class="set-opt">(optional)</span></span>
+            <input id="set-chesscom" type="text" autocomplete="off" placeholder="ChessComUsername" />
+            <span class="set-hint">Your recent Chess.com games are recognised as yours and folded into
+              one profile. Auto-sync (below) can also analyze new ones on launch.</span>
+          </label>
+
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-chesscom-sync" type="checkbox" />
+              <span class="set-label">Auto-sync new Chess.com games on launch</span>
+            </span>
+            <span class="set-hint">On each launch, check your most recent Chess.com games and analyze any
+              not already reviewed. Off: fetch only when you press ⟳ Sync in the Games panel.</span>
+          </label>
+
+          <div id="chesscom-sync-max-field" class="set-field" hidden>
+            <span class="set-label">How many recent games to check</span>
+            <input id="set-chesscom-sync-max" type="number" min="1" max="50" step="1"
+              autocomplete="off" inputmode="numeric" />
+            <span class="set-hint">Already-reviewed games are skipped — if these are all analyzed
+              already, nothing new runs.</span>
+          </div>
+
+          <label class="set-field">
+            <span class="set-label">Other accounts <span class="set-opt">(optional)</span></span>
+            <input id="set-aliases" type="text" autocomplete="off" placeholder="my_other_lichess, another_handle" />
+            <span class="set-hint">Any additional handles that are also you (comma-separated) — they
+              fold into one profile. Pin one to a site with “chesscom:handle” if a name clashes.</span>
+          </label>
+
+          <label class="set-field">
+            <span class="set-label">Lichess token <span class="set-opt">(optional)</span></span>
+            <input id="set-token" type="password" autocomplete="off" placeholder="for higher rate limits" />
+            <span class="set-hint">A personal access token raises your Lichess fetch rate limit. Leave blank for anonymous access.</span>
+          </label>
+        </div>
+
+        <!-- Coaching: the game-review AI + mistake sensitivity + memory. -->
+        <div class="set-panel" data-panel="coaching">
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-coach-ai-auto" type="checkbox" />
+              <span class="set-label">Auto-generate AI coach (Snowie) summary <span class="set-opt">(uses your Claude subscription)</span></span>
+            </span>
+            <span class="set-hint">Auto-write the fuller summary for every game, instead of pressing the
+              button under the board. The quick side-panel summary always shows.</span>
+          </label>
+
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-personalize" type="checkbox" />
+              <span class="set-label">Personalize AI coach with my history</span>
+            </span>
+            <span class="set-hint">Include your cross-game history so Snowie coaches you on recurring
+              patterns. Turn off to send fewer tokens.</span>
+          </label>
+
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-coach-ai-persist" type="checkbox" />
+              <span class="set-label">Remember AI coach summaries between sessions</span>
+            </span>
+            <span class="set-hint">On (default): a generated Snowie summary is saved with the game, so
+              reopening it later shows the saved text instead of spending Claude to regenerate. Use the
+              ⟳ on the summary to re-run it anyway. Off: summaries regenerate each time you reopen.</span>
+          </label>
+
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-skill-auto" type="checkbox" />
+              <span class="set-label">Auto-scale mistake sensitivity to each game's rating</span>
+            </span>
+            <span class="set-hint">On: reads each game's Elo from the PGN to decide how strict to be.
+              Turn off to set your own level.</span>
+          </label>
+
+          <div id="skill-manual" class="set-field" hidden>
+            <span class="set-label">Mistake sensitivity
+              <span class="set-opt" id="set-elo-label"></span></span>
+            <input id="set-elo" type="range" min="400" max="2400" step="50" value="1200" />
+            <div class="set-slider-ends"><span>More forgiving</span><span>Stricter</span></div>
+            <span class="set-hint">Higher flags subtler mistakes (and searches deeper); lower flags only
+              clearer blunders.</span>
+          </div>
+
+          <label class="set-field">
+            <span class="set-label">Coaching memory</span>
+            <select id="set-profile-mode">
+              <option value="balanced">Recent form + all-time (recommended)</option>
+              <option value="recent">Recent games only</option>
+              <option value="all">My whole history (weigh all equally)</option>
+              <option value="custom">Custom — set the windows below</option>
+            </select>
+            <span id="set-profile-hint" class="set-hint"></span>
+          </label>
+
+          <label class="set-field">
+            <span class="set-label">Recent-form window <span class="set-opt">(games)</span></span>
+            <input id="set-recent" type="text" autocomplete="off" inputmode="numeric" />
+            <span class="set-hint">How many of your most recent games count as "current form" (0 = all games).</span>
+          </label>
+          <label class="set-field">
+            <span class="set-label">Lifetime window <span class="set-opt">(all, 0, or a number)</span></span>
+            <input id="set-lifetime" type="text" autocomplete="off" />
+            <span class="set-hint">All-time view layered on top: "all" = whole history, a number = last N, 0 = off.</span>
+          </label>
+        </div>
+
+        <!-- Puzzles: the tactics trainer. -->
+        <div class="set-panel" data-panel="puzzles">
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-puzzle-animations" type="checkbox" />
+              <span class="set-label">Show solve animations</span>
+            </span>
+            <span class="set-hint">The square flash, ripple and confetti on a solve (and the shake on a
+              miss). Turn off to just see the result as coloured text — green for a clean solve, orange
+              after a miss, red for the shown solution.</span>
+          </label>
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-puzzle-auto-advance" type="checkbox" />
+              <span class="set-label">Auto-start the next puzzle</span>
+            </span>
+            <span class="set-hint">After you solve a puzzle, load the next one automatically (after a short
+              pause so the solve animation plays out) instead of waiting for the “Next puzzle” button.
+              Only fires on a solve — “Show solution” always waits. Turn off to advance manually.</span>
+          </label>
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-puzzle-interleave" type="checkbox" />
+              <span class="set-label">Mix in positions from my games</span>
+            </span>
+            <span class="set-hint">Every so often (about 1 in 5) a tactics puzzle is replaced by a
+              position from one of your own analysed games, so training keeps surfacing your real
+              weaknesses. Turn off to see curated tactics only. (The dedicated “From your games”
+              source is always available regardless.)</span>
+          </label>
+        </div>
+
+        <!-- Engine & AI: local paths / local model. -->
+        <div class="set-panel" data-panel="system">
+          <label class="set-field">
+            <span class="set-label">Default review side</span>
+            <select id="set-review-side">
+              <option value="auto">Auto-detect</option>
+              <option value="white">White</option>
+              <option value="black">Black</option>
+            </select>
+          </label>
+          <label class="set-field">
+            <span class="set-label">Board orientation</span>
+            <select id="set-board-orientation">
+              <option value="review">Reviewed side</option>
+              <option value="white">White</option>
+              <option value="black">Black</option>
+            </select>
+          </label>
+          <label class="set-field">
+            <span class="set-label">Engine analysis profile</span>
+            <select id="set-analysis-preset">
+              <option value="fast">Fast</option>
+              <option value="balanced">Balanced</option>
+              <option value="deep">Deep</option>
+            </select>
+            <span class="set-hint">A profile change applies to the next analysis and uses a separate cache entry.</span>
+          </label>
+          <label class="set-field">
+            <span class="set-label">Explanation provider</span>
+            <select id="set-explanation-provider">
+              <option value="auto">Auto</option>
+              <option value="openai-compatible">OpenAI-compatible API</option>
+              <option value="claude-cli">Claude CLI</option>
+            </select>
+          </label>
+          <label class="set-field">
+            <span class="set-label">Explanation language</span>
+            <select id="set-explanation-language">
+              <option value="zh-CN">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+          <label class="set-field set-check">
+            <span class="set-check-row">
+              <input id="set-show-threats" type="checkbox" />
+              <span class="set-label">Show threat arrows by default</span>
+            </span>
+          </label>
+          <label class="set-field">
+            <span class="set-label">Stockfish path</span>
+            <input id="set-stockfish" type="text" autocomplete="off" />
+            <span id="set-sf-status" class="set-hint"></span>
+          </label>
+          <div class="set-field">
+            <span class="set-label">Local AI model <span class="set-opt">(optional — run the AI locally instead of Claude)</span></span>
+            <span class="set-hint">Run the “why?” chat + AI coach entirely on your own machine instead
+              of your Claude subscription — <b>no <code>claude</code> CLI or login needed</b>. Connects
+              directly to any local server with an OpenAI-compatible API (Ollama, LM Studio, llama.cpp,
+              a LiteLLM proxy, and more). <b>Ollama is easiest:</b> just click <b>Detect Ollama</b>
+              below. For anything else, fill in the URL (and model) by hand. Leave blank to use Claude.</span>
+            <div class="set-llm-row">
+              <button type="button" id="set-ollama-detect" class="linklike">Detect Ollama</button>
+              <span id="set-ollama-status" class="set-hint"></span>
+            </div>
+            <label class="set-sub">
+              <span class="set-sub-label">URL</span>
+              <input id="set-local-llm-url" type="text" autocomplete="off" placeholder="http://localhost:11434" />
+            </label>
+            <label class="set-sub" id="set-ollama-pick-row" hidden>
+              <span class="set-sub-label">Detected</span>
+              <select id="set-ollama-model-select"></select>
+            </label>
+            <label class="set-sub">
+              <span class="set-sub-label">Model</span>
+              <input id="set-local-llm-model" type="text" autocomplete="off" placeholder="e.g. qwen2.5-coder" />
+            </label>
+          </div>
+          <details class="set-advanced">
+            <summary>Advanced</summary>
+            <div class="set-field">
+              <span class="set-label">Local data directory</span>
+              <code id="set-data-dir"></code>
+            </div>
+            <div id="set-engine-details" class="set-hint"></div>
+          </details>
+        </div>
+        </div><!-- /.set-body -->
+
+        <div class="set-actions">
+          <button type="button" id="settings-cancel" class="linklike">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+        <p id="settings-status" class="muted set-hint"></p>
+      </form>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

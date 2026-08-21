@@ -1,0 +1,1888 @@
+:root {
+  --bg: #161512;
+  --panel: #262421;
+  --panel2: #322f2b;
+  --text: #e8e6e3;
+  --muted: #9c9890;
+  --accent: #629924;
+  --inaccuracy: #e0a800;
+  --mistake: #e08000;
+  --blunder: #d33;
+  --best: #629924;
+  /* Puzzle mode reads as its own place via a cool blue-teal accent, so green stays reserved for
+     "correct" (a solved-tile pulse) and isn't overloaded to mean "puzzle mode". */
+  --puzzle-accent: #4a90c2;
+  --puzzle-partial: #d9a441;
+  /* Board scales with viewport height but caps out — and never takes more than ~half the viewport
+     width, so on smaller laptops the board and the analysis column still fit side by side (the
+     board stays pinned; see .board-col). This is the *default*; the drag handle between the board
+     and the analysis column (.col-resizer) overrides it via --board-user (a px value, clamped +
+     persisted in JS), and a double-click on the handle clears the override to fall back here. */
+  --board-default: min(68vh, 660px, 48vw);
+  --board-size: var(--board-user, var(--board-default));
+  /* Height reserved for the pinned (sticky) header, so the sticky board column starts below it
+     instead of tucking underneath. */
+  --header-h: 64px;
+  /* Full width of the board column = eval bar (20) + its gap (8) + the board. The win graph and
+     the other under-board panels span this so their right edge lines up with the board's. */
+  --col-width: calc(var(--board-size) + 28px);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  padding: 14px 20px;
+  border-bottom: 1px solid #000;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  /* Pinned so the ⚙ Settings / ☰ Games buttons stay reachable while you scroll the analysis
+     column. Opaque background so content doesn't show through; z-index below the slide-in drawer
+     (95) and the modal overlays (100) so those still layer on top. */
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  background: var(--bg);
+}
+header h1 { font-size: 23px; font-weight: 700; margin: 0; }
+.muted { color: var(--muted); font-size: 13px; }
+
+/* keyboard-shortcuts help marker + hover/focus tooltip */
+.help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+}
+.help:hover, .help:focus { background: var(--accent); color: #fff; outline: none; }
+.help-tip {
+  position: absolute;
+  top: 140%;
+  left: 0;
+  z-index: 20;
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 220px;
+  padding: 10px 12px;
+  background: #14130f;
+  border: 1px solid #34322e;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+  cursor: default;
+  white-space: nowrap;
+}
+.help:hover .help-tip, .help:focus .help-tip { display: flex; }
+.help-tip b { color: #fff; margin-bottom: 3px; font-size: 12.5px; }
+.help-tip kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 1px 5px;
+  background: var(--panel2);
+  border: 1px solid #4a4742;
+  border-radius: 4px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: #e7e3da;
+  text-align: center;
+}
+
+/* --- setup self-check banner (env dependency missing) ------------------- */
+.setup-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #f0e3c0;
+  background: #3a2f12;            /* amber: optional dep (claude CLI) missing */
+  border-bottom: 1px solid #000;
+}
+.setup-banner[hidden] { display: none; }
+.setup-banner.err { background: #3a1d1d; color: #f3c9c9; } /* red: a blocker (Stockfish) / major update */
+.setup-banner.update { background: #12283a; color: #cfe3f3; } /* info-blue: update available (minor/patch) */
+.setup-banner.update a { color: #8fc4ff; }
+.setup-banner .sb-btn { /* inline "Update now" action button */
+  background: var(--accent); color: #10243a; border: none; border-radius: 4px;
+  padding: 4px 11px; font-weight: 600; font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.setup-banner .sb-btn:hover { filter: brightness(1.08); }
+.setup-banner .sb-btn:disabled { opacity: 0.6; cursor: default; }
+.setup-banner .sb-fix { /* inline "Download arm64 build" action button */
+  background: var(--accent); color: #10243a; border: none; border-radius: 4px;
+  padding: 3px 10px; margin-left: 6px; font-weight: 600; font-size: 12.5px;
+  cursor: pointer; white-space: nowrap;
+}
+.setup-banner .sb-fix:hover { filter: brightness(1.08); }
+.setup-banner .sb-fix:disabled { opacity: 0.6; cursor: default; }
+.setup-banner .sb-err { color: #ffd0a8; }
+/* Expanded step-by-step install guide (the read-only .app channel): stack full-width. */
+.setup-banner.guide { display: block; position: relative; padding-right: 36px; }
+.setup-banner.guide .sb-x { position: absolute; top: 8px; right: 10px; }
+.setup-banner .sb-steps { margin: 6px 0 2px; padding-left: 20px; }
+.setup-banner .sb-steps li { margin: 3px 0; }
+.setup-banner .sb-msg { flex: 1; }
+.setup-banner a { color: var(--accent); font-weight: 600; }
+.setup-banner.err a { color: #ffb4b4; }
+.setup-banner code {
+  background: rgba(0, 0, 0, 0.32); padding: 1px 5px; border-radius: 3px;
+  font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
+}
+.setup-banner .sb-x {
+  background: none; border: none; color: inherit; cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 0 4px; opacity: 0.75;
+}
+.setup-banner .sb-x:hover { opacity: 1; }
+
+main {
+  display: flex;
+  gap: 24px;
+  padding: 20px;
+  align-items: flex-start;
+  flex-wrap: nowrap;
+}
+
+/* The board column is pinned to the top of the viewport so the board stays in view while you
+   scroll the (taller) analysis column beside it. If the column is ever taller than the viewport
+   (a short window) it scrolls internally rather than pushing the board off-screen. */
+.board-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 0 0 auto;
+  position: sticky;
+  top: var(--header-h);
+  align-self: flex-start;
+  max-height: calc(100vh - var(--header-h) - 12px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+  /* The internal scrollbar (this column overflows on tall boards / short windows) used to make the
+     panel's effective width diverge per browser: Chrome overlays it (floats over the right edge, so
+     the fixed separator lands on top of it) while Firefox reserves a gutter (narrowing the panel).
+     Reserve the gutter *always* so (a) the board is never clipped and there's no appear/disappear
+     layout shift, and (b) a thin, in-box scrollbar is used in both engines instead of a floating
+     overlay. The separator is then measured off the panel's real right edge (positionResizer in
+     main.js), so it clears the reserved gutter in every browser. See issue #5. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel2) transparent;
+}
+.board-col::-webkit-scrollbar { width: 8px; }
+.board-col::-webkit-scrollbar-track { background: transparent; }
+.board-col::-webkit-scrollbar-thumb {
+  background: var(--panel2);
+  border-radius: 4px;
+}
+/* On a short window the column's content can exceed max-height. Don't let flex shrink the
+   children to fit — the board/controls are floored by their content, but the win graph holds
+   only an <svg> (min-content ~0), so without this ALL the overflow shrinkage lands on the graph
+   and collapses it to a sliver. Keep their sizes and let the column scroll instead (the intended
+   last-resort fallback). */
+.board-col > * { flex-shrink: 0; }
+
+.board-wrap { display: flex; gap: 8px; }
+
+.cg-wrap {
+  width: var(--board-size);
+  height: var(--board-size);
+}
+
+/* iPad-split-view-style drag handle that sits in the gap between the board column and the
+   analysis column. position:fixed (so it stays beside the pinned board while you scroll) with a
+   left offset computed from --col-width, so it tracks the board's right edge as you resize. The
+   drag itself lives in main.js (initBoardResizer): it rewrites --board-user. */
+.col-resizer {
+  position: fixed;
+  top: var(--header-h);
+  left: calc(20px + var(--col-width) + 6px);
+  height: calc(100vh - var(--header-h) - 12px);
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  touch-action: none; /* we drive the drag with pointer events */
+  user-select: none;
+  z-index: 40; /* below the header (90) and the slide-in drawer (95) */
+}
+.col-resizer .grip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 7px;
+  height: 48px;
+  border-radius: 6px;
+  background: var(--panel2);
+  border: 1px solid #000;
+  transition: background 0.15s ease;
+}
+.col-resizer .grip span {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.col-resizer:hover .grip,
+.col-resizer:focus-visible .grip,
+.col-resizer.dragging .grip {
+  background: var(--accent);
+}
+.col-resizer:hover .grip span,
+.col-resizer:focus-visible .grip span,
+.col-resizer.dragging .grip span {
+  background: #fff;
+}
+.col-resizer:focus-visible { outline: none; }
+
+#evalbar {
+  width: 20px;
+  height: var(--board-size);
+  background: #3b3a37;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+/* fill grows from the bottom = White's share of the win% */
+#evalbar-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: #f0f0f0;
+  transition: height 0.25s ease;
+}
+
+/* --- win graph --- */
+#graph-wrap {
+  position: relative;
+  width: var(--col-width);
+  height: 90px;
+  background: #14130f;
+  border-radius: 5px;
+  overflow: hidden;
+}
+#graph { width: 100%; height: 100%; display: block; cursor: pointer; }
+.timeline-meta {
+  width: var(--col-width);
+  min-height: 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* progress bar shown over the (still empty) win graph while the engine sweep runs */
+#analysis-progress {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px;
+  background: rgba(20, 19, 15, 0.82);
+}
+#analysis-progress[hidden] { display: none; }
+#analysis-progress-label {
+  color: #d8d4c8;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+#analysis-progress-track {
+  width: 100%;
+  max-width: 320px;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+#analysis-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+/* indeterminate state (no ETA yet): a sliding shimmer instead of a measured fill */
+#analysis-progress-fill.indeterminate {
+  width: 35% !important;
+  animation: progress-slide 1.1s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+/* --- controls --- */
+.controls {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: var(--col-width);
+}
+.ctrl-group { display: flex; gap: 6px; }
+.controls button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid #000;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.controls button:hover { background: var(--panel2); }
+.controls button:disabled { opacity: 0.4; cursor: default; }
+.controls .icon-btn,
+.icon-btn {
+  width: 34px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.toggle { font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+.toggle input { vertical-align: middle; }
+
+.status {
+  font-size: 14px;
+  min-height: 18px;
+  max-width: var(--col-width);
+  padding: 6px 0;
+}
+.status.away {
+  background: #3a2f12;
+  border-left: 3px solid var(--inaccuracy);
+  padding: 8px 10px;
+  border-radius: 4px;
+}
+.status.away button {
+  margin-left: 8px;
+  background: var(--inaccuracy);
+  color: #161512;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.comment {
+  max-width: var(--col-width);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: #1d2a14;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 9px 11px;
+  margin-bottom: 12px;
+}
+.comment:empty { display: none; }
+
+.verdict {
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 10px 12px;
+  min-height: 20px;
+  margin-top: 18px;
+  font-size: 14px;
+  max-width: var(--col-width);
+}
+/* De-emphasised at the bottom of the analysis column: no empty panel when there's no verdict. */
+.verdict:empty { display: none; }
+.verdict .tag,
+.status .tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #161512;
+  margin-right: 6px;
+}
+.status.away .line { color: var(--muted); }
+.tag.best, .tag.good { background: var(--best); color: #fff; }
+.tag.inaccuracy { background: var(--inaccuracy); }
+.tag.mistake { background: var(--mistake); }
+.tag.blunder { background: var(--blunder); color: #fff; }
+.verdict .line { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+/* --- scoreboard (game report header) ------------------------------------ */
+.scoreboard {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 10px 14px;
+  max-width: var(--col-width);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.sb-opening {
+  font-size: 13.5px;
+  color: var(--muted);
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-acc { display: flex; align-items: baseline; gap: 10px; }
+.sb-acc-main { display: flex; align-items: baseline; gap: 6px; }
+.sb-acc-main b { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
+.sb-acc-lbl { font-size: 12px; color: var(--muted); }
+.sb-acc-opp { font-size: 12px; color: var(--muted); }
+.sb-counts { display: flex; gap: 6px; }
+.sb-counts .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  cursor: pointer;
+  border-radius: 12px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #161512;
+  background: var(--panel2);
+}
+.sb-counts .chip:hover { filter: brightness(1.12); }
+.sb-counts .chip .chip-n { font-size: 13px; font-weight: 700; }
+.sb-counts .chip.blunder { background: var(--blunder); color: #fff; }
+.sb-counts .chip.mistake { background: var(--mistake); }
+.sb-counts .chip.inaccuracy { background: var(--inaccuracy); }
+
+/* --- AI coach summary (top of the analysis column) ---------------------- */
+.coach-ai-wrap { max-width: var(--col-width); }
+.coach-ai-btn {
+  width: 100%;
+  background: #322f4a;
+  border: 1px solid #46426a;
+  color: #d9d6ef;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.coach-ai-btn:hover { background: #3b3858; border-color: #5b57c4; }
+.coach-ai {
+  background: linear-gradient(180deg, #2b2a3a 0%, var(--panel) 100%);
+  border: 1px solid #3a3850;
+  border-radius: 8px;
+  padding: 11px 13px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.coach-ai.pending { color: var(--muted); font-style: italic; }
+.coach-ai.err { border-color: var(--blunder); color: #f3c9c9; }
+/* rendered markdown inside the summary (bold / italics / lists / paragraphs) */
+.coach-ai p { margin: 0 0 8px; }
+.coach-ai p:last-child { margin-bottom: 0; }
+.coach-ai ul { margin: 6px 0 8px; padding-left: 20px; }
+.coach-ai li { margin: 2px 0; }
+.coach-ai strong { color: #fff; font-weight: 600; }
+.coach-ai em { font-style: italic; color: #d9c8a0; }
+.coach-ai code {
+  background: rgba(0, 0, 0, 0.3); padding: 0 4px; border-radius: 3px; font-size: 0.92em;
+}
+.coach-ai-tag {
+  float: left;                /* leading badge; the summary text wraps to its right */
+  margin: 1px 8px 0 0;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  background: #5b57c4;
+  color: #fff;
+}
+.coach-ai-refresh {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.coach-ai-refresh:hover { opacity: 1; transform: rotate(90deg); }
+
+.side-col { flex: 0 1 430px; width: 430px; min-width: 340px; }
+/* Widen the analysis/chat column on wide windows (the board caps at --board-size, so there's dead
+   space to spare) — mirrors the puzzle-rail steps. It can still flex-shrink if the board + Games
+   column leave less room. */
+@media (min-width: 1500px) {
+  .side-col { flex-basis: 480px; width: 480px; }
+}
+@media (min-width: 1900px) {
+  .side-col { flex-basis: 540px; width: 540px; }
+}
+.side-col h2 { font-size: 15px; margin: 0 0 8px; }
+
+/* --- Phase 6 review workspace ----------------------------------------- */
+.review-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.workflow-status {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #20282b;
+  border: 1px solid #344045;
+  border-radius: 6px;
+}
+.workflow-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.workflow-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.workflow-copy strong { font-size: 13px; line-height: 1.25; }
+.workflow-copy span { color: var(--muted); font-size: 12px; line-height: 1.3; }
+#workflow-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.workflow-status[data-state="importing"] .workflow-dot,
+.workflow-status[data-state="analyzing_scan"] .workflow-dot,
+.workflow-status[data-state="analyzing_deep"] .workflow-dot,
+.workflow-status[data-state="extracting_facts"] .workflow-dot,
+.workflow-status[data-state="generating_explanations"] .workflow-dot {
+  background: var(--inaccuracy);
+  animation: workflow-pulse 1s ease-in-out infinite alternate;
+}
+.workflow-status[data-state="ready_to_analyze"] .workflow-dot,
+.workflow-status[data-state="review_ready"] .workflow-dot { background: var(--accent); }
+.workflow-status[data-state="partial_ready"] .workflow-dot { background: var(--puzzle-partial); }
+.workflow-status[data-state="failed"] .workflow-dot { background: var(--blunder); }
+@keyframes workflow-pulse { to { opacity: 0.35; } }
+
+.review-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  background: #20282b;
+  border: 1px solid #344045;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.review-tabs button {
+  min-height: 36px;
+  border: 0;
+  border-right: 1px solid #344045;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.review-tabs button:last-child { border-right: 0; }
+.review-tabs button:hover { color: var(--text); background: #293236; }
+.review-tabs button.active { color: #fff; background: #385c24; font-weight: 600; }
+
+.review-position-list {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 1px 1px 4px;
+  min-height: 0;
+  scrollbar-width: thin;
+}
+.review-position-list:empty { display: none; }
+.position-item {
+  flex: 0 0 154px;
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  gap: 8px;
+  align-content: center;
+  text-align: left;
+  padding: 8px 9px;
+  border: 1px solid #353d40;
+  border-radius: 5px;
+  background: #20282b;
+  color: var(--text);
+  cursor: pointer;
+}
+.position-item:hover { background: #293236; }
+.position-item.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.position-dot { width: 8px; height: 8px; margin-top: 3px; border-radius: 50%; background: var(--muted); }
+.position-dot.inaccuracy { background: var(--inaccuracy); }
+.position-dot.mistake { background: var(--mistake); }
+.position-dot.blunder { background: var(--blunder); }
+.position-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.position-move { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.position-meta { color: var(--muted); font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
+
+.critical-review {
+  background: #20282b;
+  border: 1px solid #344045;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.critical-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+  border-bottom: 1px solid #344045;
+}
+.critical-head h2 { margin: 4px 0 0; font-size: 19px; line-height: 1.2; }
+.critical-kicker { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.review-class {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #111;
+  background: var(--muted);
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.review-class.inaccuracy { background: var(--inaccuracy); }
+.review-class.mistake { background: var(--mistake); }
+.review-class.blunder { background: var(--blunder); color: #fff; }
+.critical-nav { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.critical-nav button { background: #293236; color: var(--text); border: 1px solid #3b474c; border-radius: 4px; cursor: pointer; }
+.critical-nav button:disabled { opacity: 0.35; cursor: default; }
+
+.explanation-content { padding: 0 14px; }
+.explanation-section { padding: 11px 0; border-bottom: 1px solid #303a3e; }
+.explanation-section:last-child { border-bottom: 0; }
+.explanation-section h3 {
+  margin: 0 0 5px;
+  color: #93a1a6;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.explanation-section p { margin: 0; font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.explanation-section strong { color: #fff; }
+.explanation-list { margin: 3px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.5; }
+.explanation-list li + li { margin-top: 3px; }
+.category-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.category-chip {
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: #344348;
+  color: #dce5e8;
+  font-size: 12px;
+}
+.engine-fallback {
+  margin: 10px 0;
+  padding: 9px 10px;
+  background: #293236;
+  border-left: 3px solid var(--puzzle-partial);
+  color: #dce5e8;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.variation-block { display: flex; flex-direction: column; gap: 6px; }
+.variation-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: start; }
+.variation-name { color: var(--muted); font-size: 12px; padding-top: 3px; }
+.san-line { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.san-move {
+  border: 0;
+  border-radius: 3px;
+  padding: 2px 4px;
+  background: transparent;
+  color: #e8ecee;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.san-move:hover, .san-move.active { background: #385c24; color: #fff; }
+.variation-summary { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin-top: 5px; }
+.variation-controls {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-top: 1px solid #344045;
+}
+.variation-controls[hidden] { display: none; }
+.variation-controls button {
+  background: #293236;
+  color: var(--text);
+  border: 1px solid #3b474c;
+  border-radius: 4px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+#variation-label { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explanation-action {
+  min-height: 49px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid #344045;
+}
+.explanation-action button {
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.explanation-action button:disabled { opacity: 0.55; cursor: default; }
+.explanation-action .review-secondary { background: #344348; color: var(--text); }
+
+/* --- Phase 7 Retry ---------------------------------------------------- */
+.retry-panel { padding: 16px 14px 14px; }
+.retry-panel[hidden] { display: none; }
+.retry-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.retry-heading h2 { margin: 3px 0 0; font-size: 18px; }
+.retry-kicker {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.retry-state {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: #344348;
+  color: #dce5e8;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.retry-prompt { margin: 12px 0; color: #dce5e8; font-size: 13.5px; line-height: 1.45; }
+.retry-hints { display: flex; flex-direction: column; gap: 6px; }
+.retry-hint-row {
+  padding: 8px 10px;
+  border-left: 3px solid var(--puzzle-partial);
+  background: #293236;
+  color: #dce5e8;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.retry-feedback { margin-top: 12px; border-top: 1px solid #344045; padding-top: 12px; }
+.retry-feedback[hidden] { display: none; }
+.retry-feedback-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.retry-verdict {
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--muted);
+  color: #111;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.retry-verdict.best, .retry-verdict.acceptable { background: var(--accent); color: #fff; }
+.retry-verdict.inaccurate { background: var(--inaccuracy); }
+.retry-verdict.same_as_game, .retry-verdict.bad { background: var(--blunder); color: #fff; }
+.retry-feedback-grid { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 5px 9px; font-size: 12.5px; }
+.retry-feedback-grid dt { color: var(--muted); }
+.retry-feedback-grid dd { margin: 0; overflow-wrap: anywhere; }
+.retry-feedback-message { margin: 9px 0 0; font-size: 13px; line-height: 1.45; }
+.retry-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.retry-actions button {
+  border: 1px solid #465257;
+  border-radius: 4px;
+  padding: 7px 10px;
+  background: #293236;
+  color: var(--text);
+  cursor: pointer;
+}
+.retry-actions button:first-child { background: var(--accent); border-color: var(--accent); color: #fff; }
+.retry-actions button:disabled { opacity: 0.45; cursor: default; }
+body.retry-mode #evalbar,
+body.retry-mode #graph-wrap,
+body.retry-mode .timeline-meta,
+body.retry-mode .controls,
+body.retry-mode #scoreboard,
+body.retry-mode .review-tabs,
+body.retry-mode .review-position-list,
+body.retry-mode .critical-head,
+body.retry-mode .explanation-content,
+body.retry-mode .variation-controls,
+body.retry-mode .explanation-action,
+body.retry-mode .history-col,
+body.retry-mode #history-toggle { display: none !important; }
+body.retry-mode .critical-review { border-color: #465257; }
+body.retry-mode .board-col { max-height: none; overflow: visible; }
+.review-empty {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed #3a4549;
+  border-radius: 6px;
+  padding: 20px;
+}
+.review-empty[hidden] { display: none; }
+.review-empty strong { color: var(--text); font-size: 14px; }
+.review-empty span { font-size: 12.5px; }
+.movelist-panel[hidden] { display: none; }
+.review-workspace .movelist-panel { margin-bottom: 0; }
+.set-advanced { border-top: 1px solid var(--border, #34322e); padding-top: 10px; }
+.set-advanced summary { color: var(--muted); font-size: 13px; cursor: pointer; }
+.set-advanced code { display: block; overflow-wrap: anywhere; color: var(--text); font-size: 12px; }
+
+/* --- end-of-game coach blurb -------------------------------------------- */
+.coach {
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+/* Toggle that collapses the quick summary once the AI (Snowie) summary is shown. */
+.coach-toggle {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 2px 0;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.coach-toggle:hover { color: var(--text); }
+.coach-toggle[hidden] { display: none; }
+
+/* --- move list (clickable notation) ------------------------------------- */
+.movelist-panel { margin-bottom: 18px; }
+.movelist-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.movelist-expand {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+.movelist-expand:hover { color: var(--text); }
+.movelist {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: var(--panel);
+  border-radius: 6px;
+  overflow-y: auto;
+  font-size: 13.5px;
+}
+.movelist.compact { max-height: 9.5rem; }
+.movelist.expanded { max-height: 44vh; }
+.move-row {
+  display: grid;
+  grid-template-columns: 2.2em 1fr 1fr;
+  align-items: center;
+  column-gap: 4px;
+  padding: 1px 2px;
+  border-radius: 4px;
+}
+.move-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+.move-row .moveno { color: var(--muted); font-size: 12px; text-align: right; padding-right: 4px; }
+.movelist .ply {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.movelist .ply.empty { cursor: default; }
+.movelist .ply:not(.empty):hover { background: var(--panel2); }
+.movelist .ply.active { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* --- classification glyphs (?!, ?, ??, ✓) ------------------------------- */
+.glyph { font-weight: 700; font-size: 11px; line-height: 1; }
+.glyph.inaccuracy { color: var(--inaccuracy); }
+.glyph.mistake { color: var(--mistake); }
+.glyph.blunder { color: var(--blunder); }
+.glyph.best { color: var(--best); }
+.ply.active .glyph { color: #fff; }
+
+.mistakes { list-style: none; margin: 0 0 24px; padding: 0; }
+.mistakes li {
+  background: var(--panel);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+}
+.mistakes li:hover { background: var(--panel2); }
+.mistakes li.active { outline: 2px solid var(--accent); }
+.mistakes li .move { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.mistakes li .dot {
+  width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+}
+.dot.inaccuracy { background: var(--inaccuracy); }
+.dot.mistake { background: var(--mistake); }
+.dot.blunder { background: var(--blunder); }
+/* small chess-piece glyph next to each mistake */
+.piece-glyph { font-size: 15px; line-height: 1; color: #d9c8a0; }
+
+.chat-panel { border-top: 1px solid #000; padding-top: 12px; }
+.chat-panel h2 { color: var(--text); }
+.chat-hint { margin: 0 0 6px; }
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+.chat-msg {
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.chat-msg.user {
+  background: #38461f; /* muted accent green — reads as an outgoing message */
+  color: #eef3e3;
+  align-self: flex-end;
+  max-width: 90%;
+  border: 1px solid #4a5c28;
+  border-bottom-right-radius: 3px; /* tail on the sender's side */
+}
+.chat-msg.bot {
+  background: var(--panel);
+  align-self: flex-start;
+  border: 1px solid #34322e;
+  border-bottom-left-radius: 3px;
+}
+.chat-msg.err { background: #3a1d1d; border-left: 3px solid var(--blunder); }
+.chat-msg.pending { color: var(--muted); font-style: italic; }
+
+/* rendered markdown inside bot answers */
+.chat-msg.bot p { margin: 0 0 8px; }
+.chat-msg.bot p:last-child { margin-bottom: 0; }
+.chat-msg.bot ul { margin: 4px 0 8px; padding-left: 20px; }
+.chat-msg.bot li { margin: 2px 0; }
+.chat-msg.bot strong { color: #fff; font-weight: 600; }
+.chat-msg.bot em { font-style: italic; color: #d9c8a0; }
+.chat-msg.bot code {
+  background: #000;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+.chat-form { display: flex; gap: 6px; }
+.chat-form input {
+  flex: 1;
+  background: #1d1b16;
+  border: 1px solid #4a4636;
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 11px;
+  font-size: 13.5px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.chat-form input::placeholder { color: #8a8472; }
+.chat-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(98, 153, 36, 0.25);
+}
+.chat-form button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 13px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-form button:disabled { opacity: 0.5; cursor: default; }
+
+/* --- games / history panel (third column) --- */
+/* Pushed to the right of the header; toggles the panel. There's plenty of horizontal room,
+   so the panel lives in the empty space — the board/sidebar keep their sizes. */
+.hist-toggle {
+  margin-left: auto;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid #000;
+  border-radius: 4px;
+  padding: 5px 11px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.hist-toggle:hover { background: var(--panel2); }
+
+.history-col { flex: 0 0 auto; width: 280px; }
+body.history-hidden .history-col { display: none; }
+/* Highlight the whole Games panel while a .pgn file is dragged over it (drop to analyze). */
+.history-col.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  border-radius: 8px;
+  background: rgba(98, 153, 36, 0.08); /* --accent at low alpha */
+}
+
+.hist-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.hist-head h2 { font-size: 15px; margin: 0; }
+.hist-x {
+  background: none; border: none; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.hist-x:hover { color: var(--text); }
+
+/* segmented My games | Lichess control */
+.seg { display: flex; gap: 0; margin-bottom: 10px; border: 1px solid #000; border-radius: 6px; overflow: hidden; }
+.seg button {
+  flex: 1; background: var(--panel); color: var(--muted); border: none;
+  padding: 6px 10px; cursor: pointer; font-size: 13px;
+}
+.seg button + button { border-left: 1px solid #000; }
+.seg button.active { background: var(--accent); color: #fff; }
+.seg button:not(.active):hover { background: var(--panel2); }
+
+.lichess-form { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.lichess-row { display: flex; gap: 6px; }
+.lichess-form input[type="text"] {
+  flex: 1; background: #1d1b16; border: 1px solid #4a4636; border-radius: 6px;
+  color: var(--text); padding: 6px 9px; font-size: 13px;
+}
+.lichess-form input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.lichess-form button {
+  background: var(--panel2); color: var(--text); border: 1px solid #000;
+  border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px;
+}
+.auto-open-toggle { font-size: 12px; }
+
+/* Paste-PGN mode (so Chess.com users can analyze without the Lichess fetch). */
+.paste-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.paste-form textarea {
+  width: 100%; resize: vertical; background: #1d1b16; border: 1px solid #4a4636;
+  border-radius: 6px; color: var(--text); padding: 8px 9px; font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.4;
+}
+.paste-form textarea:focus { outline: none; border-color: var(--accent); }
+.paste-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  align-items: center; gap: 8px;
+}
+.paste-side { font-size: 12.5px; color: var(--muted); }
+.paste-side select {
+  background: var(--panel2); color: var(--text); border: 1px solid #000;
+  border-radius: 6px; padding: 4px 6px; font-size: 12.5px; margin-left: 4px;
+}
+#paste-upload {
+  background: var(--panel2); color: var(--text); border: 1px solid #000;
+  border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12.5px;
+}
+#paste-username {
+  width: 100%; background: #1d1b16; border: 1px solid #4a4636; border-radius: 6px;
+  color: var(--text); padding: 6px 9px; font-size: 12.5px;
+}
+#paste-username:focus { outline: none; border-color: var(--accent); }
+.paste-form button[type="submit"] {
+  background: var(--accent); color: #fff; border: none; border-radius: 6px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
+  grid-column: 1 / -1; width: 100%;
+}
+.paste-form button[type="submit"]:disabled { opacity: 0.55; cursor: wait; }
+.hist-status.import-error { color: #ff8a80; }
+.hist-status.import-success { color: #a8d77b; }
+.hist-status.import-action { color: #f0c36a; }
+
+/* First-run prompt (app mode): centred card over a dimmed backdrop. */
+.firstrun-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.firstrun-overlay[hidden] { display: none; }
+.firstrun-card {
+  background: var(--panel); border: 1px solid #000; border-radius: 10px;
+  padding: 24px 26px; width: min(380px, 90vw);
+  display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.firstrun-card h2 { margin: 0; font-size: 18px; }
+.firstrun-card p { margin: 0; font-size: 13px; }
+.firstrun-card input[type="text"] {
+  background: #1d1b16; border: 1px solid #4a4636; border-radius: 6px;
+  color: var(--text); padding: 9px 11px; font-size: 14px;
+}
+.firstrun-card input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.firstrun-card button[type="submit"] {
+  background: var(--accent); color: #fff; border: none; border-radius: 6px;
+  padding: 9px 12px; cursor: pointer; font-size: 14px; font-weight: 600;
+}
+.linklike {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 12.5px; padding: 2px; text-decoration: underline;
+}
+.linklike:hover { color: var(--text); }
+
+.set-as-me {
+  background: var(--panel2); color: var(--text); border: 1px solid #000;
+  border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; align-self: flex-start;
+}
+.set-as-me:disabled { opacity: 0.6; cursor: default; }
+
+/* Settings panel (reuses the .firstrun-overlay backdrop + .firstrun-card shell).
+   Fixed height so the card never resizes between tabs: the header + tab bar stay pinned at the top
+   and the actions at the bottom, while only the content scrolls. Switching tabs then feels like
+   moving left/right, not the whole dialog jumping. */
+.settings-card { width: min(460px, 92vw); height: min(640px, 88vh); overflow: hidden; gap: 12px; }
+/* Category tabs across the top; one panel visible at a time. Pinned (never scroll). */
+.set-tabs { display: flex; gap: 2px; border-bottom: 1px solid #3a372f; flex-wrap: wrap; flex: none; }
+/* The only scrolling region — so the tab bar above and Save/Cancel below hold their positions. */
+.set-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.set-tab-btn {
+  background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  color: var(--muted); font-size: 13px; font-weight: 600; padding: 7px 12px; cursor: pointer;
+}
+.set-tab-btn:hover { color: var(--text); }
+.set-tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.set-tab-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.set-panel { display: none; flex-direction: column; gap: 14px; }
+.set-panel.active { display: flex; }
+.set-field { display: flex; flex-direction: column; gap: 5px; }
+.set-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.set-opt { font-weight: 400; color: var(--muted); font-size: 12px; }
+.set-field input, .set-field select {
+  background: #1d1b16; border: 1px solid #4a4636; border-radius: 6px;
+  color: var(--text); padding: 8px 10px; font-size: 13px; width: 100%;
+}
+.set-field input:focus, .set-field select:focus { outline: none; border-color: var(--accent); }
+.set-hint { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.set-field[hidden] { display: none; } /* beat .set-field's display:flex when toggled off */
+.set-field input[type="range"] {
+  padding: 0; border: none; background: none; accent-color: var(--accent); cursor: pointer;
+}
+.set-slider-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+/* checkbox field: lay the box + label on one row, and undo the full-width text-input styling. */
+.set-check { cursor: pointer; }
+.set-check-row { display: flex; align-items: center; gap: 8px; }
+.set-check input {
+  width: auto; padding: 0; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer;
+}
+.set-llm-row { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+.set-llm-row .linklike { white-space: nowrap; }
+.set-sub { display: flex; align-items: center; gap: 8px; }
+.set-sub-label { font-size: 12px; color: var(--muted); width: 44px; flex: none; }
+.set-sub input, .set-sub select { flex: 1; }
+.set-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; margin-top: 4px; }
+.set-actions button[type="submit"] {
+  background: var(--accent); color: #fff; border: none; border-radius: 6px;
+  padding: 8px 16px; cursor: pointer; font-size: 14px; font-weight: 600;
+}
+#settings-status:empty { display: none; }
+
+.hist-status { color: var(--muted); font-size: 12.5px; min-height: 16px; margin-bottom: 8px; }
+
+.chesscom-hint {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--panel-2, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.chesscom-hint .linklike { font-size: inherit; }
+
+.history { list-style: none; margin: 0; padding: 0; max-height: 78vh; overflow-y: auto; }
+.history li {
+  background: var(--panel); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px;
+  cursor: pointer; font-size: 13px; border-left: 3px solid transparent;
+}
+.history li:hover { background: var(--panel2); }
+.history li.disabled { cursor: default; opacity: 0.5; }
+.history li.disabled:hover { background: var(--panel); }
+/* Games recorded under "you" — a subtle green-tinted tone vs. the neutral panel of other games. */
+.history li.mine { background: #232a1f; }
+.history li.mine:hover { background: #2d3527; }
+.history li.win { border-left-color: var(--accent); }
+.history li.loss { border-left-color: var(--blunder); }
+.history li.draw { border-left-color: var(--muted); }
+.history li .h-title { font-weight: 600; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.history li .h-actions { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.history li .h-delete {
+  border: 0; background: none; color: var(--muted); padding: 0 2px; font-size: 11px; cursor: pointer;
+}
+.history li .h-delete:hover, .history li .h-delete:focus-visible { color: var(--blunder); }
+.history li .h-sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.history li .h-blunders { color: var(--blunder); font-weight: 600; font-size: 12px; white-space: nowrap; }
+/* "Open this game on Lichess/Chess.com" ↗ link in the board header, right after the player names. */
+.meta-open {
+  text-decoration: none; color: var(--muted); font-weight: 700; margin-left: 5px;
+  padding: 0 3px; border-radius: 3px; white-space: nowrap;
+}
+.meta-open:hover { color: var(--accent); background: var(--panel2); }
+.history li.ph, .mistakes li.ph { background: none; color: var(--muted); font-style: italic; cursor: default; padding: 6px 0; }
+.mistakes li.ph:hover { background: none; }
+.history li.load-more {
+  text-align: center; color: var(--accent); font-weight: 600; background: none;
+  border: 1px dashed #3c4a26; padding: 7px 10px;
+}
+.history li.load-more:hover { background: var(--panel); }
+
+/* --- Insights panel (cross-game themes + stats over a chosen time period) ------------------ */
+.insights { margin-top: 14px; border-top: 1px solid #000; padding-top: 10px; }
+.insights-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.insights-head h2 { font-size: 15px; margin: 0; }
+.insights-head select {
+  background: var(--panel2); color: var(--text); border: 1px solid #000; border-radius: 5px;
+  font-size: 12.5px; padding: 3px 6px;
+}
+.insights-body { font-size: 13px; }
+.insights-body h3 {
+  font-size: 12.5px; margin: 10px 0 4px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.insights-body .ins-stat { margin: 3px 0; }
+.insights-body .ins-list { list-style: none; margin: 0; padding: 0; }
+.insights-body .ins-list li {
+  background: var(--panel); border-radius: 5px; padding: 5px 8px; margin-bottom: 4px;
+  display: flex; justify-content: space-between; gap: 8px;
+}
+.coach-headline {
+  margin: 8px 0 10px; padding-left: 9px; border-left: 3px solid var(--accent);
+  color: var(--text); line-height: 1.45;
+}
+.phase-split {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-bottom: 8px;
+}
+.phase-split span {
+  min-width: 0; padding: 6px 3px; text-align: center; background: #24231f; border-radius: 4px;
+  color: var(--muted); font-size: 10px; text-transform: capitalize;
+}
+.phase-split b { display: block; color: var(--text); font-size: 15px; margin-bottom: 1px; }
+.insights-body .weakness-list li { display: block; }
+.weakness-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.35; }
+.weakness-copy .muted { font-size: 11.5px; overflow-wrap: anywhere; }
+.weakness-actions { display: flex; gap: 6px; margin-top: 6px; }
+.weakness-actions button, .insights-data-actions button {
+  border: 1px solid #4a4636; border-radius: 5px; background: var(--panel2); color: var(--text);
+  padding: 4px 8px; font-size: 11.5px; cursor: pointer;
+}
+.weakness-actions button:hover, .insights-data-actions button:hover { border-color: var(--accent); }
+.training-stat { display: flex; align-items: center; gap: 8px; margin: 3px 0 8px; }
+.training-stat strong { color: var(--accent); font-size: 20px; }
+.training-stat span { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+.coach-checklist { margin: 0 0 8px; padding-left: 20px; color: var(--text); }
+.coach-checklist li { margin-bottom: 5px; line-height: 1.35; }
+.profile-threshold { line-height: 1.4; margin: 8px 0; }
+.insights-data-actions {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 12px; padding-top: 9px;
+  border-top: 1px solid #3a372f; font-size: 11px;
+}
+
+/* --- responsive: smaller laptops / windows -------------------------------------------------
+   The third (Games) column needs ~1400px to sit beside the board + analysis columns. Below that
+   it becomes an off-canvas drawer that slides in from the right (toggled by ☰ Games / closed by ×
+   or by opening a game), so it's always reachable instead of being pushed off-screen. */
+@media (max-width: 1400px) {
+  header { flex-wrap: wrap; row-gap: 6px; }
+  .history-col {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 95;
+    width: min(340px, 88vw);
+    height: 100vh;
+    height: 100dvh;
+    margin: 0;
+    padding: 16px 16px 24px;
+    background: var(--panel);
+    border-left: 1px solid #000;
+    box-shadow: -10px 0 30px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    transform: translateX(0);
+    transition: transform 0.22s ease;
+  }
+  /* Override the global display:none so the panel can slide out of view (and back in). */
+  body.history-hidden .history-col {
+    display: block;
+    transform: translateX(100%);
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 900px) {
+  :root { --board-default: min(68vh, 660px, calc(100vw - 58px)); }
+  main { flex-direction: column; gap: 18px; padding: 14px; }
+  .board-col {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    width: 100%;
+    align-items: center;
+    padding-right: 0;
+  }
+  .side-col { width: 100%; min-width: 0; flex-basis: auto; }
+  .col-resizer { display: none; }
+  .review-position-list { width: 100%; }
+  body.history-hidden .history-col { display: none; }
+  .cg-wrap coords.files { left: 0; }
+}
+
+/* Very narrow: stack the board over the analysis column and stop pinning the board (a pinned
+   board would eat most of the height on a tiny window). */
+@media (max-width: 640px) {
+  header { gap: 8px; padding: 10px 14px; }
+  header h1 { font-size: 18px; }
+  #game-meta { order: 4; width: 100%; }
+  .controls { gap: 8px; }
+  .controls .toggle { width: auto; }
+  .position-item { flex-basis: 142px; }
+  .critical-head { align-items: flex-start; }
+  .critical-head h2 { font-size: 17px; }
+  .variation-row { grid-template-columns: 1fr; gap: 2px; }
+  .variation-name { padding-top: 0; }
+}
+
+/* ===================== Puzzle mode ===================================================== */
+
+/* Header activity switch [ Analyze | Puzzles ]. */
+.mode-switch[hidden] { display: none; }
+.mode-switch {
+  display: inline-flex;
+  margin-right: 14px;
+  border: 1px solid var(--panel2);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.mode-seg {
+  background: var(--panel);
+  color: var(--muted);
+  border: 0;
+  padding: 8px 22px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mode-seg:hover { color: var(--text); }
+.mode-seg.active { background: var(--puzzle-accent); color: #fff; }
+.mode-seg#mode-analyze.active { background: var(--accent); }
+
+/* The board feedback overlay lives over the board (eval bar is hidden in puzzle mode, so the board
+   sits at the wrap's left edge and the overlay aligns at left:0). pointer-events:none so it never
+   eats clicks meant for the board. */
+.board-wrap { position: relative; }
+.board-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--board-size);
+  height: var(--board-size);
+  pointer-events: none;
+  display: none;
+  z-index: 5;
+}
+body.puzzle-mode .board-overlay { display: block; }
+
+/* One pulsing cell, positioned by file/rank % (orientation-aware, set in JS). */
+.sq-blink {
+  position: absolute;
+  width: 12.5%;
+  height: 12.5%;
+  border-radius: 4px;
+  pointer-events: none;
+  animation: sq-pulse 0.42s ease-in-out 3;
+}
+/* Solve fill: a soft highlight that eases in and away — no scale, so it sits flush on the square
+   and reads as an integrated highlight rather than a floating tile. Colour tells green vs amber. */
+.sq-blink.ok   { box-shadow: inset 0 0 0 9999px rgba(98, 153, 36, 0.5); animation: sq-solve 0.7s ease-out 1; }
+.sq-blink.part { box-shadow: inset 0 0 0 9999px rgba(224, 128, 0, 0.5); animation: sq-solve 0.7s ease-out 1; }
+.sq-blink.bad  { box-shadow: inset 0 0 0 9999px rgba(211, 51, 51, 0.55); animation: sq-flash 0.5s ease-in-out 1; }
+@keyframes sq-pulse { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
+@keyframes sq-flash { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes sq-solve { 0% { opacity: 0; } 16% { opacity: 1; } 55% { opacity: 0.85; } 100% { opacity: 0; } }
+
+/* An expanding ripple ring on a solve — the elegant part of the flash. Grows out from the square
+   centre and fades, like a soft Material ripple. */
+.sq-ring {
+  position: absolute;
+  width: 12.5%;
+  height: 12.5%;
+  border-radius: 7px;
+  box-sizing: border-box;
+  pointer-events: none;
+  transform-origin: center;
+  animation: sq-ripple 0.65s cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+.sq-ring.ok   { border: 2.5px solid rgba(98, 153, 36, 0.9); }
+.sq-ring.part { border: 2.5px solid rgba(224, 128, 0, 0.9); }
+@keyframes sq-ripple {
+  0%   { opacity: 0.85; transform: scale(0.8); }
+  100% { opacity: 0;    transform: scale(1.7); }
+}
+
+/* Confetti burst off the solved piece. Each particle is positioned at the square centre in JS,
+   which also sets its colour, size and the --dx/--dy/--rot flight vector. */
+.confetti {
+  position: absolute;
+  border-radius: 1px;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: confetti-fly 0.8s ease-out forwards;
+}
+@keyframes confetti-fly {
+  0%   { opacity: 1; transform: translate(-50%, -50%) rotate(0deg) scale(1); }
+  70%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) rotate(var(--rot)) scale(0.7); }
+}
+
+/* A brief shake on the board element for a wrong move. */
+body.puzzle-mode #board.shake { animation: pz-shake 0.36s ease-in-out 1; }
+@keyframes pz-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(5px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
+/* In puzzle mode, collapse the dense analysis layout to board + slim rail. */
+body.puzzle-mode #evalbar,
+body.puzzle-mode #graph-wrap,
+body.puzzle-mode .timeline-meta,
+body.puzzle-mode .controls,
+body.puzzle-mode #scoreboard,
+body.puzzle-mode .board-col > #status,
+body.puzzle-mode .side-col,
+body.puzzle-mode .history-col,
+body.puzzle-mode #game-meta,
+body.puzzle-mode #history-toggle { display: none !important; }
+body.puzzle-mode .puzzle-rail { display: flex; }
+.pz-review-nav[hidden] { display: none !important; }
+/* The board/rail drag handle stays live in puzzle mode (same --board-size override). The eval bar
+   it normally budgets for (--col-width = board + 28) is hidden here, so re-anchor the handle to the
+   board's real right edge instead of 28px past it. */
+body.puzzle-mode .col-resizer {
+  left: calc(20px + var(--board-size) + 6px);
+  /* Box the handle to the board's exact vertical extent (board col starts at header + main's 20px
+     top padding and is board-size tall) so the centered grip lines up with the board's center,
+     instead of the viewport's. */
+  top: calc(var(--header-h) + 20px);
+  height: var(--board-size);
+}
+/* In puzzle mode the board column holds ONLY the board (the graph/controls/comments that make the
+   analysis column tall are hidden). The analysis-mode internal scroll (overflow-y:auto + capped
+   max-height) then has nothing to scroll to, but sub-pixel rounding of the board height against the
+   cap still sprouts an ugly vertical scrollbar down the board's edge at certain window sizes. Drop
+   the scroll box here — let the page scroll if a huge board ever exceeds the viewport. */
+body.puzzle-mode .board-col { overflow: visible; max-height: none; }
+/* The rail's panels set `display: flex`, which would otherwise beat the UA `[hidden]` rule (equal
+   specificity, later source order) and leave a hidden panel visible — so toggling `.hidden` in JS
+   wouldn't actually hide it. Make the hidden attribute win inside the rail. */
+.puzzle-rail [hidden] { display: none !important; }
+
+/* The rail. Widens on wider windows (the board doesn't grow past --board-size, so on a big
+   screen there's dead space to the right) — the explanation/coach text is the main reason to
+   have room, and 320px reads cramped. Stays 320px on laptop-ish widths, stepping up past 1500px
+   and again past 1900px. */
+.puzzle-rail {
+  flex: 0 1 320px;
+  width: 320px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 4px;
+}
+@media (min-width: 1500px) {
+  .puzzle-rail { flex-basis: 440px; width: 440px; }
+}
+@media (min-width: 1900px) {
+  .puzzle-rail { flex-basis: 560px; width: 560px; }
+}
+.pz-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 14px;
+}
+.pz-rating { font-weight: 600; color: var(--text); }
+.pz-streak { display: inline-flex; align-items: center; gap: 5px; }
+.pz-mine-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.pz-mine-filter[hidden] { display: none; }
+.pz-mine-filter select {
+  min-width: 160px;
+  max-width: 65%;
+  border: 1px solid #465257;
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: #20282b;
+  color: var(--text);
+}
+.training-result {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 5px 9px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.training-result dt { color: var(--muted); }
+.training-result dd { margin: 0; overflow-wrap: anywhere; }
+.pz-pip {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--panel2);
+}
+.pz-pip.ok { background: var(--accent); }
+.pz-pip.bad { background: var(--blunder); }
+.pz-streak-n { margin-left: 4px; color: var(--muted); font-size: 13px; }
+.pz-stats-right { display: inline-flex; align-items: center; gap: 10px; }
+/* Day-over-day practice streak: a quiet flame chip, brightening once it's a real run. */
+.pz-daily {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pz-daily.hot { color: var(--mistake); }
+.pz-daily b { color: var(--text); font-weight: 600; }
+
+/* Rating progress: collapsed to just "Rating <current>" on the rail; a quiet white trend line
+   (styled like the analysis win% plot) reveals when the header dropdown is pressed. */
+.pz-progress { border-top: 1px solid var(--panel2); padding-top: 10px; }
+.pz-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pz-progress-title b { color: var(--text); font-weight: 700; margin-left: 4px; }
+.pz-progress-caret {
+  transition: transform 0.15s ease;
+  color: var(--muted);
+}
+.pz-progress.open .pz-progress-caret { transform: rotate(90deg); }
+.pz-progress-body { display: none; margin-top: 8px; }
+.pz-progress.open .pz-progress-body { display: block; }
+.pz-progress-sub {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.pz-progress-net.up { color: var(--accent); }
+.pz-progress-net.down { color: var(--blunder); }
+.pz-progress-net.flat { color: var(--muted); }
+.pz-curve {
+  display: block;
+  width: 100%;
+  height: 48px;
+  border-radius: 4px;
+}
+
+.pz-card {
+  background: var(--panel);
+  border: 1px solid var(--puzzle-accent);
+  border-left: 4px solid var(--puzzle-accent);
+  border-radius: 9px;
+  padding: 18px 18px;
+}
+.pz-prompt-line { font-size: 24px; font-weight: 700; color: var(--text); }
+.pz-prompt-sub { margin-top: 4px; color: var(--muted); font-size: 15px; }
+
+.pz-ghosts { display: flex; gap: 10px; }
+.pz-ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--panel2);
+  border-radius: 7px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pz-ghost:hover { color: var(--text); border-color: var(--muted); }
+
+.pz-result {
+  background: var(--panel);
+  border-radius: 9px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pz-verdict { font-size: 19px; font-weight: 700; }
+.pz-verdict.ok { color: var(--accent); }
+.pz-verdict.part { color: var(--mistake); } /* orange: solved after a miss (still a win, not a failure) */
+.pz-verdict.bad { color: var(--blunder); }
+.pz-theme { color: var(--muted); font-size: 14px; }
+.pz-theme b { color: var(--text); }
+.pz-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.pz-explain, .pz-next {
+  border: 0;
+  border-radius: 7px;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pz-explain { background: var(--panel2); color: var(--text); }
+.pz-explain:hover { background: #3d3a35; }
+.pz-next { background: var(--puzzle-accent); color: #fff; }
+.pz-next:hover { filter: brightness(1.08); }
+.pz-explain-out {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  border-top: 1px solid var(--panel2);
+  padding-top: 10px;
+}
+.pz-explain-out p { margin: 0 0 8px; }
+/* Follow-up chat under the explanation (reuses .chat-messages / .chat-form / .chat-msg). */
+.pz-chat { margin-top: 10px; border-top: 1px solid var(--panel2); padding-top: 10px; }
+.pz-chat .chat-messages { max-height: 240px; }
+.pz-status { color: var(--muted); font-size: 13px; min-height: 18px; }
+
+/* Source segmented control (Tactics | From your games). */
+.pz-source { display: inline-flex; border: 1px solid var(--panel2); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+.pz-src-seg {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pz-src-seg.active { background: var(--puzzle-accent); color: #fff; }
+.pz-src-seg:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Solve | Storm activity switch (peer to the source control, slightly more prominent). */
+.pz-mode-seg { display: inline-flex; border: 1px solid var(--panel2); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+.pz-mode-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pz-mode-btn.active { background: var(--puzzle-accent); color: #fff; }
+
+/* Storm scoreboard (the hero while a timed run is on). */
+.pz-storm { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; padding: 6px 0; }
+.pz-storm-clock {
+  position: relative;
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 1px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.pz-storm-clock.low { color: var(--blunder); animation: pz-clock-pulse 1s ease-in-out infinite; }
+@keyframes pz-clock-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.pz-storm-bonus {
+  position: absolute;
+  top: -6px; right: -44px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  animation: pz-bonus-float 0.9s ease-out forwards;
+}
+@keyframes pz-bonus-float { 0% { opacity: 0; transform: translateY(6px); } 25% { opacity: 1; } 100% { opacity: 0; transform: translateY(-16px); } }
+.pz-storm-line { display: flex; align-items: center; gap: 12px; font-size: 15px; color: var(--muted); }
+.pz-storm-score b { color: var(--text); font-size: 20px; }
+.pz-storm-combo { color: var(--puzzle-partial); font-weight: 600; }
+.pz-storm-side { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; color: var(--text); }
+.pz-storm-side-dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--muted); }
+.pz-storm-side-dot.w { background: #f0f0f0; }
+.pz-storm-side-dot.b { background: #222; }
+.pz-storm-results { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; max-width: 220px; min-height: 8px; }
+.pz-storm-msg { font-size: 13px; color: var(--muted); line-height: 1.45; max-width: 260px; }
+.pz-storm-nh { color: var(--accent); font-weight: 700; }
+.pz-storm-bests { font-size: 12px; color: var(--muted); }
+.pz-storm-bests b { color: var(--text); }
+#pz-storm-start { align-self: center; padding: 9px 22px; }
+
+/* Post-run review: the finished run's puzzles, opened one-by-one into the Solve result card + AI. */
+.pz-storm-review { width: 100%; max-width: 300px; text-align: left; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; border-top: 1px solid var(--border); padding-top: 12px; }
+.pz-storm-review-head { font-size: 13px; font-weight: 600; color: var(--muted); text-align: center; }
+#pz-storm-summary-btn { align-self: center; }
+#pz-storm-summary-out { font-size: 13px; }
+.pz-storm-review-list { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
+.pz-storm-review-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 9px; background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; color: var(--text); font-size: 13px; cursor: pointer; }
+.pz-storm-review-row:hover { background: #3d3a35; }
+.pz-storm-review-row.ok { border-left-color: var(--accent); }
+.pz-storm-review-row.bad { border-left-color: var(--blunder); }
+.pz-rr-mark { font-weight: 700; width: 12px; }
+.pz-storm-review-row.ok .pz-rr-mark { color: var(--accent); }
+.pz-storm-review-row.bad .pz-rr-mark { color: var(--blunder); }
+.pz-rr-theme { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pz-rr-rating { color: var(--muted); font-size: 12px; }
+
+/* Storm review: step-through-the-solution nav, sits directly below the board. Matches the puzzle
+   rail's calm "ghost" button idiom so it reads as part of the app, not raw OS controls. */
+.pz-review-nav { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px; max-width: var(--col-width); }
+.pz-review-nav button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 46px; height: 34px; padding: 0;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--panel2); border-radius: 7px;
+  font-size: 22px; line-height: 1; cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+/* The ‹ › glyphs sit a hair high in most fonts; nudge them onto the optical centre of the box. */
+.pz-review-nav button { padding-bottom: 2px; }
+.pz-review-nav button:hover:not(:disabled) { color: var(--text); border-color: var(--puzzle-accent); background: var(--panel2); }
+.pz-review-nav button:disabled { opacity: 0.35; cursor: default; }
+.pz-review-label { min-width: 150px; text-align: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Difficulty + weakness controls (low-emphasis, so solve mode stays calm). */
+.pz-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pz-weakness { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.pz-diff { display: inline-flex; gap: 8px; }
+.pz-ghost.active { color: var(--text); border-color: var(--puzzle-accent); }
+
+/* "From your game" badge (mistake puzzles): warm amber to read as personal, not curated. */
+.pz-source-badge {
+  align-self: flex-start;
+  background: color-mix(in srgb, var(--puzzle-partial) 18%, transparent);
+  color: var(--puzzle-partial);
+  border: 1px solid color-mix(in srgb, var(--puzzle-partial) 45%, transparent);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+/* When it's a mistake puzzle, tint the prompt card amber to match the badge. */
+.pz-source-badge:not([hidden]) ~ #pz-prompt { border-color: var(--puzzle-partial); border-left-color: var(--puzzle-partial); }
+
+.pz-replay {
+  color: var(--puzzle-partial);
+  font-size: 13px;
+  text-decoration: none;
+  align-self: center;
+}
+.pz-replay:hover { text-decoration: underline; }
+
+/* Weakest-theme stats card. */
+.pz-statcard {
+  border-top: 1px solid var(--panel2);
+  padding-top: 10px;
+}
+/* Collapsed by default: a quiet "Work on ▸" toggle, revealing the theme chips on click. */
+.pz-statcard-toggle {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pz-statcard-toggle:hover { color: var(--text); }
+.pz-statcard-caret { font-size: 10px; }
+.pz-statcard-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.pz-statcard-h { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.pz-weak-theme {
+  background: var(--panel2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pz-weak-theme b { color: var(--text); }
+
+@media (max-width: 900px) {
+  .puzzle-rail { flex-basis: auto; width: 100%; }
+}

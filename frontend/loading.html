@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chess Review Coach - starting…</title>
+  <style>
+    :root { --bg: #161512; --panel: #262421; --text: #bababa; --bright: #e7e3da; --accent: #629924; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .card {
+      max-width: 440px; width: 100%; text-align: center;
+      background: var(--panel); border-radius: 14px; padding: 36px 32px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    }
+    h1 { color: var(--bright); font-size: 20px; margin: 0 0 6px; }
+    .spinner {
+      width: 46px; height: 46px; margin: 8px auto 22px;
+      border: 4px solid rgba(255, 255, 255, 0.12);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { line-height: 1.5; font-size: 14px; margin: 0 0 10px; }
+    .muted { color: #8a877f; font-size: 12.5px; }
+    .slow { color: #f0e3c0; font-size: 13px; margin-top: 16px; display: none; }
+    .manual { margin-top: 18px; display: none; }
+    a { color: var(--accent); font-weight: 600; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Progress bar — hidden until the installer reports its first milestone (a warm start has no
+       install to report, so the plain spinner + auto-redirect is all that shows). */
+    .progress { display: none; margin: 4px 0 14px; }
+    .progress.show { display: block; }
+    .bar {
+      height: 9px; border-radius: 6px; overflow: hidden;
+      background: rgba(255, 255, 255, 0.10);
+    }
+    .fill {
+      height: 100%; width: 0%; border-radius: 6px;
+      background: var(--accent);
+      transition: width 0.4s ease;
+    }
+    .plabel {
+      display: flex; justify-content: space-between; gap: 12px;
+      margin: 9px 2px 0; font-size: 12.5px; color: var(--bright);
+    }
+    .pstep { text-align: left; }
+    .ppct { color: #8a877f; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>Chess Review Coach</h1>
+    <p id="msg">Setting things up…</p>
+
+    <div class="progress" id="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="plabel">
+        <span class="pstep" id="pstep">Preparing…</span>
+        <span class="ppct" id="ppct"></span>
+      </div>
+    </div>
+
+    <p class="muted">The first launch downloads the chess engine and a few components
+      (about a minute or two on a normal connection). This only happens once — the app opens
+      here automatically when it's ready.</p>
+    <p class="slow" id="slow">Still working — first-time downloads can be slow on a slow connection.
+      Hang tight, this window will switch over as soon as the engine is ready.</p>
+    <p class="manual" id="manual"><a id="manual-link" href="#">Open the app now →</a></p>
+  </div>
+
+  <script>
+    // Where the board will be served. App mode binds loopback; default 127.0.0.1:8765. The launcher
+    // may pass an override in the URL hash ("#127.0.0.1:8765" or a full "http://host:port").
+    function resolveTarget() {
+      const h = decodeURIComponent((location.hash || "").replace(/^#/, "")).trim();
+      if (/^https?:\/\//i.test(h)) return h.replace(/\/+$/, "");
+      if (/^[\w.-]+:\d+$/.test(h)) return "http://" + h;
+      if (location.protocol !== "file:") return location.origin; // served from the app itself
+      return "http://127.0.0.1:8765";
+    }
+    const target = resolveTarget();
+    document.getElementById("manual-link").href = target;
+
+    // ---- Install progress -----------------------------------------------------------------
+    // The installer (install.sh / install.ps1 / the .app launcher) writes a sibling `progress.js`
+    // that calls window.__setInstallProgress({pct, step}) as it advances. We can't fetch() a local
+    // file from a file:// page (browsers block XHR/fetch to file://), but *re-inserting a <script>
+    // element* pointing at a sibling file:// URL re-reads it from disk — so we poll by re-injecting
+    // the tag. The bar only appears once a real milestone arrives; a warm start never writes one and
+    // just rides the redirect poll below. Progress is monotonic, so a stale read is harmless.
+    let lastPct = 0;
+    const progressEl = document.getElementById("progress");
+    const fillEl = document.getElementById("fill");
+    const pctEl = document.getElementById("ppct");
+    const stepEl = document.getElementById("pstep");
+    window.__setInstallProgress = function (info) {
+      if (!info || done) return;
+      progressEl.classList.add("show");
+      if (typeof info.pct === "number" && isFinite(info.pct)) {
+        // Clamp below 100 until the server actually answers, and never go backwards.
+        const pct = Math.max(lastPct, Math.min(97, Math.round(info.pct)));
+        lastPct = pct;
+        fillEl.style.width = pct + "%";
+        pctEl.textContent = pct + "%";
+        progressEl.setAttribute("aria-valuenow", String(pct));
+      }
+      if (info.step) stepEl.textContent = String(info.step);
+    };
+
+    function pollProgress() {
+      if (done) return;
+      const s = document.createElement("script");
+      // Sibling of this page (the launcher copies loading.html + progress.js into one writable dir).
+      s.src = "progress.js";
+      s.onload = s.onerror = function () { s.remove(); };
+      document.body.appendChild(s);
+      setTimeout(pollProgress, 700);
+    }
+
+    // ---- Board readiness ------------------------------------------------------------------
+    let tries = 0;
+    let done = false;
+    async function poll() {
+      if (done) return;
+      tries++;
+      try {
+        // no-cors: we can't read the body cross-origin, but a *successful* connection (opaque
+        // response) means the server is listening. Connection-refused rejects → keep waiting.
+        await fetch(target + "/api/app-config", { mode: "no-cors", cache: "no-store" });
+        done = true;
+        progressEl.classList.add("show");
+        fillEl.style.width = "100%";
+        pctEl.textContent = "100%";
+        stepEl.textContent = "Ready";
+        document.getElementById("msg").textContent = "Ready — opening the board…";
+        setTimeout(function () { location.replace(target); }, 150);
+        return;
+      } catch (_) {}
+      if (tries === 30) document.getElementById("manual").style.display = "block"; // ~1 min
+      if (tries === 75) document.getElementById("slow").style.display = "block";   // ~2.5 min
+      setTimeout(poll, 2000);
+    }
+    pollProgress();
+    poll();
+  </script>
+</body>
+</html>
