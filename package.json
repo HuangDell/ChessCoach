@@ -1,0 +1,8 @@
+{
+  "name": "chess-review-coach-frontend-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:frontend": "node --test tests/frontend/*.test.js"
+  }
+}
