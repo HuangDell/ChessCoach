@@ -9,19 +9,27 @@ export function createAnalysisRunner({
   applyReady,
   reportError,
   renderProgress,
+  pollDelayMs = 800,
 }) {
   let abortController = null;
   let pollTimer = null;
+  let operationGeneration = 0;
   let batchInfo = null;
 
-  function abortCurrentRequest() {
+  function beginOperation() {
+    stopPolling();
+    operationGeneration += 1;
     if (abortController) abortController.abort();
     abortController = new AbortController();
-    return abortController.signal;
+    return { generation: operationGeneration, signal: abortController.signal };
+  }
+
+  function isCurrent(generation) {
+    return generation === operationGeneration;
   }
 
   async function openGame(pgn, side, gameId = null) {
-    const signal = abortCurrentRequest();
+    const { generation, signal } = beginOperation();
     if ((!side || side === "auto") && getDefaultReviewSide() !== "auto") {
       side = getDefaultReviewSide();
     }
@@ -39,19 +47,20 @@ export function createAnalysisRunner({
     } catch (error) {
       if (error && error.name === "AbortError") return;
     }
+    if (!isCurrent(generation)) return;
     if (status && status.status === "ready") {
-      await loadReady();
+      await loadReady(generation, signal);
       return;
     }
     if (status && status.error) {
       reportError(apiErrorMessage(status.error, "Could not start analysis."));
       return;
     }
-    startPolling();
+    startPolling(generation, signal);
   }
 
   async function openBatch(pgnText, side, username) {
-    const signal = abortCurrentRequest();
+    const { generation, signal } = beginOperation();
     let result;
     try {
       result = await api.analyzeBatch(
@@ -63,6 +72,7 @@ export function createAnalysisRunner({
       $("history-status").textContent = "Could not start analysis.";
       return;
     }
+    if (!isCurrent(generation)) return;
     if (result.error || !result.total_games) {
       $("history-status").textContent = result.error || "No valid games found in that PGN.";
       return;
@@ -81,25 +91,30 @@ export function createAnalysisRunner({
       result.first_side,
       `Analyzing game 1 of ${result.total_games}…`
     );
-    startPolling();
+    startPolling(generation, signal);
   }
 
-  function startPolling() {
+  function startPolling(generation, signal) {
     stopPolling();
-    pollTimer = setInterval(async () => {
+    const poll = async () => {
+      pollTimer = null;
+      if (!isCurrent(generation)) return;
       let status;
       try {
-        status = await api.analysisStatus();
-      } catch (_) {
+        status = await api.analysisStatus({ signal });
+      } catch (error) {
+        if (!isCurrent(generation) || (error && error.name === "AbortError")) return;
+        scheduleNext();
         return;
       }
+      if (!isCurrent(generation)) return;
       if (batchInfo && status.done_games != null && status.done_games !== batchInfo.lastDone) {
         batchInfo.lastDone = status.done_games;
         if (bridge.isLocalHistory()) bridge.loadHistory();
       }
       if (status.status === "ready") {
         stopPolling();
-        await loadReady();
+        await loadReady(generation, signal);
       } else if (
         status.status === "error" &&
         (!batchInfo || (status.total_games || 1) === 1)
@@ -108,20 +123,34 @@ export function createAnalysisRunner({
         reportError(status.error);
       } else {
         renderProgress(status);
+        scheduleNext();
       }
-    }, 800);
+    };
+    const scheduleNext = () => {
+      if (isCurrent(generation)) pollTimer = setTimeout(poll, pollDelayMs);
+    };
+    scheduleNext();
   }
 
   function stopPolling() {
-    if (pollTimer) clearInterval(pollTimer);
+    if (pollTimer) clearTimeout(pollTimer);
     pollTimer = null;
   }
 
-  async function loadReady() {
-    const session = await api.session();
-    const timeline = await api.timeline();
-    if (session.empty) return;
+  async function loadReady(generation, signal) {
+    let session;
+    let timeline;
+    try {
+      session = await api.session({ signal });
+      if (!isCurrent(generation)) return;
+      timeline = await api.timeline({ signal });
+    } catch (error) {
+      if (error && error.name === "AbortError") return;
+      throw error;
+    }
+    if (!isCurrent(generation) || session.empty) return;
     await applyReady(session, timeline);
+    if (!isCurrent(generation)) return;
     if (batchInfo) {
       const count = batchInfo.total;
       const who = batchInfo.self_handle ? ` as ${batchInfo.self_handle}` : "";
@@ -136,6 +165,7 @@ export function createAnalysisRunner({
   }
 
   function startSyncedBatch(info) {
+    const { generation, signal } = beginOperation();
     batchInfo = {
       total: info.new_games,
       self_handle: info.self_handle,
@@ -146,7 +176,7 @@ export function createAnalysisRunner({
       info.first_side,
       `Syncing ${info.new_games} new chess.com game${info.new_games === 1 ? "" : "s"}… you can step through this one now.`
     );
-    startPolling();
+    startPolling(generation, signal);
   }
 
   return { openGame, openBatch, startSyncedBatch };

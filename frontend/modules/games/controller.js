@@ -9,7 +9,7 @@ let historyMode = "normal"; // "normal" (local games) | "lichess" | "chesscom" |
 let myPlayerId = ""; // configured user's id, for inferring side on lichess lookups
 let lichessCount = 5; // how many recent lichess games to show ("Load more" grows it)
 let lichessUser = ""; // the handle currently shown in lichess mode (for "Load more")
-const LICHESS_PAGE = 5; // initial count + how many more each "Load more"
+const REMOTE_PAGE = 5; // initial count + how many more each remote "Load more"
 let chesscomCount = 5; // paging for the Chess.com tab, same scheme as lichess
 let chesscomUser = "";
 let pasteSourceType = "pgn_text";
@@ -38,10 +38,31 @@ let chesscomRefreshTimes = [];
 const CHESSCOM_REFRESH_WINDOW_MS = 20000;
 const CHESSCOM_REFRESH_TRIGGER = 3;
 
+function remoteProvider(source) {
+  const chesscom = source === "chesscom";
+  return {
+    source: chesscom ? "chesscom" : "lichess",
+    label: chesscom ? "Chess.com" : "Lichess",
+    fetchGames: chesscom ? gamesApi.chesscomGames : gamesApi.lichessGames,
+    reflectAccount: !chesscom,
+    get fallbackUser() { return chesscom ? chesscomUsername : myPlayerId; },
+    get count() { return chesscom ? chesscomCount : lichessCount; },
+    set count(value) {
+      if (chesscom) chesscomCount = value;
+      else lichessCount = value;
+    },
+    get currentUser() { return chesscom ? chesscomUser : lichessUser; },
+    set currentUser(value) {
+      if (chesscom) chesscomUser = value;
+      else lichessUser = value;
+    },
+  };
+}
+
 async function maybeAutoload() {
   if (chesscomSync && (await syncChesscom(true))) return true;
-  if (appUsername) await autoOpenLatest(appUsername);
-  else if (chesscomUsername) await autoOpenLatestChesscom(chesscomUsername);
+  if (appUsername) await autoOpenLatest("lichess", appUsername);
+  else if (chesscomUsername) await autoOpenLatest("chesscom", chesscomUsername);
   else showFirstRun("");
   return true;
 }
@@ -93,27 +114,6 @@ async function syncChesscom(quiet) {
   return true;
 }
 
-// Open the configured chess.com user's most recent game (autoload for chess.com-only users).
-async function autoOpenLatestChesscom(username) {
-  $("game-meta").textContent = `Loading ${username}'s most recent chess.com game…`;
-  const q = new URLSearchParams({ username, max: "1" });
-  let data;
-  try {
-    data = await gamesApi.chesscomGames(q);
-  } catch (_) {
-    $("game-meta").textContent = "Could not reach Chess.com — pick a game from the Games panel.";
-    return;
-  }
-  if (data.error || !(data.games || []).length) {
-    $("game-meta").textContent = data.error
-      ? data.error
-      : `No chess.com games found for ${username} — pick one from the Games panel.`;
-    return;
-  }
-  const g = data.games[0];
-  bridge.review.openGame(g.pgn, sideForUser(g, username));
-}
-
 // Persist both handles server-side (Lichess + chess.com) in one write and reflect them locally.
 // Used by the first-run prompt, which offers both fields at once.
 async function saveIdentity(lichess, chesscom) {
@@ -134,7 +134,7 @@ async function saveUsername(username) {
   } catch (_) {}
 }
 
-// Infer which side `who` played in a Lichess game (same rule as renderHistory's lichess branch).
+// Infer which side `who` played in a remote game.
 function sideForUser(game, who) {
   const w = (game.white || "").toLowerCase();
   const b = (game.black || "").toLowerCase();
@@ -142,20 +142,21 @@ function sideForUser(game, who) {
   return me && w === me ? "white" : me && b === me ? "black" : "auto";
 }
 
-async function autoOpenLatest(username) {
-  $("game-meta").textContent = `Loading ${username}'s most recent Lichess game…`;
+async function autoOpenLatest(source, username) {
+  const provider = remoteProvider(source);
+  $("game-meta").textContent = `Loading ${username}'s most recent ${provider.label} game…`;
   const q = new URLSearchParams({ username, max: "1" });
   let data;
   try {
-    data = await gamesApi.lichessGames(q);
+    data = await provider.fetchGames(q);
   } catch (_) {
-    $("game-meta").textContent = "Could not reach Lichess — pick a game from the Games panel.";
+    $("game-meta").textContent = `Could not reach ${provider.label} — pick a game from the Games panel.`;
     return;
   }
   if (data.error || !(data.games || []).length) {
     $("game-meta").textContent = data.error
       ? data.error
-      : `No Lichess games found for ${username} — pick one from the Games panel.`;
+      : `No ${provider.label} games found for ${username} — pick one from the Games panel.`;
     return;
   }
   const g = data.games[0];
@@ -171,7 +172,7 @@ function showFirstRun(defaultUsername) {
   $("firstrun-user").focus();
 }
 
-// --- history / lichess panel ---------------------------------------------
+// --- history / remote games panel ----------------------------------------
 // `resetPaging` collapses back to the first page + scrolls to top; callers pass it only on a
 // genuine identity change. The default preserves how far the user paged/scrolled, so refreshing
 // the list after opening/analyzing a game doesn't force them to press "Show more" and re-scroll
@@ -220,17 +221,18 @@ function renderMyGames() {
   box.scrollTop = prevScroll;
 }
 
-async function loadLichess(username) {
-  lichessUser = username;
-  $("history-status").textContent = "Fetching from Lichess…";
+async function loadRemoteGames(source, username) {
+  const provider = remoteProvider(source);
+  provider.currentUser = username;
+  $("history-status").textContent = `Fetching from ${provider.label}…`;
   const q = new URLSearchParams();
   if (username) q.set("username", username);
-  q.set("max", String(lichessCount));
+  q.set("max", String(provider.count));
   let data;
   try {
-    data = await gamesApi.lichessGames(q);
+    data = await provider.fetchGames(q);
   } catch (_) {
-    $("history-status").textContent = "Could not reach Lichess.";
+    $("history-status").textContent = `Could not reach ${provider.label}.`;
     return;
   }
   if (data.error) {
@@ -239,55 +241,27 @@ async function loadLichess(username) {
     return;
   }
   const games = data.games || [];
-  const who = (username || myPlayerId || "").toLowerCase();
-  reflectSetAsMe(who); // is the looked-up account already "me"?
-  renderHistory(games, "lichess", who);
+  const who = (username || provider.fallbackUser || "").toLowerCase();
+  if (provider.reflectAccount) reflectSetAsMe(who);
+  renderHistory(games, "remote", who);
   $("history-status").textContent = games.length ? "" : "No games found.";
   // While the server keeps returning a full page, there are probably more to fetch.
-  if (games.length >= lichessCount) {
+  if (games.length >= provider.count) {
     const li = document.createElement("li");
     li.className = "load-more";
     li.textContent = "Load more";
     li.addEventListener("click", () => {
-      lichessCount += LICHESS_PAGE;
-      loadLichess(lichessUser);
+      provider.count += REMOTE_PAGE;
+      loadRemoteGames(provider.source, provider.currentUser);
     });
     $("history-list").appendChild(li);
   }
 }
 
-async function loadChesscom(username) {
-  chesscomUser = username;
-  $("history-status").textContent = "Fetching from Chess.com…";
-  const q = new URLSearchParams();
-  if (username) q.set("username", username);
-  q.set("max", String(chesscomCount));
-  let data;
-  try {
-    data = await gamesApi.chesscomGames(q);
-  } catch (_) {
-    $("history-status").textContent = "Could not reach Chess.com.";
-    return;
-  }
-  if (data.error) {
-    $("history-status").textContent = data.error;
-    $("history-list").innerHTML = "";
-    return;
-  }
-  const games = data.games || [];
-  const who = (username || chesscomUsername || "").toLowerCase();
-  renderHistory(games, "lichess", who); // same remote-games rendering as the Lichess tab
-  $("history-status").textContent = games.length ? "" : "No games found.";
-  if (games.length >= chesscomCount) {
-    const li = document.createElement("li");
-    li.className = "load-more";
-    li.textContent = "Load more";
-    li.addEventListener("click", () => {
-      chesscomCount += LICHESS_PAGE;
-      loadChesscom(chesscomUser);
-    });
-    $("history-list").appendChild(li);
-  }
+function resetAndLoadRemoteGames(source) {
+  const provider = remoteProvider(source);
+  provider.count = REMOTE_PAGE;
+  loadRemoteGames(source, $(`${provider.source}-user`).value.trim());
 }
 
 const resultClass = (r) => (r === "win" ? "win" : r === "loss" ? "loss" : r === "draw" ? "draw" : "");
@@ -602,12 +576,8 @@ function setMode(mode) {
   activateTab(mode);
   if (mode === "normal") {
     loadHistory();
-  } else if (mode === "lichess") {
-    lichessCount = LICHESS_PAGE; // fresh search starts at the first page
-    loadLichess($("lichess-user").value.trim());
-  } else if (mode === "chesscom") {
-    chesscomCount = LICHESS_PAGE;
-    loadChesscom($("chesscom-user").value.trim());
+  } else if (mode === "lichess" || mode === "chesscom") {
+    resetAndLoadRemoteGames(mode);
   } else {
     // paste: nothing to fetch; just a hint until they submit.
     updatePasteHint();
@@ -849,14 +819,12 @@ function initPgnDrop() {
     });
     $("lichess-form").addEventListener("submit", (event) => {
       event.preventDefault();
-      lichessCount = LICHESS_PAGE;
-      loadLichess($("lichess-user").value.trim());
+      resetAndLoadRemoteGames("lichess");
     });
     $("chesscom-form").addEventListener("submit", (event) => {
       event.preventDefault();
       noteChesscomRefresh();
-      chesscomCount = LICHESS_PAGE;
-      loadChesscom($("chesscom-user").value.trim());
+      resetAndLoadRemoteGames("chesscom");
     });
     $("chesscom-sync").addEventListener("click", () => {
       if (!chesscomUsername) {
