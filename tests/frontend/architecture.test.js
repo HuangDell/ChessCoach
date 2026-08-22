@@ -35,6 +35,18 @@ test("main.js remains a composition-only entrypoint", async () => {
   assert.match(source, /createApp[(][)][.]mount[(][)]/);
 });
 
+test("review chat is outside the permanently hidden legacy review container", async () => {
+  const source = await readFile(path.join(frontend, "index.html"), "utf8");
+  const legacyStart = source.indexOf('<div class="legacy-review" hidden>');
+  const visibleChatBoundary = source.indexOf(
+    '</div>\n        <div class="chat-panel">',
+    legacyStart
+  );
+  assert.ok(legacyStart >= 0);
+  assert.ok(visibleChatBoundary > legacyStart);
+  assert.doesNotMatch(source, /chat-panel[\s\S]{0,300}Claude subscription/);
+});
+
 test("review controller delegates feature responsibilities", async () => {
   const directory = path.join(frontend, "modules", "review");
   const controller = await readFile(path.join(directory, "controller.js"), "utf8");
@@ -101,6 +113,10 @@ test("chat and settings endpoints have single API owners", async () => {
   );
   assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/chat"')).map(({ name }) => name), ["chat.js"]);
   assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/settings"')).map(({ name }) => name), ["settings.js"]);
+  assert.deepEqual(
+    sources.filter(({ source }) => source.includes('"/api/agent/sessions"')).map(({ name }) => name),
+    ["agent.js"]
+  );
   assert.deepEqual(
     sources.filter(({ source }) => source.includes('"/api/data/engine-cache/clear"')).map(({ name }) => name),
     ["system.js"]

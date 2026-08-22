@@ -22,6 +22,7 @@ export function createApp() {
   let settings;
   let system;
   let startupGeneration = 0;
+  let agentCapability = {};
 
   const supersedeStartup = (action) => (...args) => {
     startupGeneration += 1;
@@ -37,6 +38,7 @@ export function createApp() {
   };
 
   function featurePreferences(config = {}) {
+    if (config.agent) agentCapability = config.agent;
     return {
       review: {
         coachAiAuto: !!config.coach_ai_auto,
@@ -47,6 +49,7 @@ export function createApp() {
         explanationProvider: config.explanation_provider || "auto",
         explanationLanguage: config.explanation_language || "zh-CN",
         showThreats: config.show_threat_arrows === true,
+        agent: agentCapability,
       },
       puzzles: {
         personalizeHistory: config.personalize_history !== false,

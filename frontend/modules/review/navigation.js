@@ -234,7 +234,11 @@ export function createReviewNavigation({
     state.evalShapes = [];
     const moveNode = reviewedMoveNode();
     if (moveNode >= 0 && timeline[moveNode] && timeline[moveNode].move_san) {
-      setChatContext(timeline[moveNode].fen, timeline[moveNode].move_san);
+      setChatContext(
+        timeline[moveNode].fen,
+        timeline[moveNode].move_san,
+        timeline[moveNode].move_uci
+      );
     } else {
       setChatContext(timeline[state.cur] ? timeline[state.cur].fen : null);
     }
@@ -326,7 +330,7 @@ export function createReviewNavigation({
     if (!state.exploring && timeline[state.cur] && timeline[state.cur].move_uci === uci) {
       const move = board.tryMove({ from: orig, to: dest, promotion });
       if (!move) return renderBoard();
-      setChatContext(fenBefore, move.san || null);
+      setChatContext(fenBefore, move.san || null, uci);
       state.cur += 1;
       state.boardLastMove = [orig, dest];
       renderBoard();
@@ -347,7 +351,7 @@ export function createReviewNavigation({
     }
     const move = board.tryMove({ from: orig, to: dest, promotion });
     if (!move) return renderBoard();
-    setChatContext(fenBefore, move.san || null);
+    setChatContext(fenBefore, move.san || null, uci);
     state.boardLastMove = [orig, dest];
     state.evalShapes = [];
     state.exploreVerdict = "pending";

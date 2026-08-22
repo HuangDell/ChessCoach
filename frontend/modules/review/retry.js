@@ -13,6 +13,7 @@ export function createRetryController({
   gotoNode,
   renderBoard,
   updateStatus,
+  onPositionChange = () => {},
 }) {
   const chess = board.chess;
   let session = null;
@@ -37,6 +38,7 @@ export function createRetryController({
     session.shapes = keepHints ? (session.hintShapes || []).slice() : [];
     setContext({ boardLastMove: null });
     chess.load(session.fen);
+    onPositionChange(chess.fen());
     $("retry-feedback").hidden = true;
     $("retry-feedback").innerHTML = "";
     $("retry-prompt").textContent = "Choose a legal move directly on the board.";
@@ -129,6 +131,7 @@ export function createRetryController({
       renderBoard();
       return;
     }
+    onPositionChange(chess.fen());
     const activeSession = session;
     const requestGeneration = activeSession.solutionGen;
     activeSession.state = "evaluating";
@@ -154,6 +157,7 @@ export function createRetryController({
     } catch (error) {
       if (session !== activeSession || requestGeneration !== activeSession.solutionGen) return;
       chess.undo();
+      onPositionChange(chess.fen());
       setContext({ boardLastMove: null });
       activeSession.state = "awaiting_move";
       activeSession.locked = false;
@@ -183,6 +187,7 @@ export function createRetryController({
     activeSession.state = "showing_solution";
     activeSession.locked = true;
     chess.load(activeSession.fen);
+    onPositionChange(chess.fen());
     setContext({ boardLastMove: null });
     renderBoard();
     renderState();
@@ -195,6 +200,7 @@ export function createRetryController({
         promotion: String(uci).slice(4, 5) || undefined,
       });
       if (!move) break;
+      onPositionChange(chess.fen());
       setContext({ boardLastMove: [String(uci).slice(0, 2), String(uci).slice(2, 4)] });
       renderBoard();
     }
@@ -232,6 +238,7 @@ export function createRetryController({
     if (level === 4 && result.line) await playSolution(result.line);
     else {
       chess.load(activeSession.fen);
+      onPositionChange(chess.fen());
       setContext({ boardLastMove: null });
       renderBoard();
       renderState();

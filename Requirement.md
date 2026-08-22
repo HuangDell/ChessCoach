@@ -177,6 +177,7 @@ data/games/{game_id}/
 | [07-retry-and-training.md](docs/requirements/07-retry-and-training.md) | Retry、提示和个人错误训练题 |
 | [08-local-data-and-profile.md](docs/requirements/08-local-data-and-profile.md) | 本地历史、个人错误画像和存储策略 |
 | [09-delivery-roadmap.md](docs/requirements/09-delivery-roadmap.md) | 实施阶段、优先级和阶段完成标准 |
+| [agent-design.md](docs/requirements/agent-design.md) | Agent 共享设计、Phase 0-5 需求与阶段完成标准 |
 
 ## 9. 模块依赖顺序
 

@@ -7,7 +7,7 @@ the same singleton ReviewSession + engine pool the MCP tools use.
 from __future__ import annotations
 
 import chess
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -92,9 +92,17 @@ def get_doctor() -> dict:
 
 
 @router.get("/app-config")
-def get_app_config() -> dict:
+def get_app_config(request: Request) -> dict:
     """Frontend bootstrap: whether this is the standalone "app mode" launch (auto-load the user's
     most recent Lichess game on open) and the default username to use for that (CHESS_USERNAME)."""
+    service = getattr(request.app.state, "agent_service", None)
+    agent = service.capability() if service is not None else {
+        "enabled": config.AGENT_ENABLED,
+        "available": False,
+        "model": config.AGENT_MODEL,
+        "endpoint_type": "custom_responses" if config.AGENT_BASE_URL else "openai_responses",
+        "features": {"review_chat": bool(config.AGENT_REVIEW_CHAT_ENABLED)},
+    }
     return {
         "app_mode": config.APP_MODE,
         "default_username": config.USERNAME or "",  # canonical "me" (Lichess if set, else chess.com)
@@ -112,6 +120,7 @@ def get_app_config() -> dict:
         "explanation_provider": config.EXPLANATION_PROVIDER,
         "explanation_language": config.EXPLANATION_LANGUAGE,
         "show_threat_arrows": config.SHOW_THREAT_ARROWS,
+        "agent": agent,
         "current_version": config.APP_VERSION,  # for the update notice (cheap, local)
         # Is the in-browser AI served by a local LLM (works offline) vs. Claude over the network?
         # Drives the offline banner's wording (AI still works offline only with a local LLM).

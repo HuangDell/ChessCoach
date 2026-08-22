@@ -16,6 +16,8 @@ from server import config
 from server.core import app_liveness
 from server.core import engine
 from server.core import lifecycle
+from server.core.agent.service import ChessAgentService, create_default_agent_service
+from server.web.routes_agent import router as agent_router
 from server.web.routes_board import router as board_router
 from server.web.routes_chat import router as chat_router
 from server.web.routes_explanation import router as explanation_router
@@ -115,23 +117,36 @@ _FRONTEND_DIR = _resolve_frontend_dir()
 
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI):
+async def _lifespan(app: FastAPI):
     """Own process-wide resources for every supported ASGI launch path."""
     lifecycle.start_watchdog()
+    service = getattr(app.state, "agent_service", None)
+    owns_agent_service = service is None
     try:
+        if service is None:
+            service = create_default_agent_service()
+            app.state.agent_service = service
         yield
     finally:
-        lifecycle.stop_watchdog()
-        engine.shutdown()
+        try:
+            if owns_agent_service and service is not None:
+                try:
+                    await service.close()
+                finally:
+                    app.state.agent_service = None
+        finally:
+            lifecycle.stop_watchdog()
+            engine.shutdown()
 
 
-def create_app() -> FastAPI:
+def create_app(agent_service: ChessAgentService | None = None) -> FastAPI:
     app = FastAPI(
         title="Chess Review Coach",
         version=config.APP_VERSION,
         docs_url="/api/docs",
         lifespan=_lifespan,
     )
+    app.state.agent_service = agent_service
 
     # In app mode (double-click launcher), self-exit shortly after the browser tab is closed.
     # No-op for the MCP-driven board and tests (config.APP_MODE is off there).
@@ -159,6 +174,7 @@ def create_app() -> FastAPI:
         lifecycle.touch()
         return await call_next(request)
 
+    app.include_router(agent_router, prefix="/api")
     app.include_router(board_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     app.include_router(explanation_router, prefix="/api")

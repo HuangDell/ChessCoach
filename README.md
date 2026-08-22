@@ -74,6 +74,16 @@ fact category 筛选，多个合理候选着均可通过，不要求猜中 Engin
 | `CHESS_EXPLANATION_API_KEY` | 远程兼容 API 的 Bearer Key，仅后端进程读取 | 未设置 |
 | `CHESS_EXPLANATION_TIMEOUT` | 单局面模型调用超时秒数 | `600` |
 | `CHESS_EXPLANATION_LANGUAGE` | 结构化解释语言：`zh-CN` / `en` | `zh-CN` |
+| `CHESS_AGENT_ENABLED` | 是否启用可选 Agent API | `1` |
+| `CHESS_AGENT_REVIEW_CHAT` | 是否让复盘 chat 使用 Agent；关闭时保留旧 chat | `0` |
+| `CHESS_AGENT_MODEL` | Agent SDK 使用的模型，必须显式配置 | 未设置 |
+| `CHESS_AGENT_BASE_URL` | 可选的 Responses-compatible API base URL | OpenAI 官方 API |
+| `CHESS_AGENT_API_KEY` | 自定义 Agent endpoint credential，仅后端读取 | 未设置 |
+| `OPENAI_API_KEY` | OpenAI 官方 Agent API credential，仅后端读取 | 未设置 |
+| `CHESS_AGENT_MAX_TURNS` | 单次 Agent run 最大 turn | `4` |
+| `CHESS_AGENT_MAX_TOOL_CALLS` | 单次 Agent run 最大工具调用 | `6` |
+| `CHESS_AGENT_MAX_ENGINE_CALLS` | 单次 Agent run 最大 Engine 工具调用 | `2` |
+| `CHESS_AGENT_TIMEOUT` | 单次 Agent run wall-clock timeout 秒数 | `120` |
 
 设置面板会把个人配置保存到数据目录下的 `settings.json`。代码目录不保存个人棋局。
 
@@ -94,6 +104,11 @@ GET  /api/training/attempts
 GET  /api/profile?days=7|30|0
 DELETE /api/games/{game_id}
 POST /api/data/engine-cache/clear
+POST /api/agent/sessions
+GET  /api/agent/sessions/{session_id}
+POST /api/agent/sessions/{session_id}/context
+POST /api/agent/sessions/{session_id}/messages
+DELETE /api/agent/sessions/{session_id}
 ```
 
 `POST .../explanations` 默认逐个生成所有关键局面，也可传
@@ -138,6 +153,20 @@ Web 核心不依赖 MCP。只有需要保留上游 MCP 入口时才安装额外�
 uv sync --extra mcp
 uv run python -m server.mcp_server
 ```
+
+Grounded single Agent 也作为独立 optional extra 安装：
+
+```bash
+uv sync --extra agent
+CHESS_AGENT_MODEL=your-model OPENAI_API_KEY=your-key \
+  .venv/bin/python -m server.web.runner
+```
+
+默认只开放 Agent session API，不切换复盘 chat。设置 `CHESS_AGENT_REVIEW_CHAT=1` 后，前端仅在
+后端报告 SDK、模型和 credential 均可用时使用 Agent；否则继续走旧 chat。Agent checkpoint、
+SDK conversation 和脱敏 run summary 分别保存在 `<DATA_DIR>/agent/sessions/`、
+`conversations.sqlite3` 和 `runs.jsonl`。Agent 不读取 CLI 登录态，也不会把 endpoint 或 key
+返回浏览器。
 
 AI 教练同样不是 Web 启动前提；没有模型时，Stockfish 复盘、棋盘、历史和训练功能仍可
 工作。解释业务层通过统一 Provider 接口调用本地/远程 OpenAI-compatible API 或可选的

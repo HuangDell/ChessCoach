@@ -7,6 +7,10 @@ and get the same dict back.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+from dataclasses import dataclass
 from typing import Optional
 
 import chess
@@ -25,6 +29,134 @@ _PIECE_VALUES = {
     chess.ROOK: 5,
     chess.QUEEN: 9,
 }
+
+
+@dataclass(frozen=True)
+class StructuredEngineLine:
+    """One raw Engine line without collapsing mate scores into display centipawns."""
+
+    cp: int | None
+    mate: int | None
+    pv_uci: tuple[str, ...]
+    win_percent: float
+
+
+@dataclass(frozen=True)
+class StructuredAnalysis:
+    """Cache-aware, framework-neutral result for bounded domain adapters."""
+
+    fen: str
+    depth: int
+    multipv: int
+    lines: tuple[StructuredEngineLine, ...]
+    engine_name: str
+    engine_version: str
+    cache_key: str
+    cache_hit: bool
+    engine_call_count: int
+
+
+def _engine_identity(raw_name: str) -> tuple[str, str]:
+    """Keep the complete UCI name as version provenance without inventing a version."""
+    cleaned = raw_name.strip() or "Stockfish"
+    if cleaned.casefold().startswith("stockfish"):
+        return "Stockfish", cleaned
+    return cleaned, cleaned
+
+
+def _engine_cache_metadata(
+    fen: str,
+    *,
+    depth: int,
+    multipv: int,
+    engine_info: dict,
+) -> tuple[str, bool]:
+    identity = {
+        "schema_version": 1,
+        "fen": fen,
+        "engine": str(engine_info.get("name") or "unknown"),
+        "options": dict(engine_info.get("options") or {}),
+        "depth": depth,
+        "multipv": multipv,
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    path = os.path.join(config.DATA_DIR, "engine-cache", f"{digest}.json")
+    return digest, bool(config.ENGINE_CACHE_ENABLED and os.path.isfile(path))
+
+
+def structured_analysis(
+    fen: str,
+    *,
+    depth: int = config.DEFAULT_DEPTH,
+    multipv: int = 1,
+) -> StructuredAnalysis:
+    """Return raw cp/mate lines while reusing the process-wide Engine cache.
+
+    ``engine_call_count`` counts UCI analysis requests that were not already present in the
+    persistent position cache. The Engine's in-memory cache is intentionally private; with disk
+    caching disabled a same-process memory hit is conservatively reported as an Engine call.
+    """
+    board = chess.Board(fen)
+    multipv = max(1, int(multipv))
+    depth = max(1, int(depth))
+    if board.is_game_over(claim_draw=True):
+        version = str(getattr(chess, "__version__", "unknown"))
+        terminal_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "fen": fen,
+                    "engine": "python-chess",
+                    "version": version,
+                    "depth": depth,
+                    "multipv": multipv,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return StructuredAnalysis(
+            fen=fen,
+            depth=depth,
+            multipv=multipv,
+            lines=(),
+            engine_name="python-chess",
+            engine_version=version,
+            cache_key=terminal_key,
+            cache_hit=False,
+            engine_call_count=0,
+        )
+    info = engine.info()
+    cache_key, cache_hit = _engine_cache_metadata(
+        fen,
+        depth=depth,
+        multipv=multipv,
+        engine_info=info,
+    )
+    raw_name = str(info.get("name") or "Stockfish")
+    engine_name, engine_version = _engine_identity(raw_name)
+
+    result = engine.analyse(fen, depth=depth, multipv=multipv)
+    return StructuredAnalysis(
+        fen=fen,
+        depth=depth,
+        multipv=multipv,
+        lines=tuple(
+            StructuredEngineLine(
+                cp=line.cp,
+                mate=line.mate,
+                pv_uci=tuple(line.pv_uci),
+                win_percent=line.win_percent,
+            )
+            for line in result.lines
+        ),
+        engine_name=engine_name,
+        engine_version=engine_version,
+        cache_key=cache_key,
+        cache_hit=cache_hit,
+        engine_call_count=0 if cache_hit else 1,
+    )
 
 
 def material_balance(board: chess.Board, color: chess.Color) -> int:

@@ -504,6 +504,20 @@ EXPLANATION_API_KEY: str = os.environ.get("CHESS_EXPLANATION_API_KEY", "").strip
 EXPLANATION_TIMEOUT: int = max(1, int(os.environ.get("CHESS_EXPLANATION_TIMEOUT", "600")))
 EXPLANATION_LANGUAGE: str = os.environ.get("CHESS_EXPLANATION_LANGUAGE", "zh-CN").strip() or "zh-CN"
 
+# Optional API-only Chess Coach Agent. This configuration is deliberately separate from the
+# bounded explanation provider and the legacy CLI-backed chat: no setting, CLI login, or desktop
+# subscription is used as an implicit Agent credential or transport fallback.
+AGENT_ENABLED: bool = os.environ.get("CHESS_AGENT_ENABLED", "1") != "0"
+AGENT_REVIEW_CHAT_ENABLED: bool = os.environ.get("CHESS_AGENT_REVIEW_CHAT", "0") == "1"
+AGENT_MODEL: str = os.environ.get("CHESS_AGENT_MODEL", "").strip()
+AGENT_BASE_URL: str = os.environ.get("CHESS_AGENT_BASE_URL", "").strip().rstrip("/")
+AGENT_API_KEY: str = os.environ.get("CHESS_AGENT_API_KEY", "").strip()
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "").strip()
+AGENT_MAX_TURNS: int = max(1, _parse_int("CHESS_AGENT_MAX_TURNS", 4))
+AGENT_MAX_TOOL_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_TOOL_CALLS", 6))
+AGENT_MAX_ENGINE_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_ENGINE_CALLS", 2))
+AGENT_TIMEOUT: int = max(1, _parse_int("CHESS_AGENT_TIMEOUT", 120))
+
 # --- Puzzle mode (server.core.puzzles / puzzle_rating) ------------------------------------------
 # A tactical-trainer built on the same substrate (board, engine, claude_bridge, DATA_DIR). Puzzles
 # ship as small compressed JSONL: a committed offline baseline (server/data/puzzles/baseline.jsonl.gz,

@@ -587,6 +587,20 @@ class SessionAndApiContractTests(unittest.TestCase):
         )
         self.assertEqual(response.session.generation, 5)
 
+    def test_agent_response_schema_has_no_open_object_targets(self) -> None:
+        schema = AgentResponse.model_json_schema()
+
+        def visit(value: object) -> None:
+            if isinstance(value, dict):
+                self.assertIsNot(value.get("additionalProperties"), True)
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(schema)
+
 
 class DocumentedDtoContractTests(unittest.TestCase):
     def test_learning_and_training_dtos_are_instantiable(self) -> None:

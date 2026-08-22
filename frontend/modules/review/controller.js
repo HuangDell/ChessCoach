@@ -1,3 +1,4 @@
+import { agentApi } from "../api/agent.js";
 import { reviewApi } from "../api/review.js";
 import { chatApi } from "../api/chat.js";
 import { byId, clamp } from "../core/dom.js";
@@ -59,7 +60,40 @@ let showThreatsByDefault = false;
       chatHistory: chatApi.history,
       chat: chatApi.send,
     },
+    agentApi,
     getBoardFen: () => chess.fen(),
+    getAgentContext: () => {
+      const onMainline = currentGameId && navigation && !navigation.exploring &&
+        !(retry && retry.session) && !analyzing;
+      const ownedGameId = onMainline ? currentGameId : null;
+      const activePly = onMainline ? navigation.cur : null;
+      const recent = onMainline
+        ? timeline.slice(Math.max(0, activePly - 8), activePly).filter((node) => node.move_uci)
+        : [];
+      const fen = chess.fen();
+      const critical = onMainline ? activeCritical() : null;
+      return {
+        game_id: ownedGameId,
+        review_side: ownedGameId ? player : null,
+        active_ply: activePly,
+        active_critical_id: critical ? critical.critical_id : null,
+        activity: onMainline ? "game_review" : "position_analysis",
+        position: {
+          fen,
+          recent_moves_uci: recent.map((node) => node.move_uci),
+          recent_moves_san: recent.map((node) => node.move_san),
+          reference: onMainline
+            ? {
+                game_id: ownedGameId,
+                review_side: player,
+                critical_id: critical ? critical.critical_id : null,
+                ply: critical ? Number(critical.ply) : activePly,
+                fen,
+              }
+            : { fen },
+        },
+      };
+    },
     usePersonalHistory: () => personalizeHistory,
   });
   const coach = createReviewCoach({ $, api: reviewApi, hasTimeline: () => timeline.length > 0 });
@@ -139,6 +173,7 @@ let showThreatsByDefault = false;
     gotoNode,
     renderBoard: navigation.renderBoard,
     updateStatus: navigation.updateStatus,
+    onPositionChange: (fen) => chat.setMoveContext(fen),
   });
   variation = createReviewVariation({
     $,
@@ -147,6 +182,7 @@ let showThreatsByDefault = false;
     setContext: navigation.patch,
     renderBoard: navigation.renderBoard,
     updateStatus: navigation.updateStatus,
+    onPositionChange: (fen) => chat.setMoveContext(fen),
   });
   const workspaceView = createWorkspaceView({
     $,
@@ -584,6 +620,7 @@ function onAnalysisError(msg) {
 
   function setPreferences(preferences = {}) {
     coach.setAutoGenerate(preferences.coachAiAuto);
+    chat.setAgentCapability(preferences.agent);
     personalizeHistory = preferences.personalizeHistory !== false;
     defaultReviewSide = preferences.defaultReviewSide || "auto";
     boardOrientationPreference = preferences.boardOrientation || "review";

@@ -1,7 +1,8 @@
 # Agent baseline evals
 
-`agent_baseline_v1.json` is the fixed Phase 0 evaluation set described in
-`docs/requirements/agent-design.md` section 24.2. It is intentionally independent
+`agent_baseline_v1.json` is the fixed evaluation set described in the
+[Phase 0 requirements](../../docs/requirements/agent/phase-0-contracts-and-baseline.md).
+It is intentionally independent
 of an Agent SDK, model, Engine process, network access, and user data.
 
 Each case names shared fixtures and records expectations that the deterministic

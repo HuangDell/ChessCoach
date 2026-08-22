@@ -393,6 +393,7 @@ class AgentSessionState(ContractModel):
     active_critical_id: str | None = None
     activity: AgentActivity = "conversation"
     focus_ref: str | None = None
+    position: PositionContext | None = None
     discussed_positions: list[PositionReference] = Field(default_factory=list)
     conversation_summary: str = ""
     generation: int = Field(default=0, ge=0)
@@ -486,6 +487,32 @@ class ModelVisibleContext(ContractModel):
     _valid_evidence_refs = field_validator("allowed_evidence_refs")(_clean_unique_strings)
 
 
+class ActionTarget(ContractModel):
+    """Closed structured-output target shared by the Phase 1 action kinds."""
+
+    game_id: str | None = None
+    review_side: ReviewSide | None = None
+    critical_id: str | None = None
+    ply: int | None = Field(default=None, ge=0)
+    fen: str | None = None
+    move_uci: str | None = None
+
+    @field_validator("game_id", "critical_id")
+    @classmethod
+    def _non_empty_optional_identifier(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="action target identifier")
+
+    @field_validator("fen")
+    @classmethod
+    def _valid_optional_fen(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_fen(value)
+
+    @field_validator("move_uci")
+    @classmethod
+    def _valid_optional_uci(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_uci(value)
+
+
 class SuggestedAction(ContractModel):
     kind: Literal[
         "open_position",
@@ -495,7 +522,7 @@ class SuggestedAction(ContractModel):
         "review_weakness",
     ]
     label: str = Field(min_length=1)
-    target: dict[str, Any]
+    target: ActionTarget
 
 
 class AgentResponse(ContractModel):
@@ -535,10 +562,13 @@ class ToolCallRecord(ContractModel):
 
 class AgentRunRequest(ContractModel):
     session_id: str = Field(min_length=1)
+    expected_generation: int = Field(default=0, ge=0)
     message: str = Field(min_length=1)
     model_context: ModelVisibleContext
     allowed_tools: list[AgentToolName]
     max_turns: int = Field(gt=0)
+    max_total_tool_calls: int = Field(default=6, ge=0)
+    max_engine_tool_calls: int = Field(default=2, ge=0)
     timeout_seconds: int = Field(gt=0)
 
     _valid_allowed_tools = field_validator("allowed_tools")(_clean_unique_strings)
@@ -655,7 +685,7 @@ class GetReviewContextResult(ContractModel):
 
 class AnalyzePositionInput(ContractModel):
     fen: str
-    purpose: str = Field(min_length=1)
+    purpose: Literal["compare_candidates", "find_best_move", "explain_position"]
 
     _valid_fen = field_validator("fen")(_validate_fen)
 

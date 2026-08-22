@@ -6,6 +6,7 @@ import { puzzleApi } from "../../frontend/modules/api/puzzles.js";
 import { createGamesLibrary } from "../../frontend/modules/games/library.js";
 import { createPuzzleController } from "../../frontend/modules/puzzles/controller.js";
 import { createPuzzleStorm } from "../../frontend/modules/puzzles/storm.js";
+import { createReviewVariation } from "../../frontend/modules/review/variation.js";
 
 class FakeClassList {
   values = new Set();
@@ -75,6 +76,43 @@ function memoryStorage() {
     setItem: (key, value) => values.set(key, String(value)),
   };
 }
+
+test("variation playback reports every rendered board position", () => {
+  const originalDocument = globalThis.document;
+  const { $ } = elementLookup();
+  globalThis.document = { querySelectorAll: () => [] };
+  let currentFen = "";
+  const positions = [];
+  const variation = createReviewVariation({
+    $,
+    board: {
+      chess: {
+        load: (fen) => { currentFen = fen; },
+        fen: () => currentFen,
+      },
+      createGame: (fen) => ({
+        fen: () => fen,
+        move: () => ({ san: "e4" }),
+      }),
+    },
+    getActiveCritical: () => ({
+      ply: 1,
+      fen_before: "before-fen",
+      best_line: { uci: ["e2e4"] },
+    }),
+    setContext() {},
+    renderBoard() {},
+    updateStatus() {},
+    onPositionChange: (fen) => positions.push(fen),
+  });
+  try {
+    variation.start("best", 1, false);
+    assert.deepEqual(positions, ["before-fen"]);
+  } finally {
+    variation.stop();
+    globalThis.document = originalDocument;
+  }
+});
 
 test("deleting a local game redraws the cached library page", async () => {
   const originalDocument = globalThis.document;

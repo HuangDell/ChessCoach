@@ -7,6 +7,7 @@ export function createReviewVariation({
   setContext,
   renderBoard,
   updateStatus,
+  onPositionChange = () => {},
 }) {
   const chess = board.chess;
   let current = null;
@@ -34,6 +35,7 @@ export function createReviewVariation({
     const step = clamp(current.index, 0, current.fens.length - 1);
     current.index = step;
     chess.load(current.fens[step]);
+    onPositionChange(chess.fen());
     const uci = step > 0 ? current.ucis[step - 1] : null;
     setContext({ boardLastMove: uci ? [uci.slice(0, 2), uci.slice(2, 4)] : null });
     renderBoard();
