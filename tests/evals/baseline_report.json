@@ -1,0 +1,51 @@
+{
+  "case_count": 26,
+  "dataset_id": "agent-baseline-v1",
+  "metrics": {
+    "correct_tool_selection_rate": {
+      "applicable": 26,
+      "passed": 26,
+      "value": 1.0
+    },
+    "false_personalization_rate": {
+      "applicable": 26,
+      "false": 0,
+      "value": 0.0
+    },
+    "grounded_response_rate": {
+      "applicable": 25,
+      "passed": 25,
+      "value": 1.0
+    },
+    "illegal_move_claim_rate": {
+      "claims": 9,
+      "incorrect": 0,
+      "value": 0.0
+    },
+    "latency_ms": {
+      "max": 795,
+      "mean": 142.115,
+      "median": 12.5,
+      "p95": 520
+    },
+    "task_completion_rate": {
+      "applicable": 26,
+      "passed": 26,
+      "value": 1.0
+    },
+    "tool_calls_per_run": {
+      "runs": 26,
+      "tool_calls": 20,
+      "value": 0.769231
+    },
+    "unnecessary_engine_call_rate": {
+      "engine_calls": 8,
+      "unnecessary": 0,
+      "value": 0.0
+    }
+  },
+  "observed_runs_id": "agent-baseline-v1-deterministic-fakes",
+  "schema_version": 1,
+  "scorer_version": 1,
+  "source": "deterministic_phase0_fake"
+}
