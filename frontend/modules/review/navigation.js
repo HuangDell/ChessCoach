@@ -30,6 +30,8 @@ export function createReviewNavigation({
     currentPrompt: "",
     exploring: false,
     exploreBaseNode: 0,
+    exploreBaseFen: null,
+    exploreGeneration: 0,
     exploreVerdict: null,
     bestArrowOn: false,
     bestArrows: [],
@@ -229,7 +231,9 @@ export function createReviewNavigation({
     const timeline = getTimeline();
     if (!timeline.length) return;
     stopVariation();
+    state.exploreGeneration += 1;
     state.exploring = false;
+    state.exploreBaseFen = null;
     state.cur = clamp(index, 0, timeline.length - 1);
     state.evalShapes = [];
     const moveNode = reviewedMoveNode();
@@ -242,7 +246,12 @@ export function createReviewNavigation({
     } else {
       setChatContext(timeline[state.cur] ? timeline[state.cur].fen : null);
     }
-    const lastUci = moveNode >= 0 && timeline[moveNode] ? timeline[moveNode].move_uci : null;
+    // The reviewed move can be the outgoing move at a key position, while the board still shows
+    // the position before it. Last-move highlighting must follow the FEN, not that review focus.
+    const incomingNode = state.cur - 1;
+    const lastUci = incomingNode >= 0 && timeline[incomingNode]
+      ? timeline[incomingNode].move_uci
+      : null;
     state.boardLastMove = lastUci ? [lastUci.slice(0, 2), lastUci.slice(2, 4)] : null;
     chess.load(timeline[state.cur].fen);
     renderBoard();
@@ -295,16 +304,42 @@ export function createReviewNavigation({
   }
 
   function undoOne() {
-    chess.undo();
-    if (samePosition(chess.fen(), getTimeline()[state.exploreBaseNode].fen)) {
-      gotoNode(state.exploreBaseNode);
+    state.exploreGeneration += 1;
+    const undone = chess.undo();
+    if (!undone) return;
+    const timeline = getTimeline();
+    const baseNode = timeline[state.exploreBaseNode];
+    const baseFen = state.exploreBaseFen || (baseNode && baseNode.fen);
+    if (baseFen && samePosition(chess.fen(), baseFen)) {
+      if (baseNode) {
+        gotoNode(state.exploreBaseNode);
+        return;
+      }
+      state.exploring = false;
+      state.exploreBaseFen = null;
+      state.exploreVerdict = null;
+      state.evalShapes = [];
+      state.boardLastMove = null;
+      setChatContext(chess.fen());
+      renderBoard();
+      renderVerdict(null);
+      updateStatus();
+      onNavUpdate();
+      onGraphRender();
+      onNotationHighlight();
+      onReviewCursorSync();
+      refreshEngineArrows();
       return;
     }
+    const history = chess.history({ verbose: true });
+    const previous = history.length ? history[history.length - 1] : null;
+    state.boardLastMove = previous ? [previous.from, previous.to] : null;
     setChatContext(chess.fen());
     state.exploreVerdict = null;
     renderBoard();
     renderVerdict(null);
     updateStatus();
+    onNavUpdate();
     onGraphRender();
     syncExplore();
     refreshEngineArrows();
@@ -348,6 +383,7 @@ export function createReviewNavigation({
     if (!state.exploring) {
       state.exploring = true;
       state.exploreBaseNode = state.cur;
+      state.exploreBaseFen = fenBefore;
     }
     const move = board.tryMove({ from: orig, to: dest, promotion });
     if (!move) return renderBoard();
@@ -355,8 +391,10 @@ export function createReviewNavigation({
     state.boardLastMove = [orig, dest];
     state.evalShapes = [];
     state.exploreVerdict = "pending";
+    const requestGeneration = ++state.exploreGeneration;
     renderBoard();
     updateStatus();
+    onNavUpdate();
     onGraphRender();
     refreshEngineArrows();
 
@@ -365,6 +403,7 @@ export function createReviewNavigation({
     try {
       result = await api.evaluate({ fen: fenBefore, move: uci });
     } catch (_) {
+      if (requestGeneration !== state.exploreGeneration || !state.exploring) return;
       state.exploreVerdict = { error: true };
       updateStatus();
       renderVerdict({
@@ -372,6 +411,7 @@ export function createReviewNavigation({
       });
       return;
     }
+    if (requestGeneration !== state.exploreGeneration || !state.exploring) return;
     state.exploreVerdict = result.move || (result.error ? { error: true } : null);
     updateStatus();
     renderVerdict(result);
@@ -383,6 +423,7 @@ export function createReviewNavigation({
   }
 
   function resetVisualState() {
+    state.exploreGeneration += 1;
     patch({
       currentMistake: -1,
       anchorNode: 0,
@@ -391,6 +432,7 @@ export function createReviewNavigation({
       bestArrows: [],
       threatArrows: [],
       boardLastMove: null,
+      exploreBaseFen: null,
     });
   }
 

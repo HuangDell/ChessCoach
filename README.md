@@ -33,6 +33,8 @@ uv run python -m server.web.runner
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m server.web.runner
+CHESS_WEB_OPEN=0 CHESS_WEB_PORT=8875 .venv/bin/python -m server.web.runner
+CHESSCOACH_DATA_DIR=/home/msn/ChessCoach/.chess-review CHESS_WEB_OPEN=0 CHESS_WEB_PORT=8875 .venv/bin/python -m server.web.runner
 ```
 
 浏览器访问 <http://127.0.0.1:8765>。打开 Games 面板的 `Import`，可粘贴或上传
