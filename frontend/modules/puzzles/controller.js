@@ -19,7 +19,11 @@ export function createPuzzleController({ board, lifecycle }) {
   let preferences = {};
   let storm;
 
-  const boardView = createPuzzleBoardView({ $, board });
+  const boardView = createPuzzleBoardView({
+    $,
+    board,
+    onPositionChange: (fen) => lifecycle.positionChanged?.(fen),
+  });
   const progress = createPuzzleProgress({ $, getConfig: () => config });
   let trainer;
   const chat = createPuzzleChat({

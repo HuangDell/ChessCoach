@@ -101,7 +101,7 @@ def get_app_config(request: Request) -> dict:
         "available": False,
         "model": config.AGENT_MODEL,
         "endpoint_type": "custom_responses" if config.AGENT_BASE_URL else "openai_responses",
-        "features": {"review_chat": bool(config.AGENT_REVIEW_CHAT_ENABLED)},
+        "features": {"review_chat": True},
     }
     return {
         "app_mode": config.APP_MODE,

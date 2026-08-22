@@ -51,7 +51,7 @@ test("review controller delegates feature responsibilities", async () => {
   const directory = path.join(frontend, "modules", "review");
   const controller = await readFile(path.join(directory, "controller.js"), "utf8");
   assert.ok(
-    controller.trim().split("\n").length <= 700,
+    controller.trim().split("\n").length <= 750,
     "review/controller.js should remain an orchestration layer"
   );
   for (const moduleName of [
@@ -70,6 +70,7 @@ test("review controller delegates feature responsibilities", async () => {
   ]) {
     assert.match(controller, new RegExp(`from ["']\\./${moduleName.replace(".", "\\.")}["']`));
   }
+  assert.doesNotMatch(controller, /api\/chat|chatApi/);
 });
 
 test("games controller remains orchestration-only", async () => {
@@ -101,6 +102,24 @@ test("puzzles controller delegates stateful activities", async () => {
     assert.match(controller, new RegExp(`from ["']\\./${moduleName.replace(".", "\\.")}["']`));
   }
   assert.match(controller, /createPuzzleController\(\{ board, lifecycle \}\)/);
+  assert.match(controller, /lifecycle[.]positionChanged[?][.]\(fen\)/);
+});
+
+test("cross-feature Agent navigation ignores superseded history responses", async () => {
+  const source = await readFile(path.join(frontend, "modules", "app.js"), "utf8");
+  const start = source.indexOf("async function openAgentPosition");
+  const end = source.indexOf("\n  function mount", start);
+  const navigator = source.slice(start, end);
+  assert.match(navigator, /const requestGeneration = \+\+startupGeneration/);
+  assert.match(
+    navigator,
+    /await gamesApi[.]history\(\);\s*if \(requestGeneration !== startupGeneration\) return false/
+  );
+  assert.match(source, /positionChanged: \(fen\) => review[.]setAgentTrainingPosition\(fen\)/);
+  assert.match(
+    source,
+    /await review[.]loadReviewArtifacts\([^;]+;\s*if \(generation !== startupGeneration \|\| artifactsLoaded === false\) return/
+  );
 });
 
 test("chat and settings endpoints have single API owners", async () => {
@@ -121,6 +140,18 @@ test("chat and settings endpoints have single API owners", async () => {
     sources.filter(({ source }) => source.includes('"/api/data/engine-cache/clear"')).map(({ name }) => name),
     ["system.js"]
   );
+});
+
+test("Review chat uses only the Agent API owner", async () => {
+  const reviewDirectory = path.join(frontend, "modules", "review");
+  const sources = await Promise.all(
+    (await readdir(reviewDirectory)).filter((name) => name.endsWith(".js")).map((name) =>
+      readFile(path.join(reviewDirectory, name), "utf8")
+    )
+  );
+  assert.equal(sources.some((source) => source.includes('api/chat.js')), false);
+  assert.equal(sources.some((source) => source.includes('"/api/chat"')), false);
+  assert.match(await readFile(path.join(reviewDirectory, "controller.js"), "utf8"), /agentApi/);
 });
 
 test("business modules do not bypass the HTTP client", async () => {

@@ -18,6 +18,25 @@ export function createRetryController({
   const chess = board.chess;
   let session = null;
 
+  function positionDetails() {
+    if (!session) return { mode: "retry" };
+    const history = chess.history({ verbose: true });
+    return {
+      mode: "retry",
+      basePly: Math.max(0, Number(getActiveCritical()?.ply || 1) - 1),
+      baseFen: session.fen,
+      criticalId: session.criticalId,
+      explorationMovesUci: history.map((move) =>
+        `${move.from}${move.to}${move.promotion || ""}`
+      ),
+      explorationMovesSan: history.map((move) => move.san),
+    };
+  }
+
+  function reportPosition() {
+    onPositionChange(chess.fen(), positionDetails());
+  }
+
   function renderState() {
     if (!session) return;
     $("retry-panel").hidden = false;
@@ -38,7 +57,7 @@ export function createRetryController({
     session.shapes = keepHints ? (session.hintShapes || []).slice() : [];
     setContext({ boardLastMove: null });
     chess.load(session.fen);
-    onPositionChange(chess.fen());
+    reportPosition();
     $("retry-feedback").hidden = true;
     $("retry-feedback").innerHTML = "";
     $("retry-prompt").textContent = "Choose a legal move directly on the board.";
@@ -131,7 +150,7 @@ export function createRetryController({
       renderBoard();
       return;
     }
-    onPositionChange(chess.fen());
+    reportPosition();
     const activeSession = session;
     const requestGeneration = activeSession.solutionGen;
     activeSession.state = "evaluating";
@@ -157,7 +176,7 @@ export function createRetryController({
     } catch (error) {
       if (session !== activeSession || requestGeneration !== activeSession.solutionGen) return;
       chess.undo();
-      onPositionChange(chess.fen());
+      reportPosition();
       setContext({ boardLastMove: null });
       activeSession.state = "awaiting_move";
       activeSession.locked = false;
@@ -187,7 +206,7 @@ export function createRetryController({
     activeSession.state = "showing_solution";
     activeSession.locked = true;
     chess.load(activeSession.fen);
-    onPositionChange(chess.fen());
+    reportPosition();
     setContext({ boardLastMove: null });
     renderBoard();
     renderState();
@@ -200,7 +219,7 @@ export function createRetryController({
         promotion: String(uci).slice(4, 5) || undefined,
       });
       if (!move) break;
-      onPositionChange(chess.fen());
+      reportPosition();
       setContext({ boardLastMove: [String(uci).slice(0, 2), String(uci).slice(2, 4)] });
       renderBoard();
     }
@@ -238,7 +257,7 @@ export function createRetryController({
     if (level === 4 && result.line) await playSolution(result.line);
     else {
       chess.load(activeSession.fen);
-      onPositionChange(chess.fen());
+      reportPosition();
       setContext({ boardLastMove: null });
       renderBoard();
       renderState();

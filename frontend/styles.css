@@ -1013,6 +1013,31 @@ body.retry-mode .board-col { max-height: none; overflow: visible; }
 }
 .chat-msg.err { background: #3a1d1d; border-left: 3px solid var(--blunder); }
 .chat-msg.pending { color: var(--muted); font-style: italic; }
+.chat-msg.summary { color: var(--muted); border-style: dashed; }
+.chat-response-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+.chat-response-action {
+  border: 1px solid #535d42;
+  border-radius: 4px;
+  background: #252a20;
+  color: var(--text);
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.chat-response-action:hover { border-color: var(--accent); }
+.chat-response-action:disabled { opacity: 0.5; cursor: default; }
+.chat-tool-summary {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.chat-tool-summary summary { cursor: pointer; }
+.chat-tool-summary div { padding-top: 4px; }
 
 /* rendered markdown inside bot answers */
 .chat-msg.bot p { margin: 0 0 8px; }

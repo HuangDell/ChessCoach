@@ -227,6 +227,21 @@ export function createReviewNavigation({
     engineSearch.refresh();
   }
 
+  function explorationDetails() {
+    const history = chess.history({ verbose: true });
+    const timeline = getTimeline();
+    const baseNode = timeline[state.exploreBaseNode];
+    return {
+      mode: "exploration",
+      basePly: state.exploreBaseNode,
+      baseFen: state.exploreBaseFen || (baseNode && baseNode.fen) || chess.fen(),
+      explorationMovesUci: history.map((move) =>
+        `${move.from}${move.to}${move.promotion || ""}`
+      ),
+      explorationMovesSan: history.map((move) => move.san),
+    };
+  }
+
   function gotoNode(index) {
     const timeline = getTimeline();
     if (!timeline.length) return;
@@ -237,15 +252,9 @@ export function createReviewNavigation({
     state.cur = clamp(index, 0, timeline.length - 1);
     state.evalShapes = [];
     const moveNode = reviewedMoveNode();
-    if (moveNode >= 0 && timeline[moveNode] && timeline[moveNode].move_san) {
-      setChatContext(
-        timeline[moveNode].fen,
-        timeline[moveNode].move_san,
-        timeline[moveNode].move_uci
-      );
-    } else {
-      setChatContext(timeline[state.cur] ? timeline[state.cur].fen : null);
-    }
+    const selectedNode = moveNode >= 0 && timeline[moveNode] && timeline[moveNode].move_san
+      ? timeline[moveNode]
+      : null;
     // The reviewed move can be the outgoing move at a key position, while the board still shows
     // the position before it. Last-move highlighting must follow the FEN, not that review focus.
     const incomingNode = state.cur - 1;
@@ -262,6 +271,16 @@ export function createReviewNavigation({
     onGraphRender();
     onNotationHighlight();
     onReviewCursorSync();
+    setChatContext(
+      chess.fen(),
+      selectedNode ? selectedNode.move_san : null,
+      selectedNode ? selectedNode.move_uci : null,
+      {
+        mode: "mainline",
+        ply: state.cur,
+        selectedFen: selectedNode ? selectedNode.fen : null,
+      }
+    );
     refreshEngineArrows();
   }
 
@@ -320,7 +339,7 @@ export function createReviewNavigation({
       state.exploreVerdict = null;
       state.evalShapes = [];
       state.boardLastMove = null;
-      setChatContext(chess.fen());
+      setChatContext(chess.fen(), null, null, explorationDetails());
       renderBoard();
       renderVerdict(null);
       updateStatus();
@@ -334,7 +353,7 @@ export function createReviewNavigation({
     const history = chess.history({ verbose: true });
     const previous = history.length ? history[history.length - 1] : null;
     state.boardLastMove = previous ? [previous.from, previous.to] : null;
-    setChatContext(chess.fen());
+    setChatContext(chess.fen(), null, null, explorationDetails());
     state.exploreVerdict = null;
     renderBoard();
     renderVerdict(null);
@@ -365,7 +384,6 @@ export function createReviewNavigation({
     if (!state.exploring && timeline[state.cur] && timeline[state.cur].move_uci === uci) {
       const move = board.tryMove({ from: orig, to: dest, promotion });
       if (!move) return renderBoard();
-      setChatContext(fenBefore, move.san || null, uci);
       state.cur += 1;
       state.boardLastMove = [orig, dest];
       renderBoard();
@@ -376,6 +394,7 @@ export function createReviewNavigation({
       onGraphRender();
       onNotationHighlight();
       onReviewCursorSync();
+      setChatContext(chess.fen(), null, null, { mode: "mainline", ply: state.cur });
       refreshEngineArrows();
       return;
     }
@@ -387,7 +406,6 @@ export function createReviewNavigation({
     }
     const move = board.tryMove({ from: orig, to: dest, promotion });
     if (!move) return renderBoard();
-    setChatContext(fenBefore, move.san || null, uci);
     state.boardLastMove = [orig, dest];
     state.evalShapes = [];
     state.exploreVerdict = "pending";
@@ -396,6 +414,7 @@ export function createReviewNavigation({
     updateStatus();
     onNavUpdate();
     onGraphRender();
+    setChatContext(chess.fen(), null, null, explorationDetails());
     refreshEngineArrows();
 
     $("verdict").innerHTML = `<span class="line">Evaluating…</span>`;
@@ -460,6 +479,7 @@ export function createReviewNavigation({
     get anchorNode() { return state.anchorNode; },
     get currentMistake() { return state.currentMistake; },
     get exploring() { return state.exploring; },
+    get exploreBaseNode() { return state.exploreBaseNode; },
     get bestArrowOn() { return state.bestArrowOn; },
     get threatArrowOn() { return state.threatArrowOn; },
   };

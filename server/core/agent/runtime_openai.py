@@ -21,7 +21,9 @@ from server.core.agent.models import (
     AgentToolName,
     AnalyzeMoveInput,
     AnalyzePositionInput,
+    GetPlayerProfileInput,
     GetReviewContextInput,
+    LookupOpeningInput,
     ToolCallRecord,
     ToolError,
     ToolResult,
@@ -85,7 +87,6 @@ class SQLiteConversationSessionFactory:
                 session = self._agents.SQLiteSession(
                     session_id,
                     db_path=self._path,
-                    session_settings=self._agents.SessionSettings(limit=12),
                 )
                 self._sessions[session_id] = session
             return session
@@ -99,7 +100,6 @@ class SQLiteConversationSessionFactory:
                 session = self._agents.SQLiteSession(
                     session_id,
                     db_path=self._path,
-                    session_settings=self._agents.SessionSettings(limit=12),
                 )
         try:
             await session.clear_session()
@@ -234,7 +234,7 @@ class OpenAIAgentsRuntime:
         current_position = context.request.model_context.position
         supplied_fen = (
             payload.fen
-            if isinstance(payload, AnalyzePositionInput)
+            if isinstance(payload, (AnalyzePositionInput, LookupOpeningInput))
             else payload.fen_before
             if isinstance(payload, AnalyzeMoveInput)
             else None
@@ -450,6 +450,108 @@ class OpenAIAgentsRuntime:
                     description_override=(
                         "Check one what-if move in the current FEN, reusing saved analysis "
                         "when possible."
+                    ),
+                    strict_mode=True,
+                )
+            )
+
+        if "lookup_opening" in local.request.allowed_tools:
+            async def lookup_opening(
+                fen: str | None = None,
+                recent_moves_uci: list[str] | None = None,
+            ) -> str:
+                """Look up local ECO metadata for the current position without network access."""
+                try:
+                    payload = LookupOpeningInput(
+                        fen=fen,
+                        recent_moves_uci=recent_moves_uci or [],
+                    )
+                except ValidationError:
+                    return self._invalid_tool_call(
+                        local,
+                        "lookup_opening",
+                        ToolError(
+                            code="invalid_fen",
+                            message="The opening lookup position or move history is invalid.",
+                            recoverable=False,
+                        ),
+                    )
+                current = local.request.model_context.position
+                if payload.recent_moves_uci and (
+                    current is None
+                    or payload.recent_moves_uci
+                    not in (
+                        current.recent_moves_uci,
+                        [*current.recent_moves_uci, *current.exploration_moves_uci],
+                    )
+                ):
+                    return self._invalid_tool_call(
+                        local,
+                        "lookup_opening",
+                        ToolError(
+                            code="position_not_found",
+                            message="Opening moves do not match the current checkpoint.",
+                            recoverable=False,
+                        ),
+                    )
+                if payload.recent_moves_uci and current is not None:
+                    payload = LookupOpeningInput(fen=current.fen)
+                return await self._call_tool(local, "lookup_opening", payload)
+
+            tools.append(
+                function_tool(
+                    lookup_opening,
+                    name_override="lookup_opening",
+                    description_override=(
+                        "Read local ECO/name metadata for the exact current FEN or its validated "
+                        "recent moves. This tool never retrieves online opening theory."
+                    ),
+                    strict_mode=True,
+                )
+            )
+
+        if "get_player_profile" in local.request.allowed_tools:
+            async def get_player_profile(
+                focus_skill_ids: list[str] | None = None,
+                focus_categories: list[str] | None = None,
+                limit: int = 3,
+            ) -> str:
+                """Read at most three evidence-backed profile items relevant to this task."""
+                try:
+                    payload = GetPlayerProfileInput(
+                        focus_skill_ids=focus_skill_ids or [],
+                        focus_categories=focus_categories or [],
+                        limit=limit,
+                    )
+                except ValidationError:
+                    return self._invalid_tool_call(
+                        local,
+                        "get_player_profile",
+                        ToolError(
+                            code="profile_unavailable",
+                            message="The requested profile focus or limit is invalid.",
+                            recoverable=False,
+                        ),
+                    )
+                if not local.request.model_context.task.personalization_enabled:
+                    return self._invalid_tool_call(
+                        local,
+                        "get_player_profile",
+                        ToolError(
+                            code="profile_unavailable",
+                            message="Personalized coaching is disabled.",
+                            recoverable=False,
+                        ),
+                    )
+                return await self._call_tool(local, "get_player_profile", payload)
+
+            tools.append(
+                function_tool(
+                    get_player_profile,
+                    name_override="get_player_profile",
+                    description_override=(
+                        "Read up to three deterministic weakness or strength items with game-backed "
+                        "evidence. Use only when personalization is enabled and relevant."
                     ),
                     strict_mode=True,
                 )

@@ -5,6 +5,7 @@ import { gamesApi } from "../../frontend/modules/api/games.js";
 import { puzzleApi } from "../../frontend/modules/api/puzzles.js";
 import { createGamesLibrary } from "../../frontend/modules/games/library.js";
 import { createPuzzleController } from "../../frontend/modules/puzzles/controller.js";
+import { createPuzzleBoardView } from "../../frontend/modules/puzzles/board-view.js";
 import { createPuzzleStorm } from "../../frontend/modules/puzzles/storm.js";
 import { createReviewVariation } from "../../frontend/modules/review/variation.js";
 
@@ -112,6 +113,33 @@ test("variation playback reports every rendered board position", () => {
     variation.stop();
     globalThis.document = originalDocument;
   }
+});
+
+test("puzzle board reset reports the restored position", () => {
+  const { $ } = elementLookup();
+  let fen = "initial-fen";
+  const positions = [];
+  const boardView = createPuzzleBoardView({
+    $,
+    board: {
+      chess: {
+        fen: () => fen,
+        inCheck: () => false,
+        load: (value) => { fen = value; },
+        reset: () => { fen = "initial-fen"; },
+      },
+      ground: { set() {} },
+      setShapes() {},
+      turnColor: () => "white",
+      computeDests: () => new Map(),
+    },
+    onPositionChange: (value) => positions.push(value),
+  });
+
+  boardView.prepare("puzzle-fen");
+  boardView.reset();
+
+  assert.deepEqual(positions, ["puzzle-fen", "initial-fen"]);
 });
 
 test("deleting a local game redraws the cached library page", async () => {

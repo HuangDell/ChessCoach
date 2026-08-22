@@ -1,9 +1,12 @@
 import { agentApi } from "../api/agent.js";
 import { reviewApi } from "../api/review.js";
-import { chatApi } from "../api/chat.js";
 import { byId, clamp } from "../core/dom.js";
 import { createAnalysisRunner } from "./analysis-runner.js";
-import { createReviewChat } from "./chat.js";
+import {
+  buildReviewAgentContext,
+  buildTrainingAgentContext,
+  createReviewChat,
+} from "./chat.js";
 import { createReviewCoach } from "./coach.js";
 import { createReviewArtifacts } from "./artifacts.js";
 import { createReviewGraph } from "./graph.js";
@@ -22,7 +25,6 @@ export function createReviewController({ board, bridge }) {
   let analyzing = false;
   let pendingCriticalId = null;
   let pendingGotoPly = null;
-  let personalizeHistory = true;
 
 let timeline = []; // nodes 0..N for the whole game
 let mistakes = [];
@@ -56,45 +58,10 @@ let showThreatsByDefault = false;
 
   const chat = createReviewChat({
     $,
-    api: {
-      chatHistory: chatApi.history,
-      chat: chatApi.send,
-    },
     agentApi,
-    getBoardFen: () => chess.fen(),
-    getAgentContext: () => {
-      const onMainline = currentGameId && navigation && !navigation.exploring &&
-        !(retry && retry.session) && !analyzing;
-      const ownedGameId = onMainline ? currentGameId : null;
-      const activePly = onMainline ? navigation.cur : null;
-      const recent = onMainline
-        ? timeline.slice(Math.max(0, activePly - 8), activePly).filter((node) => node.move_uci)
-        : [];
-      const fen = chess.fen();
-      const critical = onMainline ? activeCritical() : null;
-      return {
-        game_id: ownedGameId,
-        review_side: ownedGameId ? player : null,
-        active_ply: activePly,
-        active_critical_id: critical ? critical.critical_id : null,
-        activity: onMainline ? "game_review" : "position_analysis",
-        position: {
-          fen,
-          recent_moves_uci: recent.map((node) => node.move_uci),
-          recent_moves_san: recent.map((node) => node.move_san),
-          reference: onMainline
-            ? {
-                game_id: ownedGameId,
-                review_side: player,
-                critical_id: critical ? critical.critical_id : null,
-                ply: critical ? Number(critical.ply) : activePly,
-                fen,
-              }
-            : { fen },
-        },
-      };
-    },
-    usePersonalHistory: () => personalizeHistory,
+    getAgentContext: () => buildAgentContext(),
+    onReference: openAgentReference,
+    onAction: runAgentAction,
   });
   const coach = createReviewCoach({ $, api: reviewApi, hasTimeline: () => timeline.length > 0 });
   const graph = createReviewGraph({
@@ -134,7 +101,7 @@ let showThreatsByDefault = false;
     onRetryMove: (...args) => retry.handleMove(...args),
     isVariationActive: () => !!(variation && variation.active),
     stopVariation: () => variation && variation.stop(),
-    setChatContext: chat.setMoveContext,
+    setChatContext: syncChatContext,
     onSelectCritical: selectCritical,
     onGraphRender: () => graph.render(),
     onNotationHighlight: () => notation.highlightCurrent(),
@@ -173,7 +140,7 @@ let showThreatsByDefault = false;
     gotoNode,
     renderBoard: navigation.renderBoard,
     updateStatus: navigation.updateStatus,
-    onPositionChange: (fen) => chat.setMoveContext(fen),
+    onPositionChange: (fen, details) => syncChatContext(fen, null, null, details),
   });
   variation = createReviewVariation({
     $,
@@ -182,7 +149,7 @@ let showThreatsByDefault = false;
     setContext: navigation.patch,
     renderBoard: navigation.renderBoard,
     updateStatus: navigation.updateStatus,
-    onPositionChange: (fen) => chat.setMoveContext(fen),
+    onPositionChange: (fen, details) => syncChatContext(fen, null, null, details),
   });
   const workspaceView = createWorkspaceView({
     $,
@@ -244,7 +211,7 @@ let showThreatsByDefault = false;
   });
 
   const generateReviewExplanations = () => artifacts.generateExplanations();
-  const loadReviewArtifacts = (gameId, side) => artifacts.load(gameId, side);
+  const loadReviewArtifacts = (gameId, side, options) => artifacts.load(gameId, side, options);
   const analysis = createAnalysisRunner({
     $,
     api: reviewApi,
@@ -290,6 +257,85 @@ let showThreatsByDefault = false;
 
 function activeCritical() {
   return criticalPositions.find((item) => item.critical_id === activeCriticalId) || null;
+}
+
+function buildAgentContext(details = {}) {
+  return buildReviewAgentContext({
+    currentGameId,
+    player,
+    timeline,
+    criticalPositions,
+    activeCriticalId,
+    retryActive: !!(retry && retry.session),
+    navigation: navigation && {
+      cur: navigation.cur,
+      exploring: navigation.exploring,
+      exploreBaseNode: navigation.exploreBaseNode,
+    },
+    fen: chess.fen(),
+  }, details);
+}
+
+function syncChatContext(fen, san = null, uci = null, details = {}) {
+  return chat.setContext(buildAgentContext({
+    ...details,
+    fen: fen || details.fen,
+    selectedFen: details.selectedFen,
+    selectedMoveSan: san || details.selectedMoveSan,
+    selectedMoveUci: uci || details.selectedMoveUci,
+  }));
+}
+
+function syncTrainingContext(fen = chess.fen()) {
+  return chat.setContext(buildTrainingAgentContext(fen));
+}
+
+async function openAgentTarget(target = {}) {
+  const targetSide = target.review_side || player;
+  const localGame = !target.game_id || (
+    target.game_id === currentGameId && targetSide === player
+  );
+  if (!localGame) return bridge.openAgentPosition(target);
+  if (target.critical_id) {
+    const critical = criticalPositions.find((item) => item.critical_id === target.critical_id);
+    if (!critical) throw new Error("That key position is no longer available in this review.");
+    selectCritical(critical.critical_id);
+    return true;
+  }
+  if (target.ply != null) {
+    gotoNode(clamp(Number(target.ply), 0, timeline.length - 1));
+    return true;
+  }
+  if (!target.fen || target.fen === chess.fen()) return true;
+  throw new Error("That position is not available in the current review.");
+}
+
+function openAgentReference(reference) {
+  return openAgentTarget(reference);
+}
+
+async function runAgentAction(action = {}) {
+  const target = action.target || {};
+  if (action.kind === "open_position" || action.kind === "compare_move") {
+    return openAgentTarget(target);
+  }
+  if (action.kind === "start_retry") {
+    const local = await openAgentTarget(target);
+    if (!local || !activeCritical()) {
+      throw new Error("Open the referenced key position before starting Retry.");
+    }
+    retry.start();
+    return true;
+  }
+  if (action.kind === "start_training") {
+    return bridge.trainPuzzle({
+      category: "",
+      gameId: target.game_id || currentGameId,
+      criticalId: target.critical_id || (activeCritical() && activeCritical().critical_id),
+    });
+  }
+  if (action.kind === "review_weakness") return openAgentTarget(target);
+  throw new Error("That coach action is not supported in Review yet.");
 }
 
 // --- mistakes list -------------------------------------------------------
@@ -460,8 +506,8 @@ function beginProvisional(pgn, side, metaText, gameId = null) {
   renderMistakeList();
   $("scoreboard").hidden = true; // stale until the new game's stats land in phase-2
   coach.reset();
-  // Resetting chat invalidates any in-flight restore from the game we're leaving.
-  chat.reset();
+  // A game switch invalidates an in-flight answer but preserves the stateful Agent session.
+  chat.contextChanged();
 
   let prov = null;
   try {
@@ -513,7 +559,9 @@ function reviewOtherSide() {
   openGame(currentPgn, player === "white" ? "black" : "white", currentGameId);
 }
 
-async function applyAnalysisReady(session, tl) {
+async function applyAnalysisReady(session, tl, operation = {}) {
+  const isCurrent = operation.isCurrent || (() => true);
+  if (!isCurrent()) return;
   // Where the user navigated during phase 1 — only meaningful if a provisional timeline existed
   // for THIS game (when the PGN couldn't be replayed client-side, the cursor is a stale index from the
   // previous game and honouring it would land on an arbitrary move with no mistake selected).
@@ -522,7 +570,12 @@ async function applyAnalysisReady(session, tl) {
   setAnalyzingUI(false); // hides the progress bar
   applySession(session);
   applyTimeline(tl);
-  await loadReviewArtifacts(session.game_id, session.player);
+  const artifactsLoaded = await loadReviewArtifacts(
+    session.game_id,
+    session.player,
+    { signal: operation.signal }
+  );
+  if (!isCurrent() || artifactsLoaded === false) return;
   // "Replay in full game" from a mistake puzzle wins: land on the exact position of the mistake.
   if (pendingCriticalId) {
     const target = pendingCriticalId;
@@ -621,7 +674,6 @@ function onAnalysisError(msg) {
   function setPreferences(preferences = {}) {
     coach.setAutoGenerate(preferences.coachAiAuto);
     chat.setAgentCapability(preferences.agent);
-    personalizeHistory = preferences.personalizeHistory !== false;
     defaultReviewSide = preferences.defaultReviewSide || "auto";
     boardOrientationPreference = preferences.boardOrientation || "review";
     analysisPreset = preferences.analysisPreset || "balanced";
@@ -651,7 +703,9 @@ function onAnalysisError(msg) {
       if (variation.active) variation.stop();
       if (retry.session) retry.exit();
       navigation.patch({ evalShapes: [], bestArrows: [] });
+      syncTrainingContext();
     },
+    setAgentTrainingPosition: syncTrainingContext,
     restoreBoard() {
       if (timeline.length) gotoNode(navigation.cur);
       else {

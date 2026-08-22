@@ -149,7 +149,10 @@ export function createAnalysisRunner({
       throw error;
     }
     if (!isCurrent(generation) || session.empty) return;
-    await applyReady(session, timeline);
+    await applyReady(session, timeline, {
+      signal,
+      isCurrent: () => isCurrent(generation),
+    });
     if (!isCurrent(generation)) return;
     if (batchInfo) {
       const count = batchInfo.total;

@@ -1,6 +1,6 @@
 import { squarePosition } from "./helpers.js";
 
-export function createPuzzleBoardView({ $, board }) {
+export function createPuzzleBoardView({ $, board, onPositionChange = () => {} }) {
   const chess = board.chess;
   const ground = board.ground;
   let orientation = "white";
@@ -25,6 +25,7 @@ export function createPuzzleBoardView({ $, board }) {
       animation: { enabled: true },
     });
     board.setShapes(shapes);
+    onPositionChange(chess.fen());
   }
 
   function prepare(fen) {
@@ -39,6 +40,7 @@ export function createPuzzleBoardView({ $, board }) {
       animation: { enabled: true },
     });
     board.setShapes(shapes);
+    onPositionChange(chess.fen());
   }
 
   function reset() {
@@ -53,6 +55,7 @@ export function createPuzzleBoardView({ $, board }) {
       animation: { enabled: false },
     });
     board.setShapes([]);
+    onPositionChange(chess.fen());
   }
 
   function blink(square, kind) {

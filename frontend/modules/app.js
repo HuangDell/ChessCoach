@@ -6,6 +6,7 @@ import { createReviewController } from "./review/controller.js";
 import { createSettingsController } from "./settings/controller.js";
 import { createSystemController } from "./system/controller.js";
 import { chatApi } from "./api/chat.js";
+import { gamesApi } from "./api/games.js";
 import { puzzleApi } from "./api/puzzles.js";
 import { reviewApi } from "./api/review.js";
 import { systemApi } from "./api/system.js";
@@ -69,6 +70,7 @@ export function createApp() {
   }
 
   async function loadInitialState() {
+    const generation = startupGeneration;
     try {
       if (!storageGet(sessionStorage, "chessAppSession")) {
         storageSet(sessionStorage, "chessAppSession", "1");
@@ -101,7 +103,7 @@ export function createApp() {
     system.checkUpdates();
     system.checkOnline();
 
-    const generation = startupGeneration;
+    if (generation !== startupGeneration) return;
     const session = await reviewApi.session();
     if (generation !== startupGeneration) return;
     if (session.empty) {
@@ -118,11 +120,31 @@ export function createApp() {
     const timeline = await reviewApi.timeline();
     if (generation !== startupGeneration) return;
     review.loadInitial(session, timeline);
-    await review.loadReviewArtifacts(session.game_id, session.player);
+    const artifactsLoaded = await review.loadReviewArtifacts(session.game_id, session.player);
+    if (generation !== startupGeneration || artifactsLoaded === false) return;
     if (!wantPuzzle) review.selectInitial(session);
     review.restoreChat();
     review.prepareCoachAI(session);
     if (wantPuzzle) await puzzles.setMode(true, { resume: true });
+  }
+
+  async function openAgentPosition(reference = {}) {
+    if (!reference.game_id) throw new Error("The referenced game is no longer available.");
+    const requestGeneration = ++startupGeneration;
+    const data = await gamesApi.history();
+    if (requestGeneration !== startupGeneration) return false;
+    const game = ((data && data.games) || []).find((item) =>
+      item.game_id === reference.game_id &&
+      (!reference.review_side || item.reviewed_side === reference.review_side)
+    );
+    if (!game || !game.pgn) throw new Error("The referenced game is no longer in local history.");
+    review.setPendingCritical(reference.critical_id || null);
+    review.setPendingPly(reference.critical_id ? null : reference.ply);
+    return reviewPort.openGame(
+      game.pgn,
+      reference.review_side || game.reviewed_side,
+      game.game_id
+    );
   }
 
   function mount() {
@@ -138,6 +160,7 @@ export function createApp() {
         isLocalHistory: () => games.isLocalHistory(),
         activateLocalHistory: () => games.activateLocal(),
         loadHistory: (...args) => games.loadHistory(...args),
+        openAgentPosition,
       },
     });
 
@@ -150,6 +173,7 @@ export function createApp() {
           review.prepareForPuzzle();
           layout.closeHistoryDrawer();
         },
+        positionChanged: (fen) => review.setAgentTrainingPosition(fen),
         leave: () => review.restoreBoard(),
         async replayGame(row, puzzle) {
           review.setPendingPly(puzzle.ply != null ? puzzle.ply - 1 : null);

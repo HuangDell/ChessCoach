@@ -35,7 +35,14 @@ export function createReviewVariation({
     const step = clamp(current.index, 0, current.fens.length - 1);
     current.index = step;
     chess.load(current.fens[step]);
-    onPositionChange(chess.fen());
+    onPositionChange(chess.fen(), {
+      mode: "variation",
+      basePly: current.basePly,
+      baseFen: current.fens[0],
+      criticalId: current.criticalId,
+      explorationMovesUci: current.ucis.slice(0, step),
+      explorationMovesSan: current.sans.slice(0, step),
+    });
     const uci = step > 0 ? current.ucis[step - 1] : null;
     setContext({ boardLastMove: uci ? [uci.slice(0, 2), uci.slice(2, 4)] : null });
     renderBoard();
@@ -81,6 +88,8 @@ export function createReviewVariation({
       ucis,
       sans,
       fens,
+      basePly: Number(critical.ply) - 1,
+      criticalId: critical.critical_id,
       index: clamp(step, 0, ucis.length),
       timer: null,
       playing: autoplay,

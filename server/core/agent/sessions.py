@@ -7,7 +7,7 @@ while the checkpoint store and its concurrency rules remain ordinary Core code.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -26,11 +26,13 @@ from server.core.agent.models import (
     AgentSessionContextRequest,
     AgentSessionCreateRequest,
     AgentSessionState,
+    PositionReference,
 )
 
 
 SESSION_SCHEMA_VERSION = 1
 DEFAULT_RECENT_ITEM_LIMIT = 12
+DEFAULT_DISCUSSION_REFERENCE_LIMIT = 5
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _ResultT = TypeVar("_ResultT")
 
@@ -165,7 +167,7 @@ class ChessSessionCheckpointStore:
         *,
         validator: Callable[[AgentSessionState], Any] | None = None,
     ) -> AgentSessionState:
-        """Compare-and-set a context patch and increment its generation once."""
+        """Compare-and-set a semantic context change and increment its generation once."""
         with self._lock:
             current = self._read_locked(session_id)
             if current.generation != request.expected_generation:
@@ -210,14 +212,109 @@ class ChessSessionCheckpointStore:
                 values["active_ply"] = None
                 values["active_critical_id"] = None
 
+            try:
+                candidate = AgentSessionState.model_validate(values)
+            except ValidationError as exc:
+                raise InvalidSessionContextError("The Agent session context is invalid.") from exc
+            if validator is not None:
+                validator(candidate)
+            semantic_exclusions = {"generation", "updated_at"}
+            if candidate.model_dump(exclude=semantic_exclusions) == current.model_dump(
+                exclude=semantic_exclusions
+            ):
+                return current.model_copy(deep=True)
+
             values["generation"] = current.generation + 1
+            values["updated_at"] = self._clock()
+            updated = AgentSessionState.model_validate(values)
+            self._write_locked(updated)
+            return updated.model_copy(deep=True)
+
+    def update_conversation_summary(
+        self,
+        session_id: str,
+        *,
+        expected_generation: int,
+        summary: str,
+        references: Sequence[PositionReference],
+        reference_validator: Callable[[PositionReference], PositionReference | None],
+        reference_limit: int = DEFAULT_DISCUSSION_REFERENCE_LIMIT,
+        validator: Callable[[AgentSessionState], Any] | None = None,
+    ) -> AgentSessionState:
+        """Atomically replace the compact summary and its validated position references.
+
+        Summary compaction is guarded by the board-context generation but does not
+        increment it: a summary is conversation metadata, not a UI-owned chess
+        context change. Invalid or expired references are deliberately omitted while
+        the usable summary text is retained.
+        """
+
+        if not isinstance(summary, str):
+            raise InvalidSessionContextError("The conversation summary must be text.")
+        if reference_limit < 0:
+            raise ValueError("reference_limit must not be negative")
+
+        with self._lock:
+            current = self._read_locked(session_id)
+            if current.generation != expected_generation:
+                raise StaleAgentContextError(
+                    f"Expected Agent context generation {expected_generation}, "
+                    f"but the current generation is {current.generation}."
+                )
+
+            validated = self._validated_references(
+                references,
+                reference_validator=reference_validator,
+                reference_limit=reference_limit,
+            )
+            values = current.model_dump(mode="python")
+            values["conversation_summary"] = summary.strip()
+            values["conversation_summary_references"] = validated
             values["updated_at"] = self._clock()
             try:
                 updated = AgentSessionState.model_validate(values)
             except ValidationError as exc:
-                raise InvalidSessionContextError("The Agent session context is invalid.") from exc
+                raise InvalidSessionContextError(
+                    "The Agent conversation summary is invalid."
+                ) from exc
             if validator is not None:
                 validator(updated)
+            self._write_locked(updated)
+            return updated.model_copy(deep=True)
+
+    def record_discussed_positions(
+        self,
+        session_id: str,
+        *,
+        expected_generation: int,
+        references: Sequence[PositionReference],
+        reference_validator: Callable[[PositionReference], PositionReference | None],
+        reference_limit: int = DEFAULT_DISCUSSION_REFERENCE_LIMIT,
+    ) -> AgentSessionState:
+        """Generation-guard and atomically append bounded recent positions."""
+
+        if reference_limit < 0:
+            raise ValueError("reference_limit must not be negative")
+        with self._lock:
+            current = self._read_locked(session_id)
+            if current.generation != expected_generation:
+                raise StaleAgentContextError(
+                    f"Expected Agent context generation {expected_generation}, "
+                    f"but the current generation is {current.generation}."
+                )
+            values = current.model_dump(mode="python")
+            values["discussed_positions"] = self._validated_references(
+                [*current.discussed_positions, *references],
+                reference_validator=reference_validator,
+                reference_limit=reference_limit,
+            )
+            values["updated_at"] = self._clock()
+            try:
+                updated = AgentSessionState.model_validate(values)
+            except ValidationError as exc:
+                raise InvalidSessionContextError(
+                    "The Agent discussed positions are invalid."
+                ) from exc
             self._write_locked(updated)
             return updated.model_copy(deep=True)
 
@@ -236,6 +333,34 @@ class ChessSessionCheckpointStore:
         if not _valid_session_id(session_id):
             raise SessionNotFoundError("Agent session was not found.")
         return self._sessions_dir / f"{session_id}.json"
+
+    @staticmethod
+    def _validated_references(
+        references: Sequence[PositionReference],
+        *,
+        reference_validator: Callable[[PositionReference], PositionReference | None],
+        reference_limit: int,
+    ) -> list[PositionReference]:
+        validated: list[PositionReference] = []
+        identities: set[str] = set()
+        for supplied in reversed(references):
+            try:
+                reference = PositionReference.model_validate(supplied)
+                canonical = reference_validator(reference)
+                if canonical is None:
+                    continue
+                canonical = PositionReference.model_validate(canonical)
+            except (ValidationError, ValueError, LookupError):
+                continue
+            identity = canonical.model_dump_json(exclude_none=True)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            validated.append(canonical)
+        validated.reverse()
+        if reference_limit == 0:
+            return []
+        return validated[-reference_limit:]
 
     def _read_locked(self, session_id: str) -> AgentSessionState:
         path = self._path(session_id)
@@ -336,6 +461,48 @@ class SessionMutationCoordinator:
     ) -> AgentSessionState:
         async with self.mutation(session_id):
             return store.delete(session_id)
+
+    async def update_conversation_summary(
+        self,
+        store: ChessSessionCheckpointStore,
+        session_id: str,
+        *,
+        expected_generation: int,
+        summary: str,
+        references: Sequence[PositionReference],
+        reference_validator: Callable[[PositionReference], PositionReference | None],
+        reference_limit: int = DEFAULT_DISCUSSION_REFERENCE_LIMIT,
+        validator: Callable[[AgentSessionState], Any] | None = None,
+    ) -> AgentSessionState:
+        async with self.mutation(session_id):
+            return store.update_conversation_summary(
+                session_id,
+                expected_generation=expected_generation,
+                summary=summary,
+                references=references,
+                reference_validator=reference_validator,
+                reference_limit=reference_limit,
+                validator=validator,
+            )
+
+    async def record_discussed_positions(
+        self,
+        store: ChessSessionCheckpointStore,
+        session_id: str,
+        *,
+        expected_generation: int,
+        references: Sequence[PositionReference],
+        reference_validator: Callable[[PositionReference], PositionReference | None],
+        reference_limit: int = DEFAULT_DISCUSSION_REFERENCE_LIMIT,
+    ) -> AgentSessionState:
+        async with self.mutation(session_id):
+            return store.record_discussed_positions(
+                session_id,
+                expected_generation=expected_generation,
+                references=references,
+                reference_validator=reference_validator,
+                reference_limit=reference_limit,
+            )
 
     async def commit_if_current(
         self,

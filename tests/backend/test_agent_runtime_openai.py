@@ -13,9 +13,12 @@ from server.core.agent.models import (
     AgentResponse,
     AgentRunRequest,
     AnalyzeMoveInput,
+    GetPlayerProfileResult,
+    LookupOpeningResult,
     ModelVisibleContext,
     PositionContext,
     TaskContext,
+    ToolResult,
 )
 from server.core.agent.runtime import AgentRuntimeFailure, UnavailableAgentRuntime
 from server.core.agent.runtime_openai import (
@@ -355,6 +358,69 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
             [item.status for item in local.budget.records],
         )
 
+    async def test_phase2_read_tools_are_registered_gated_and_audited(self) -> None:
+        class Tools:
+            async def lookup_opening(self, _payload):
+                return ToolResult[LookupOpeningResult](
+                    ok=True,
+                    data=LookupOpeningResult(
+                        eco="A00",
+                        name="Starting Position",
+                        classification="recognized",
+                    ),
+                    evidence_refs=["opening:a00"],
+                )
+
+            async def get_player_profile(self, _payload):
+                return ToolResult[GetPlayerProfileResult](
+                    ok=True,
+                    data=GetPlayerProfileResult(analyzed_games=0),
+                )
+
+        context = _context()
+        context = context.model_copy(
+            update={
+                "task": context.task.model_copy(
+                    update={"personalization_enabled": True}
+                )
+            }
+        )
+        request = _request("session-1").model_copy(
+            update={
+                "model_context": context,
+                "allowed_tools": ["lookup_opening", "get_player_profile"],
+            }
+        )
+        local = _LocalRunContext(
+            request=request,
+            tools=Tools(),
+            budget=_ToolBudget(max_total=6, max_engine=2),
+        )
+        with patch(
+            "server.core.agent.runtime_openai.importlib.import_module",
+            side_effect=self._imports,
+        ):
+            runtime = OpenAIAgentsRuntime(
+                model="gpt-test",
+                api_key="secret",
+                base_url="https://api.openai.com/v1",
+                endpoint_type="openai_responses",
+                domain_tools_factory=lambda _request: Tools(),
+                session_provider=lambda _session_id: object(),
+            )
+            registered = {tool.__name__: tool for tool in runtime._sdk_tools(local)}
+            opening = json.loads(await registered["lookup_opening"](START_FEN, []))
+            profile = json.loads(await registered["get_player_profile"]([], [], 3))
+            await runtime.close()
+
+        self.assertEqual("A00", opening["data"]["eco"])
+        self.assertEqual(0, profile["data"]["analyzed_games"])
+        self.assertEqual(
+            ["lookup_opening", "get_player_profile"],
+            [record.name for record in local.budget.records],
+        )
+        self.assertTrue(all(record.permission == "read" for record in local.budget.records))
+
 
 @unittest.skipUnless(importlib.util.find_spec("agents"), "optional Agent SDK is not installed")
 class LockedSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -415,9 +481,12 @@ class LockedSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
             factory = SQLiteConversationSessionFactory(data_dir)
             session_id = "c" * 32
             session = factory.get_session(session_id)
-            await session.add_items([{"role": "user", "content": "hello"}])
-            self.assertEqual(1, len(await session.get_items()))
-            self.assertEqual(12, session.session_settings.limit)
+            await session.add_items(
+                [{"role": "user", "content": f"item {index}"} for index in range(20)]
+            )
+            self.assertEqual(20, len(await session.get_items()))
+            self.assertIsNone(session.session_settings.limit)
+            self.assertEqual(12, len(await session.get_items(limit=12)))
 
             await factory.clear_session(session_id)
 

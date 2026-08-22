@@ -15,7 +15,7 @@ import chess
 from pydantic import BaseModel, ValidationError
 
 from server import config
-from server.core import lines
+from server.core import history, lines, openings
 from server.core.agent.models import (
     AgentToolName,
     AnalyzeMoveInput,
@@ -23,14 +23,20 @@ from server.core.agent.models import (
     AnalyzePositionInput,
     AnalyzePositionResult,
     CandidateLine,
+    ChessReference,
     EngineProvenance,
     EngineScore,
+    GetPlayerProfileInput,
+    GetPlayerProfileResult,
     GetReviewContextInput,
     GetReviewContextResult,
+    LookupOpeningInput,
+    LookupOpeningResult,
     MoveReference,
     PositionContext,
     PositionReference,
     ReviewSide,
+    SkillEstimate,
     ToolError,
     ToolResult,
 )
@@ -40,6 +46,8 @@ from server.core.storage import games
 
 ResultT = TypeVar("ResultT", bound=BaseModel)
 AnalysisLoader = Callable[[str, str | None], dict[str, Any]]
+OpeningClassifier = Callable[[list[str]], tuple[str | None, str | None]]
+ProfileLoader = Callable[[], dict[str, Any]]
 
 
 class ArtifactConsistencyError(ValueError):
@@ -407,8 +415,139 @@ def _recent_moves(
     return ucis, sans
 
 
+def _opening_lookup_fens(request: LookupOpeningInput) -> tuple[list[str], str]:
+    if request.fen is not None:
+        return [request.fen], "fen"
+    board = chess.Board()
+    fens: list[str] = []
+    for raw_uci in request.recent_moves_uci:
+        move = chess.Move.from_uci(raw_uci)
+        if move not in board.legal_moves:
+            raise ArtifactConsistencyError("Recent opening moves contain an illegal move.")
+        board.push(move)
+        fens.append(board.fen())
+    return fens, "recent_moves"
+
+
+def _load_local_player_profile() -> dict[str, Any]:
+    data_dir = config.DATA_DIR
+    return history.get_profile(history.my_player_id(data_dir), data_dir)
+
+
+def _compact_profile_stats(raw: dict[str, Any]) -> dict[str, int | float]:
+    out: dict[str, int | float] = {}
+    for source, target in (("games", "games"), ("avg_accuracy", "avg_accuracy")):
+        value = raw.get(source)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[target] = value
+    training = raw.get("training") or {}
+    if isinstance(training, dict):
+        for source, target in (
+            ("total", "training_attempts"),
+            ("solved", "training_solved"),
+            ("solve_rate", "training_solve_rate"),
+        ):
+            value = training.get(source)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[target] = value
+    return out
+
+
+def _profile_example(raw: dict[str, Any]) -> ChessReference | None:
+    game_id = str(raw.get("game_id") or "").strip()
+    if not game_id:
+        return None
+    review_side = str(raw.get("reviewed_side") or "").strip()
+    critical_id = str(raw.get("critical_id") or "").strip()
+    try:
+        if critical_id and review_side in {"white", "black"}:
+            return ChessReference(
+                kind="critical_position",
+                game_id=game_id,
+                review_side=cast(ReviewSide, review_side),
+                critical_id=critical_id,
+                ply=(int(raw["ply"]) if raw.get("ply") is not None else None),
+            )
+        return ChessReference(kind="game", game_id=game_id)
+    except (TypeError, ValueError, ValidationError):
+        return None
+
+
+def _profile_estimate(
+    raw: dict[str, Any],
+    *,
+    analyzed_games: int,
+    weakness_categories: set[str],
+) -> SkillEstimate | None:
+    category = str(raw.get("category") or "").strip()
+    count = max(0, int(raw.get("count") or 0))
+    if not category or category == "uncategorized" or count < 1:
+        return None
+    examples = [
+        example
+        for example in (_profile_example(item) for item in (raw.get("examples") or [])[:3])
+        if example is not None
+    ]
+    if not examples:
+        return None
+    distinct_games = min(
+        analyzed_games,
+        count,
+        max(1, int(raw.get("game_count") or len({item.game_id for item in examples}))),
+    )
+    is_weakness = category in weakness_categories and count >= 2 and distinct_games >= 2
+    confidence = (
+        "established"
+        if is_weakness and count >= 3
+        else "emerging"
+        if count >= 2
+        else "insufficient"
+    )
+    last_seen = next(
+        (
+            str(item.get("date"))
+            for item in (raw.get("examples") or [])
+            if item.get("date")
+        ),
+        None,
+    )
+    return SkillEstimate(
+        taxonomy_version=1,
+        skill_id=category,
+        evidence_count=count,
+        distinct_games=distinct_games,
+        success_count=0,
+        partial_count=0,
+        failure_count=count,
+        cumulative_loss=max(0.0, float(raw.get("cumulative_win_loss") or 0.0)),
+        recent_failure_count=count,
+        last_seen=last_seen,
+        confidence_level=confidence,
+        status="weakness" if is_weakness else "watch",
+        examples=examples,
+    )
+
+
+def _profile_evidence_refs(estimates: list[SkillEstimate]) -> list[str]:
+    refs: list[str] = []
+    for estimate in estimates:
+        for example in estimate.examples:
+            if example.game_id is None:
+                continue
+            if example.review_side and example.critical_id:
+                ref = (
+                    f"profile:{example.game_id}:{example.review_side}:"
+                    f"{example.critical_id}:{estimate.skill_id}"
+                )
+            else:
+                ref = f"profile:{example.game_id}:{estimate.skill_id}"
+            if ref not in refs:
+                refs.append(ref)
+    return refs
+
+
 class AgentTools:
-    """Per-run Phase 1 tool set with exact artifact ownership and fakeable Engine I/O."""
+    """Per-run domain tools with exact ownership and fakeable external boundaries."""
 
     def __init__(
         self,
@@ -417,6 +556,10 @@ class AgentTools:
         active_review: ActiveReviewArtifact | None = None,
         analysis_loader: AnalysisLoader = games.load_analysis,
         engine_provider: PositionAnalysisProvider | None = None,
+        opening_classifier: OpeningClassifier = openings.classify_from_fens,
+        opening_history_fens: list[str] | None = None,
+        profile_loader: ProfileLoader | None = None,
+        personalization_enabled: bool | None = None,
         depth: int | None = None,
         multipv: int = 3,
         line_plies: int | None = None,
@@ -429,6 +572,14 @@ class AgentTools:
         self._active_review = active_review
         self._analysis_loader = analysis_loader
         self._engine_provider = engine_provider or CorePositionAnalysisProvider()
+        self._opening_classifier = opening_classifier
+        self._opening_history_fens = list(opening_history_fens or [])
+        self._profile_loader = profile_loader or _load_local_player_profile
+        self.personalization_enabled = (
+            config.PERSONALIZE_HISTORY
+            if personalization_enabled is None
+            else bool(personalization_enabled)
+        )
         self.depth = max(1, int(depth if depth is not None else _analysis_depth()))
         self.multipv = max(1, min(3, int(multipv)))
         self.line_plies = max(
@@ -440,6 +591,48 @@ class AgentTools:
     @property
     def last_execution(self) -> ToolExecution[Any] | None:
         return self.executions[-1] if self.executions else None
+
+    def review_recurrence_evidence(self) -> dict[str, dict[str, Any]]:
+        """Return bounded, game-backed category recurrence for deterministic prioritization.
+
+        This is a Core-side helper, not a model tool.  Disabled personalization and any profile
+        failure both degrade to no recurrence signal without reading unrelated history.
+        """
+        if not self.personalization_enabled:
+            return {}
+        try:
+            profile = self._profile_loader()
+            recent = profile.get("recent") or {}
+            rows = recent.get("categories") or []
+            evidence: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                category = str(row.get("category") or "").strip()
+                count = max(0, int(row.get("count") or 0))
+                if not category or category == "uncategorized" or count < 2:
+                    continue
+                refs: list[str] = []
+                for raw_example in (row.get("examples") or [])[:3]:
+                    if not isinstance(raw_example, dict):
+                        continue
+                    example = _profile_example(raw_example)
+                    if example is None or example.game_id is None:
+                        continue
+                    if example.review_side and example.critical_id:
+                        ref = (
+                            f"profile:{example.game_id}:{example.review_side}:"
+                            f"{example.critical_id}:{category}"
+                        )
+                    else:
+                        ref = f"profile:{example.game_id}:{category}"
+                    if ref not in refs:
+                        refs.append(ref)
+                if refs:
+                    evidence[category] = {"count": count, "evidence_refs": refs}
+            return evidence
+        except Exception:  # noqa: BLE001 - recurrence is an optional prioritization feature
+            return {}
 
     def would_use_engine(self, name: AgentToolName, request: BaseModel) -> bool:
         """Conservatively predict Engine use without performing storage or Engine I/O."""
@@ -566,6 +759,10 @@ class AgentTools:
             execution = await self._analyze_position(request)
         elif name == "analyze_move" and isinstance(request, AnalyzeMoveInput):
             execution = await self._analyze_move(request)
+        elif name == "lookup_opening" and isinstance(request, LookupOpeningInput):
+            execution = await self._lookup_opening(request)
+        elif name == "get_player_profile" and isinstance(request, GetPlayerProfileInput):
+            execution = await self._get_player_profile(request)
         else:
             raise ValueError(f"Unsupported Agent tool or input type: {name}")
         self.executions.append(execution)
@@ -591,6 +788,181 @@ class AgentTools:
     ) -> ToolResult[AnalyzeMoveResult]:
         execution = await self.execute("analyze_move", request)
         return cast(ToolResult[AnalyzeMoveResult], execution.result)
+
+    async def lookup_opening(
+        self,
+        request: LookupOpeningInput,
+    ) -> ToolResult[LookupOpeningResult]:
+        execution = await self.execute("lookup_opening", request)
+        return cast(ToolResult[LookupOpeningResult], execution.result)
+
+    async def get_player_profile(
+        self,
+        request: GetPlayerProfileInput,
+    ) -> ToolResult[GetPlayerProfileResult]:
+        execution = await self.execute("get_player_profile", request)
+        return cast(ToolResult[GetPlayerProfileResult], execution.result)
+
+    async def _lookup_opening(
+        self,
+        request: LookupOpeningInput,
+    ) -> ToolExecution[LookupOpeningResult]:
+        try:
+            fens, lookup_kind = _opening_lookup_fens(request)
+            if (
+                request.fen is not None
+                and self._opening_history_fens
+                and self._opening_history_fens[-1] == request.fen
+            ):
+                fens = list(self._opening_history_fens)
+                lookup_kind = "validated_game_history"
+            eco, name = self._opening_classifier(fens)
+            recognized = bool(eco or name)
+            data = LookupOpeningResult(
+                eco=eco,
+                name=name,
+                classification="recognized" if recognized else "unrecognized",
+                metadata={
+                    "source": "local_eco",
+                    "lookup": lookup_kind,
+                    "positions_checked": len(fens),
+                },
+            )
+        except ArtifactConsistencyError:
+            return cast(
+                ToolExecution[LookupOpeningResult],
+                _failure(
+                    "lookup_opening",
+                    _tool_error(
+                        "illegal_move",
+                        "The recent moves do not form a legal opening sequence.",
+                        recoverable=False,
+                    ),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - local boundary degrades to a stable tool error
+            return cast(
+                ToolExecution[LookupOpeningResult],
+                _failure(
+                    "lookup_opening",
+                    _tool_error(
+                        "position_not_found",
+                        "The local opening book could not be read for this position.",
+                        recoverable=True,
+                    ),
+                ),
+            )
+        evidence = (
+            [_evidence_ref("opening", fens[-1], str(eco or ""), str(name or ""))]
+            if recognized and fens
+            else []
+        )
+        return _success(
+            "lookup_opening",
+            data,
+            evidence,
+            cache_hit=True,
+            engine_call_count=0,
+        )
+
+    async def _get_player_profile(
+        self,
+        request: GetPlayerProfileInput,
+    ) -> ToolExecution[GetPlayerProfileResult]:
+        if not self.personalization_enabled:
+            return cast(
+                ToolExecution[GetPlayerProfileResult],
+                _failure(
+                    "get_player_profile",
+                    _tool_error(
+                        "profile_unavailable",
+                        "Personalized coaching is disabled in local settings.",
+                        recoverable=False,
+                    ),
+                ),
+            )
+        try:
+            profile = self._profile_loader()
+            if not isinstance(profile, dict):
+                raise TypeError("Profile boundary returned a non-object value.")
+            analyzed_games = max(0, int(profile.get("games_analyzed") or 0))
+            recent = profile.get("recent") or {}
+            lifetime = profile.get("lifetime") or {}
+            if not isinstance(recent, dict) or not isinstance(lifetime, dict):
+                raise TypeError("Profile aggregates are invalid.")
+            weakness_categories = {
+                str(item.get("category") or "")
+                for item in recent.get("weaknesses", []) or []
+                if isinstance(item, dict)
+            }
+            focus = {
+                str(item).strip().casefold()
+                for item in [*request.focus_categories, *request.focus_skill_ids]
+                if str(item).strip()
+            }
+            rows = [item for item in recent.get("categories", []) or [] if isinstance(item, dict)]
+            if focus:
+                rows = [
+                    item
+                    for item in rows
+                    if str(item.get("category") or "").casefold() in focus
+                    or any(
+                        value.endswith(f".{str(item.get('category') or '').casefold()}")
+                        for value in focus
+                    )
+                ]
+            rows.sort(
+                key=lambda item: (
+                    -int(str(item.get("category") or "") in weakness_categories),
+                    -int(item.get("count") or 0),
+                    -float(item.get("cumulative_win_loss") or 0.0),
+                    str(item.get("category") or ""),
+                )
+            )
+            estimates = [
+                estimate
+                for estimate in (
+                    _profile_estimate(
+                        item,
+                        analyzed_games=analyzed_games,
+                        weakness_categories=weakness_categories,
+                    )
+                    for item in rows
+                )
+                if estimate is not None
+            ][: request.limit]
+            training = recent.get("training") or {}
+            training_rate = (
+                float(training["solve_rate"])
+                if isinstance(training, dict) and training.get("solve_rate") is not None
+                else None
+            )
+            data = GetPlayerProfileResult(
+                analyzed_games=analyzed_games,
+                relevant_estimates=estimates,
+                training_success_rate=training_rate,
+                recent=_compact_profile_stats(recent),
+                lifetime=_compact_profile_stats(lifetime),
+            )
+        except Exception:  # noqa: BLE001 - storage/profile failures use the typed degradation path
+            return cast(
+                ToolExecution[GetPlayerProfileResult],
+                _failure(
+                    "get_player_profile",
+                    _tool_error(
+                        "profile_unavailable",
+                        "The local player profile could not be loaded.",
+                        recoverable=True,
+                    ),
+                ),
+            )
+        return _success(
+            "get_player_profile",
+            data,
+            _profile_evidence_refs(estimates),
+            cache_hit=True,
+            engine_call_count=0,
+        )
 
     async def _get_review_context(
         self,

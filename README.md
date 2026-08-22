@@ -77,7 +77,6 @@ fact category 筛选，多个合理候选着均可通过，不要求猜中 Engin
 | `CHESS_EXPLANATION_TIMEOUT` | 单局面模型调用超时秒数 | `600` |
 | `CHESS_EXPLANATION_LANGUAGE` | 结构化解释语言：`zh-CN` / `en` | `zh-CN` |
 | `CHESS_AGENT_ENABLED` | 是否启用可选 Agent API | `1` |
-| `CHESS_AGENT_REVIEW_CHAT` | 是否让复盘 chat 使用 Agent；关闭时保留旧 chat | `0` |
 | `CHESS_AGENT_MODEL` | Agent SDK 使用的模型，必须显式配置 | 未设置 |
 | `CHESS_AGENT_BASE_URL` | 可选的 Responses-compatible API base URL | OpenAI 官方 API |
 | `CHESS_AGENT_API_KEY` | 自定义 Agent endpoint credential，仅后端读取 | 未设置 |
@@ -164,11 +163,12 @@ CHESS_AGENT_MODEL=your-model OPENAI_API_KEY=your-key \
   .venv/bin/python -m server.web.runner
 ```
 
-默认只开放 Agent session API，不切换复盘 chat。设置 `CHESS_AGENT_REVIEW_CHAT=1` 后，前端仅在
-后端报告 SDK、模型和 credential 均可用时使用 Agent；否则继续走旧 chat。Agent checkpoint、
-SDK conversation 和脱敏 run summary 分别保存在 `<DATA_DIR>/agent/sessions/`、
-`conversations.sqlite3` 和 `runs.jsonl`。Agent 不读取 CLI 登录态，也不会把 endpoint 或 key
-返回浏览器。
+Review chat 始终使用 Agent session/context/message API，不再回退到遗留 `/api/chat` 或 CLI
+conversation state。后端未配置 SDK、模型或 credential 时，chat 会显示 Agent 不可用；棋盘、
+Stockfish 复盘、历史和训练仍可正常工作。Agent checkpoint（包括 compact conversation
+summary）、SDK conversation 和脱敏 run summary 分别保存在
+`<DATA_DIR>/agent/sessions/`、`conversations.sqlite3` 和 `runs.jsonl`。Agent 不读取 CLI 登录态，
+也不会把 endpoint 或 key 返回浏览器。遗留 `/api/chat` 仅供尚未迁移的其他功能使用。
 
 AI 教练同样不是 Web 启动前提；没有模型时，Stockfish 复盘、棋盘、历史和训练功能仍可
 工作。解释业务层通过统一 Provider 接口调用本地/远程 OpenAI-compatible API 或可选的

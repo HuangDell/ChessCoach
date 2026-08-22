@@ -128,39 +128,26 @@ function visibleMessages(elements) {
   return (elements.get("chat-messages").children || []).filter((item) => !item.removed);
 }
 
-test("legacy chat remains the default unless every Agent feature flag is available", async () => {
-  for (const capability of [
-    {},
-    enabledCapability({ enabled: false }),
-    enabledCapability({ available: false }),
-    enabledCapability({ features: { review_chat: false } }),
-  ]) {
-    const legacyCalls = [];
-    const agentCalls = [];
-    const fixture = setupChat({
-      legacyApi: {
-        chatHistory: async () => ({ messages: [] }),
-        chat: async (body, options) => {
-          legacyCalls.push({ body, options });
-          return { answer: "Legacy answer", session_id: "legacy-1" };
-        },
-      },
-      agentApi: {
-        createSession: async () => { agentCalls.push("create"); },
-      },
-    });
-    try {
-      fixture.chat.setAgentCapability(capability);
-      fixture.$("chat-input").value = "Why this move?";
-      await fixture.$("chat-form").emit("submit", { preventDefault() {} });
-      assert.equal(legacyCalls.length, 1);
-      assert.equal(legacyCalls[0].body.question, "Why this move?");
-      assert.equal(legacyCalls[0].options.signal instanceof AbortSignal, true);
-      assert.deepEqual(agentCalls, []);
-      assert.equal(visibleMessages(fixture.elements).at(-1).className, "chat-msg bot");
-    } finally {
-      fixture.cleanup();
-    }
+test("Review chat never falls back to the legacy endpoint when Agent is unavailable", async () => {
+  const legacyCalls = [];
+  const fixture = setupChat({
+    legacyApi: {
+      chatHistory: async () => { legacyCalls.push("history"); },
+      chat: async () => { legacyCalls.push("send"); },
+    },
+    agentApi: {
+      createSession: async () => { throw new Error("Agent should be rejected before a run"); },
+    },
+  });
+  try {
+    fixture.chat.setAgentCapability(enabledCapability({ available: false }));
+    fixture.$("chat-input").value = "Why this move?";
+    await fixture.$("chat-form").emit("submit", { preventDefault() {} });
+    assert.deepEqual(legacyCalls, []);
+    assert.match(visibleMessages(fixture.elements).at(-1).innerHTML, /unavailable/i);
+    assert.equal(fixture.$("chat-send").disabled, false);
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -218,7 +205,7 @@ test("Agent chat restores the browser session, syncs context, and sends the CAS 
     assert.equal(fixture.$("chat-send").disabled, false);
     assert.equal(sessionStore.getItem("chessAgentSessionId"), "agent-1");
     assert.equal(visibleMessages(fixture.elements).at(-1).innerHTML.includes("queen exposed"), true);
-    assert.equal(calls.filter(([kind]) => kind === "context").length, 2);
+    assert.equal(calls.filter(([kind]) => kind === "context").length, 1);
   } finally {
     fixture.cleanup();
   }
@@ -250,7 +237,7 @@ test("navigation aborts and discards a late Agent response while syncing the new
     fixture.$("chat-input").value = "Explain this.";
     const sending = fixture.$("chat-form").emit("submit", { preventDefault() {} });
     await waitFor(() => sentSignal !== null);
-    fixture.chat.setMoveContext(START_FEN, "e4");
+    fixture.chat.setContext({ ...positionContext(), active_ply: 1 });
     assert.equal(sentSignal.aborted, true);
     assert.equal(fixture.$("chat-send").disabled, false);
 
@@ -302,6 +289,39 @@ test("context sync reconciles one stale generation and retries with the refreshe
   }
 });
 
+test("context sync recreates an expired session and retries under the new epoch", async () => {
+  const updatedSessions = [];
+  let creates = 0;
+  const fixture = setupChat({
+    sessionStore: memoryStorage({ chessAgentSessionId: "agent-expired" }),
+    agentApi: {
+      getSession: async (id) => ({ session: { session_id: id, generation: 4 } }),
+      createSession: async () => {
+        creates += 1;
+        return { session: { session_id: "agent-recreated", generation: 0 } };
+      },
+      updateContext: async (id, body) => {
+        updatedSessions.push(id);
+        if (id === "agent-expired") {
+          throw Object.assign(new Error("missing"), { status: 404 });
+        }
+        return {
+          session: { session_id: id, generation: body.expected_generation + 1 },
+        };
+      },
+    },
+  });
+  try {
+    fixture.chat.setAgentCapability(enabledCapability());
+    await fixture.chat.restore();
+    assert.deepEqual(updatedSessions, ["agent-expired", "agent-recreated"]);
+    assert.equal(creates, 1);
+    assert.equal(fixture.chat.sessionId, "agent-recreated");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("rapid board changes serialize Agent context compare-and-set updates", async () => {
   let serverGeneration = 0;
   let updateCount = 0;
@@ -335,9 +355,9 @@ test("rapid board changes serialize Agent context compare-and-set updates", asyn
   try {
     fixture.chat.setAgentCapability(enabledCapability());
     await fixture.chat.restore();
-    fixture.chat.setMoveContext(START_FEN, "e4");
+    fixture.chat.setContext({ ...positionContext(), active_ply: 1 });
     await waitFor(() => gates.length === 1);
-    fixture.chat.setMoveContext(START_FEN, "d4");
+    fixture.chat.setContext({ ...positionContext(), active_ply: 2 });
     assert.equal(gates.length, 1);
     gates[0].resolve();
     await waitFor(() => gates.length === 2);

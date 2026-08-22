@@ -90,8 +90,12 @@ export function createReviewArtifacts({
     renderCritical(getSnapshot().activeCritical);
   }
 
-  async function load(gameId, side) {
+  async function load(gameId, side, options = {}) {
+    const token = ++generation;
     const currentGameId = gameId || getSnapshot().currentGameId;
+    const isCurrent = () => (
+      token === generation && getSnapshot().currentGameId === currentGameId
+    );
     setState({
       currentGameId,
       engineReview: null,
@@ -110,24 +114,34 @@ export function createReviewArtifacts({
     }
     let engineReview;
     try {
-      engineReview = await api.analysis(currentGameId, side);
-    } catch (_) {
+      engineReview = await api.analysis(currentGameId, side, options);
+    } catch (error) {
+      if (!isCurrent() || (error && error.name === "AbortError")) return false;
       setWorkflowState(
         "partial_ready",
         "Engine review ready",
         "Structured artifact is unavailable; timeline navigation still works."
       );
       renderList();
-      return;
+      return true;
     }
+    if (!isCurrent()) return false;
     setState({
       engineReview,
       criticalPositions: (engineReview.critical_positions || []).slice(),
     });
     try {
-      const explanationArtifact = await api.explanations(currentGameId, { review_side: side });
+      const explanationArtifact = await api.explanations(
+        currentGameId,
+        { review_side: side },
+        options
+      );
+      if (!isCurrent()) return false;
       setState({ explanationArtifact });
-    } catch (_) {}
+    } catch (error) {
+      if (!isCurrent() || (error && error.name === "AbortError")) return false;
+    }
+    if (!isCurrent()) return false;
     const snapshot = getSnapshot();
     const ready = ((snapshot.explanationArtifact && snapshot.explanationArtifact.positions) || []).length;
     const total = snapshot.criticalPositions.length;
@@ -143,6 +157,7 @@ export function createReviewArtifacts({
     $("critical-review").hidden = !snapshot.criticalPositions.length;
     refreshView();
     renderGraph();
+    return true;
   }
 
   return { reset, generateExplanations, load };

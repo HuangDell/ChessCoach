@@ -5,33 +5,203 @@ import { storageGet, storageSet } from "../core/storage.js";
 
 const AGENT_SESSION_KEY = "chessAgentSessionId";
 
+function unavailable(capability) {
+  return capability && (
+    capability.enabled === false ||
+    capability.available === false
+  );
+}
+
+function referenceLabel(reference = {}) {
+  if (reference.kind === "critical_position") {
+    return reference.critical_id || "Key position";
+  }
+  if (reference.kind === "game") return "Open game";
+  if (reference.kind === "skill") return reference.skill_id || "Review skill";
+  if (reference.ply != null) return `Position ${Number(reference.ply) + 1}`;
+  return "Open position";
+}
+
+function toolSummary(toolCalls = []) {
+  if (!toolCalls.length) return "";
+  return toolCalls.map((call) => {
+    const status = call.status === "ok"
+      ? (call.cache_hit ? "cached" : "ok")
+      : String(call.status || "error").replaceAll("_", " ");
+    return `${call.name || "tool"}: ${status}`;
+  }).join(" · ");
+}
+
+export function buildReviewAgentContext(snapshot = {}, details = {}) {
+  const {
+    currentGameId,
+    player,
+    timeline = [],
+    criticalPositions = [],
+    activeCriticalId,
+    retryActive,
+    navigation = {},
+  } = snapshot;
+  const suppliedFen = details.fen || snapshot.fen;
+  const recentMainline = (ply) => timeline
+    .slice(Math.max(0, Number(ply) - 8), Number(ply))
+    .filter((node) => node.move_uci && node.move_san);
+  const criticalAtBasePly = (ply, requestedId = null) => {
+    if (requestedId) {
+      const requested = criticalPositions.find((item) => item.critical_id === requestedId);
+      if (requested && Number(requested.ply) - 1 === Number(ply)) return requested;
+    }
+    return criticalPositions.find((item) => Number(item.ply) - 1 === Number(ply)) || null;
+  };
+  const reference = (basePly, baseFen, critical) => ({
+    game_id: currentGameId,
+    review_side: player,
+    critical_id: critical ? critical.critical_id : null,
+    ply: critical ? Number(critical.ply) : Number(basePly),
+    fen: baseFen,
+  });
+
+  if (!currentGameId || !timeline.length) {
+    return {
+      game_id: null,
+      review_side: null,
+      active_ply: null,
+      active_critical_id: null,
+      activity: "position_analysis",
+      focus_ref: null,
+      position: suppliedFen ? {
+        fen: suppliedFen,
+        recent_moves_uci: [],
+        recent_moves_san: [],
+        reference: { fen: suppliedFen },
+      } : null,
+    };
+  }
+
+  if (retryActive) {
+    const critical = criticalPositions.find((item) => item.critical_id === activeCriticalId) || null;
+    if (critical) {
+      const basePly = Math.max(0, Number(critical.ply) - 1);
+      const recent = recentMainline(basePly);
+      const explorationMovesUci = details.explorationMovesUci || [];
+      const explorationMovesSan = details.explorationMovesSan || [];
+      return {
+        game_id: currentGameId,
+        review_side: player,
+        active_ply: basePly,
+        active_critical_id: critical.critical_id,
+        activity: "retry",
+        focus_ref: `retry:${critical.critical_id}`,
+        position: {
+          fen: suppliedFen || critical.fen_before,
+          recent_moves_uci: recent.map((node) => node.move_uci),
+          recent_moves_san: recent.map((node) => node.move_san),
+          ...(explorationMovesUci.length ? {
+            exploration_moves_uci: explorationMovesUci,
+            exploration_moves_san: explorationMovesSan,
+          } : {}),
+          reference: reference(basePly, critical.fen_before, critical),
+        },
+      };
+    }
+  }
+
+  const exploring = details.mode === "variation" || details.mode === "exploration" ||
+    navigation.exploring;
+  if (exploring) {
+    const basePly = Number(details.basePly ?? navigation.exploreBaseNode ?? navigation.cur);
+    const baseFen = details.baseFen || (timeline[basePly] && timeline[basePly].fen) || suppliedFen;
+    const critical = criticalAtBasePly(basePly, details.criticalId || activeCriticalId);
+    const recent = recentMainline(basePly);
+    return {
+      game_id: currentGameId,
+      review_side: player,
+      active_ply: basePly,
+      active_critical_id: critical ? critical.critical_id : null,
+      activity: "position_analysis",
+      focus_ref: details.mode === "variation"
+        ? `variation:${critical ? critical.critical_id : basePly}`
+        : `exploration:${basePly}`,
+      position: {
+        fen: suppliedFen,
+        recent_moves_uci: recent.map((node) => node.move_uci),
+        recent_moves_san: recent.map((node) => node.move_san),
+        exploration_moves_uci: details.explorationMovesUci || [],
+        exploration_moves_san: details.explorationMovesSan || [],
+        reference: reference(basePly, baseFen, critical),
+      },
+    };
+  }
+
+  const activePly = Number(details.ply ?? navigation.cur);
+  const fen = suppliedFen || (timeline[activePly] && timeline[activePly].fen);
+  const critical = criticalAtBasePly(activePly, activeCriticalId);
+  const recent = recentMainline(activePly);
+  const position = {
+    fen,
+    recent_moves_uci: recent.map((node) => node.move_uci),
+    recent_moves_san: recent.map((node) => node.move_san),
+    reference: reference(activePly, fen, critical),
+  };
+  if (details.selectedFen === fen && details.selectedMoveSan && details.selectedMoveUci) {
+    position.selected_move_san = details.selectedMoveSan;
+    position.selected_move_uci = details.selectedMoveUci;
+  }
+  return {
+    game_id: currentGameId,
+    review_side: player,
+    active_ply: activePly,
+    active_critical_id: critical ? critical.critical_id : null,
+    activity: "game_review",
+    focus_ref: critical ? `critical:${critical.critical_id}` : null,
+    position,
+  };
+}
+
+export function buildTrainingAgentContext(fen) {
+  return {
+    game_id: null,
+    review_side: null,
+    active_ply: null,
+    active_critical_id: null,
+    activity: "training",
+    focus_ref: null,
+    position: fen ? {
+      fen,
+      recent_moves_uci: [],
+      recent_moves_san: [],
+      reference: { fen },
+    } : null,
+  };
+}
+
 export function createReviewChat({
   $,
-  api,
   agentApi,
-  getBoardFen,
-  getAgentContext,
-  usePersonalHistory,
+  getAgentContext = () => null,
+  onReference = () => {},
+  onAction = () => {},
   sessionStore = globalThis.sessionStorage,
 }) {
-  let moveFen = null;
-  let moveSan = null;
-  let moveUci = null;
-  let legacySessionId = null;
   let agentSessionId = storageGet(sessionStore, AGENT_SESSION_KEY, "") || null;
   let agentGeneration = null;
-  let agentEnabled = false;
+  let capability = null;
+  let currentContext = null;
+  let currentContextSignature = "";
+  let syncedContextSignature = "";
+  let queuedContextSignature = "";
   let generation = 0;
   let contextQueue = Promise.resolve();
   let sessionPromise = null;
   let sessionEpoch = 0;
   let pendingMessage = null;
+  let restoredSummary = "";
   const messageScope = createLatestRequestScope();
 
   function addMessage(className, text) {
     const message = document.createElement("div");
     message.className = `chat-msg ${className}`;
-    if (className === "bot") message.innerHTML = renderMarkdown(text);
+    if (className.split(" ").includes("bot")) message.innerHTML = renderMarkdown(text);
     else message.textContent = text;
     const messages = $("chat-messages");
     messages.appendChild(message);
@@ -39,26 +209,59 @@ export function createReviewChat({
     return message;
   }
 
-  function setMoveContext(fen, san = null, uci = null) {
-    moveFen = fen;
-    moveSan = san;
-    moveUci = uci;
-    invalidatePending();
-    if (agentEnabled && agentSessionId) void enqueueContextSync().catch(() => {});
+  function addInteractiveButton(parent, label, handler) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-response-action";
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await handler();
+      } catch (error) {
+        addMessage("bot err", errorMessage(error, "That coach action is no longer available."));
+      } finally {
+        button.disabled = false;
+      }
+    });
+    parent.appendChild(button);
   }
 
-  function reset() {
-    invalidatePending();
-    const obsoleteSessionId = agentSessionId;
-    moveFen = null;
-    moveSan = null;
-    moveUci = null;
-    legacySessionId = null;
-    $("chat-messages").innerHTML = "";
-    forgetAgentSession();
-    sessionPromise = null;
-    contextQueue = Promise.resolve();
-    if (obsoleteSessionId) void deleteAgentSession(obsoleteSessionId);
+  function addAgentResponse(response = {}, calls = []) {
+    const message = addMessage("bot", response.text || "(no answer)");
+    const references = response.references || [];
+    const actions = response.suggested_actions || [];
+    if (references.length || actions.length) {
+      const controls = document.createElement("div");
+      controls.className = "chat-response-actions";
+      for (const reference of references) {
+        addInteractiveButton(controls, referenceLabel(reference), () => onReference(reference));
+      }
+      for (const action of actions) {
+        addInteractiveButton(controls, action.label || "Open", () => onAction(action));
+      }
+      message.appendChild(controls);
+    }
+    const summary = toolSummary(calls);
+    if (summary) {
+      const details = document.createElement("details");
+      details.className = "chat-tool-summary";
+      const heading = document.createElement("summary");
+      heading.textContent = `${calls.length} coach tool${calls.length === 1 ? "" : "s"}`;
+      const content = document.createElement("div");
+      content.textContent = summary;
+      details.appendChild(heading);
+      details.appendChild(content);
+      message.appendChild(details);
+    }
+    return message;
+  }
+
+  function renderConversationSummary(session) {
+    const summary = String((session && session.conversation_summary) || "").trim();
+    if (!summary || summary === restoredSummary) return;
+    restoredSummary = summary;
+    addMessage("bot summary", `**Earlier coaching context:** ${summary}`);
   }
 
   function invalidatePending() {
@@ -69,14 +272,68 @@ export function createReviewChat({
     $("chat-send").disabled = false;
   }
 
-  function setAgentCapability(capability = {}) {
-    const features = capability.features || {};
-    const enabled = capability.enabled === true &&
-      capability.available === true &&
-      features.review_chat === true;
-    if (enabled === agentEnabled) return;
+  function semanticSignature(context) {
+    try {
+      return JSON.stringify(context || null);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function setContext(context) {
+    const signature = semanticSignature(context);
+    if (signature && signature === currentContextSignature) return contextQueue;
+    currentContext = context || null;
+    currentContextSignature = signature;
     invalidatePending();
-    agentEnabled = enabled;
+    const sync = enqueueContextSync(currentContext);
+    void sync.catch(() => {});
+    return sync;
+  }
+
+  // Narrow compatibility adapter for callers that focus one legal move.
+  function setMoveContext(fen, san = null, uci = null) {
+    const base = currentContext || getAgentContext() || {};
+    const position = {
+      ...(base.position || {}),
+      fen,
+      reference: (base.position && base.position.reference) || { fen },
+    };
+    if (san && uci) {
+      position.selected_move_san = san;
+      position.selected_move_uci = uci;
+    } else {
+      delete position.selected_move_san;
+      delete position.selected_move_uci;
+    }
+    return setContext({ ...base, position });
+  }
+
+  function contextChanged() {
+    currentContext = null;
+    currentContextSignature = "";
+    syncedContextSignature = "";
+    queuedContextSignature = "";
+    invalidatePending();
+  }
+
+  function reset() {
+    invalidatePending();
+    const obsoleteSessionId = agentSessionId;
+    currentContext = null;
+    currentContextSignature = "";
+    syncedContextSignature = "";
+    queuedContextSignature = "";
+    restoredSummary = "";
+    $("chat-messages").innerHTML = "";
+    forgetAgentSession();
+    sessionPromise = null;
+    contextQueue = Promise.resolve();
+    if (obsoleteSessionId) void deleteAgentSession(obsoleteSessionId);
+  }
+
+  function setAgentCapability(value = {}) {
+    capability = value;
   }
 
   function sessionFields(context) {
@@ -95,6 +352,10 @@ export function createReviewChat({
     if (!session || !session.session_id || !Number.isInteger(session.generation)) {
       throw new Error("The Agent service returned an invalid session.");
     }
+    if (agentSessionId && agentSessionId !== session.session_id) {
+      syncedContextSignature = "";
+      queuedContextSignature = "";
+    }
     agentSessionId = session.session_id;
     agentGeneration = session.generation;
     storageSet(sessionStore, AGENT_SESSION_KEY, agentSessionId);
@@ -105,6 +366,8 @@ export function createReviewChat({
     sessionEpoch += 1;
     agentSessionId = null;
     agentGeneration = null;
+    syncedContextSignature = "";
+    queuedContextSignature = "";
     storageSet(sessionStore, AGENT_SESSION_KEY, "");
   }
 
@@ -133,7 +396,8 @@ export function createReviewChat({
       }
     }
     const createEpoch = sessionEpoch;
-    const payload = await agentApi.createSession(sessionFields(getAgentContext()));
+    const context = currentContext || getAgentContext();
+    const payload = await agentApi.createSession(sessionFields(context));
     if (createEpoch !== sessionEpoch) {
       const createdId = payload && payload.session && payload.session.session_id;
       if (createdId) void deleteAgentSession(createdId);
@@ -154,14 +418,14 @@ export function createReviewChat({
 
   async function updateAgentContext(context) {
     const updateEpoch = sessionEpoch;
-    const update = async () => {
-      if (updateEpoch !== sessionEpoch) throw new DOMException("Superseded", "AbortError");
+    const update = async (expectedEpoch = updateEpoch) => {
+      if (expectedEpoch !== sessionEpoch) throw new DOMException("Superseded", "AbortError");
       const requestedSessionId = agentSessionId;
       const payload = await agentApi.updateContext(requestedSessionId, {
         ...context,
         expected_generation: agentGeneration,
       });
-      if (updateEpoch !== sessionEpoch || requestedSessionId !== agentSessionId) {
+      if (expectedEpoch !== sessionEpoch || requestedSessionId !== agentSessionId) {
         throw new DOMException("Superseded", "AbortError");
       }
       return adoptAgentSession(payload);
@@ -169,118 +433,84 @@ export function createReviewChat({
     try {
       return await update();
     } catch (error) {
-      if (!error || error.status !== 409) throw error;
+      if (!error || ![404, 409].includes(error.status)) throw error;
+      if (error.status === 404) {
+        forgetAgentSession();
+        await ensureAgentSession();
+        return update(sessionEpoch);
+      }
       await ensureAgentSession();
       return update();
     }
   }
 
   function enqueueContextSync(context = null) {
+    const desiredContext = context || currentContext || getAgentContext();
+    const signature = semanticSignature(desiredContext);
+    if (signature && (
+      signature === queuedContextSignature ||
+      (signature === syncedContextSignature && !queuedContextSignature)
+    )) return contextQueue;
     const requestedGeneration = generation;
+    queuedContextSignature = signature;
     contextQueue = contextQueue.catch(() => {}).then(async () => {
-      if (!agentEnabled || requestedGeneration !== generation) return null;
+      if (requestedGeneration !== generation) return null;
       if (!agentSessionId || agentGeneration == null) await ensureAgentSession();
       if (requestedGeneration !== generation) return null;
-      return updateAgentContext(context || getAgentContext());
+      const result = await updateAgentContext(desiredContext);
+      syncedContextSignature = signature;
+      return result;
+    }).finally(() => {
+      if (queuedContextSignature === signature) queuedContextSignature = "";
     });
     return contextQueue;
   }
 
   async function restore() {
     const expectedGeneration = generation;
-    if (agentEnabled) {
-      try {
-        await ensureAgentSession();
-        if (expectedGeneration === generation) await enqueueContextSync();
-      } catch (_) {}
-      return;
-    }
-    let history;
     try {
-      history = await api.chatHistory();
+      const session = await ensureAgentSession();
+      if (expectedGeneration !== generation) return;
+      renderConversationSummary(session);
+      const context = currentContext || getAgentContext();
+      if (context) await enqueueContextSync(context);
     } catch (_) {
-      return;
-    }
-    if (expectedGeneration !== generation) return;
-    $("chat-messages").innerHTML = "";
-    for (const message of (history && history.messages) || []) {
-      addMessage(message.role === "bot" ? "bot" : "user", message.text);
-    }
-    legacySessionId = (history && history.session_id) || null;
-  }
-
-  async function sendLegacy(question, request, expectedGeneration) {
-    const result = await api.chat({
-      question,
-      fen: getBoardFen(),
-      last_move: moveSan,
-      move_fen: moveFen,
-      session_id: legacySessionId,
-      use_profile: usePersonalHistory(),
-    }, { signal: request.signal });
-    if (!request.isCurrent() || expectedGeneration !== generation) return;
-    if (result.error) addMessage("bot err", result.error);
-    else {
-      addMessage("bot", result.answer || "(no answer)");
-      if (result.session_id) legacySessionId = result.session_id;
+      // Session restore is optional UI state; Engine Review remains independent.
     }
   }
 
   async function sendAgent(question, request, expectedGeneration) {
+    if (unavailable(capability)) {
+      throw new Error("The Agent coach is unavailable. Engine Review is still available.");
+    }
     await ensureAgentSession();
     if (!request.isCurrent() || expectedGeneration !== generation) return;
-    await enqueueContextSync(agentContextForMessage());
+    const context = currentContext || getAgentContext();
+    if (context) await enqueueContextSync(context);
     if (!request.isCurrent() || expectedGeneration !== generation) return;
     const result = await agentApi.sendMessage(agentSessionId, {
       message: question,
       expected_generation: agentGeneration,
     }, { signal: request.signal });
     if (!request.isCurrent() || expectedGeneration !== generation) return;
-    adoptAgentSession(result);
+    const session = adoptAgentSession(result);
     if (result.error) addMessage("bot err", errorMessage(result.error));
-    else addMessage("bot", (result.response && result.response.text) || "(no answer)");
-  }
-
-  function agentContextForMessage() {
-    const context = getAgentContext();
-    if (!moveFen || !moveUci || !moveSan) return context;
-    const selectedPosition = {
-      ...(context.position || {}),
-      fen: moveFen,
-      selected_move_uci: moveUci,
-      selected_move_san: moveSan,
-    };
-    if (!context.position || context.position.fen !== moveFen) {
-      selectedPosition.recent_moves_uci = [];
-      selectedPosition.recent_moves_san = [];
-      selectedPosition.reference = { fen: moveFen };
-      return {
-        game_id: null,
-        review_side: null,
-        active_ply: null,
-        active_critical_id: null,
-        activity: "position_analysis",
-        position: selectedPosition,
-      };
-    }
-    return { ...context, position: selectedPosition };
+    else addAgentResponse(result.response || {}, result.tool_calls || []);
+    renderConversationSummary(session);
   }
 
   async function send(event) {
     event.preventDefault();
     const input = $("chat-input");
-    const question = input.value.trim() || (moveSan
-      ? `Why is ${moveSan} bad here?`
-      : "What's the best move in this position, and why?");
+    const question = input.value.trim() || "What's the best move in this position, and why?";
     input.value = "";
     addMessage("user", question);
     const request = messageScope.begin();
     const expectedGeneration = generation;
     $("chat-send").disabled = true;
-    pendingMessage = addMessage("bot pending", "Snowie is thinking… (a few seconds)");
+    pendingMessage = addMessage("bot pending", "Snowie is thinking... (a few seconds)");
     try {
-      if (agentEnabled) await sendAgent(question, request, expectedGeneration);
-      else await sendLegacy(question, request, expectedGeneration);
+      await sendAgent(question, request, expectedGeneration);
     } catch (error) {
       if (request.isCurrent() && error && error.name !== "AbortError") {
         addMessage("bot err", errorMessage(error, "The coach request failed."));
@@ -304,7 +534,10 @@ export function createReviewChat({
     reset,
     restore,
     setAgentCapability,
+    setContext,
     setMoveContext,
+    contextChanged,
     get generation() { return generation; },
+    get sessionId() { return agentSessionId; },
   };
 }

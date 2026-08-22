@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, Sequence
 
 import chess
 
@@ -38,6 +38,27 @@ class ResolvedContextBundle:
     context: ResolvedChessContext
     analysis: dict[str, Any] | None = None
     critical: dict[str, Any] | None = None
+
+
+FollowUpResolutionStatus = Literal["resolved", "ambiguous", "unresolved"]
+FollowUpReferenceSource = Literal[
+    "explicit",
+    "checkpoint",
+    "discussed",
+    "recent_turn",
+    "summary",
+]
+
+
+@dataclass(frozen=True)
+class FollowUpResolution:
+    """Result of resolving a follow-up without guessing between equal candidates."""
+
+    status: FollowUpResolutionStatus
+    reference: PositionReference | None = None
+    source: FollowUpReferenceSource | None = None
+    candidates: tuple[PositionReference, ...] = ()
+    message: str = ""
 
 
 ReviewContextLoader = Callable[
@@ -322,13 +343,36 @@ class ChessContextBuilder:
                 raise ChessContextError(
                     "invalid_session_context", "Position reference belongs to another game."
                 )
-            if position is not None and supplied.fen != position.fen:
+            selected_uci, selected_san = _validated_selected_move(supplied)
+            if supplied.exploration_moves_uci:
+                if supplied.reference is None:
+                    raise ChessContextError(
+                        "invalid_session_context",
+                        "Exploration is missing its canonical base position.",
+                    )
+                canonical_base = self.canonicalize_reference(supplied.reference)
+                if (
+                    position is not None
+                    and canonical_base != position.reference
+                ):
+                    raise ChessContextError(
+                        "invalid_session_context",
+                        "Exploration does not start from the active canonical position.",
+                    )
+                values = supplied.model_dump(mode="python")
+                values["reference"] = canonical_base
+                if position is not None:
+                    values["recent_moves_uci"] = position.recent_moves_uci
+                    values["recent_moves_san"] = position.recent_moves_san
+                values["selected_move_uci"] = selected_uci
+                values["selected_move_san"] = selected_san
+                position = PositionContext.model_validate(values)
+            elif position is not None and supplied.fen != position.fen:
                 raise ChessContextError(
                     "invalid_session_context",
                     "Submitted FEN does not match the canonical game ply.",
                 )
-            selected_uci, selected_san = _validated_selected_move(supplied)
-            if position is None:
+            elif position is None:
                 position = supplied
             elif selected_uci is not None:
                 position = position.model_copy(
@@ -350,6 +394,317 @@ class ChessContextBuilder:
             analysis=analysis,
             critical=critical,
         )
+
+    def canonicalize_reference(
+        self,
+        reference: PositionReference,
+        *,
+        session: AgentSessionState | None = None,
+    ) -> PositionReference:
+        """Validate a position pointer against its artifact and fill canonical fields."""
+
+        if reference.game_id is None:
+            if reference.fen is None:
+                raise ChessContextError(
+                    "position_not_found", "The position reference has no usable identity."
+                )
+            return PositionReference(fen=chess.Board(reference.fen).fen())
+
+        game_id = reference.game_id
+        review_side = reference.review_side
+        if (
+            review_side is None
+            and session is not None
+            and session.active_game_id == game_id
+        ):
+            review_side = session.review_side
+
+        trusted_exploration = self._trusted_exploration_reference(
+            reference,
+            session=session,
+            review_side=review_side,
+        )
+        if trusted_exploration is not None:
+            return trusted_exploration
+
+        if reference.critical_id is not None:
+            try:
+                analysis = games.load_analysis(game_id, review_side)
+            except games.GameNotFoundError as exc:
+                raise ChessContextError("position_not_found", str(exc)) from exc
+            artifact_side = analysis.get("review_side")
+            if artifact_side not in ("white", "black"):
+                raise ChessContextError(
+                    "invalid_session_context", "Analysis artifact has no valid review side."
+                )
+            critical = next(
+                (
+                    item
+                    for item in list(analysis.get("critical_positions") or [])
+                    if item.get("critical_id") == reference.critical_id
+                ),
+                None,
+            )
+            if critical is None:
+                raise ChessContextError(
+                    "position_not_found", "The referenced critical position is not available."
+                )
+            ply = int(critical.get("ply") or 0)
+            fen = str(critical.get("fen_before") or "")
+            canonical_position = _position_at_ply(
+                game_id,
+                str(artifact_side),
+                list(analysis.get("moves") or []),
+                ply - 1,
+            )
+            if ply < 1 or canonical_position.fen != fen:
+                raise ChessContextError(
+                    "invalid_session_context",
+                    "The referenced critical position does not match its saved mainline.",
+                )
+            if reference.ply not in (None, ply) or reference.fen not in (None, fen):
+                raise ChessContextError(
+                    "position_not_found", "The reference does not match the critical position."
+                )
+            return PositionReference(
+                game_id=game_id,
+                review_side=artifact_side,
+                critical_id=reference.critical_id,
+                ply=ply,
+                fen=fen,
+            )
+
+        try:
+            if review_side is not None:
+                try:
+                    artifact = games.load_analysis(game_id, review_side)
+                except games.GameNotFoundError:
+                    artifact = games.load_game(game_id)
+            else:
+                artifact = games.load_game(game_id)
+        except games.GameNotFoundError as exc:
+            raise ChessContextError("position_not_found", str(exc)) from exc
+
+        moves = list(artifact.get("moves") or [])
+        if reference.ply is not None:
+            position = _position_at_ply(game_id, review_side, moves, reference.ply)
+            if reference.fen not in (None, position.fen):
+                raise ChessContextError(
+                    "position_not_found", "The reference FEN does not match its saved ply."
+                )
+            return position.reference  # type: ignore[return-value]
+
+        if reference.fen is not None:
+            normalized_fen = chess.Board(reference.fen).fen()
+            matching_plies = [
+                ply
+                for ply in range(len(moves) + 1)
+                if _position_at_ply(game_id, review_side, moves, ply).fen == normalized_fen
+            ]
+            if len(matching_plies) != 1:
+                raise ChessContextError(
+                    "position_not_found",
+                    "The reference FEN does not identify one saved game position.",
+                )
+            position = _position_at_ply(game_id, review_side, moves, matching_plies[0])
+            return position.reference  # type: ignore[return-value]
+
+        if session is not None and session.active_game_id == game_id:
+            current = self.resolve(session).context.position
+            if current is not None and current.reference is not None:
+                return current.reference
+        raise ChessContextError(
+            "position_not_found", "The game reference does not identify a position."
+        )
+
+    def _trusted_exploration_reference(
+        self,
+        reference: PositionReference,
+        *,
+        session: AgentSessionState | None,
+        review_side: str | None,
+    ) -> PositionReference | None:
+        """Accept off-mainline FENs only after checkpoint-backed validation."""
+
+        if (
+            session is None
+            or reference.fen is None
+            or reference.critical_id is not None
+            or reference.ply is not None
+        ):
+            return None
+        normalized = PositionReference(
+            game_id=reference.game_id,
+            review_side=review_side,
+            fen=chess.Board(reference.fen).fen(),
+        )
+        trusted = False
+        supplied = session.position
+        if (
+            supplied is not None
+            and supplied.exploration_moves_uci
+            and supplied.fen == normalized.fen
+            and session.active_game_id == normalized.game_id
+            and session.review_side == normalized.review_side
+        ):
+            # resolve() replays and validates the exploration from its canonical base.
+            current = self.resolve(session).context.position
+            trusted = current is not None and current.fen == normalized.fen
+        if not trusted:
+            trusted = any(existing == normalized for existing in session.discussed_positions)
+        if not trusted:
+            return None
+
+        try:
+            if review_side is not None:
+                games.load_analysis(str(reference.game_id), review_side)
+            else:
+                games.load_game(str(reference.game_id))
+        except games.GameNotFoundError as exc:
+            raise ChessContextError("position_not_found", str(exc)) from exc
+        return normalized
+
+    @staticmethod
+    def _current_reference(
+        session: AgentSessionState,
+        position: PositionContext,
+    ) -> PositionReference | None:
+        if position.exploration_moves_uci:
+            if session.active_game_id is None:
+                return PositionReference(fen=position.fen)
+            return PositionReference(
+                game_id=session.active_game_id,
+                review_side=session.review_side,
+                fen=position.fen,
+            )
+        return position.reference
+
+    def resolve_follow_up_reference(
+        self,
+        session: AgentSessionState,
+        *,
+        explicit_references: Sequence[PositionReference] = (),
+        recent_turn_references: Sequence[PositionReference] = (),
+        summary_references: Sequence[PositionReference] | None = None,
+    ) -> FollowUpResolution:
+        """Resolve one canonical antecedent in the Phase 2 priority order."""
+
+        if explicit_references:
+            resolved = self._resolve_reference_tier(
+                session, "explicit", explicit_references
+            )
+            if resolved.status != "unresolved":
+                return resolved
+            return FollowUpResolution(
+                status="unresolved",
+                source="explicit",
+                message="The explicit position reference is unavailable or expired.",
+            )
+
+        try:
+            current = self.resolve(session).context.position
+        except ChessContextError:
+            current = None
+        current_reference = (
+            self._current_reference(session, current) if current is not None else None
+        )
+        if current_reference is not None:
+            return FollowUpResolution(
+                status="resolved",
+                reference=current_reference,
+                source="checkpoint",
+                candidates=(current_reference,),
+            )
+
+        for reference in reversed(session.discussed_positions):
+            resolved = self._resolve_reference_tier(session, "discussed", [reference])
+            if resolved.status == "resolved":
+                return resolved
+
+        resolved = self._resolve_reference_tier(
+            session, "recent_turn", recent_turn_references
+        )
+        if resolved.status != "unresolved":
+            return resolved
+
+        resolved = self._resolve_reference_tier(
+            session,
+            "summary",
+            (
+                session.conversation_summary_references
+                if summary_references is None
+                else summary_references
+            ),
+        )
+        if resolved.status != "unresolved":
+            return resolved
+        return FollowUpResolution(
+            status="unresolved",
+            message="No validated position reference is available for this follow-up.",
+        )
+
+    def _resolve_reference_tier(
+        self,
+        session: AgentSessionState,
+        source: FollowUpReferenceSource,
+        references: Sequence[PositionReference],
+    ) -> FollowUpResolution:
+        candidates: list[PositionReference] = []
+        identities: set[str] = set()
+        for reference in references:
+            try:
+                canonical = self.canonicalize_reference(reference, session=session)
+            except (ChessContextError, ValueError):
+                continue
+            identity = canonical.model_dump_json(exclude_none=True)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            candidates.append(canonical)
+        if len(candidates) == 1:
+            return FollowUpResolution(
+                status="resolved",
+                reference=candidates[0],
+                source=source,
+                candidates=(candidates[0],),
+            )
+        if len(candidates) > 1:
+            return FollowUpResolution(
+                status="ambiguous",
+                source=source,
+                candidates=tuple(candidates),
+                message="Multiple equally likely positions require explicit clarification.",
+            )
+        return FollowUpResolution(status="unresolved", source=source)
+
+    def validated_discussed_positions(
+        self,
+        session: AgentSessionState,
+        *,
+        limit: int = 5,
+    ) -> list[PositionReference]:
+        """Return only still-valid, unique recent references for model context."""
+
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        if limit == 0:
+            return []
+        recent: list[PositionReference] = []
+        identities: set[str] = set()
+        for reference in reversed(session.discussed_positions):
+            try:
+                canonical = self.canonicalize_reference(reference, session=session)
+            except (ChessContextError, ValueError):
+                continue
+            identity = canonical.model_dump_json(exclude_none=True)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            recent.append(canonical)
+            if len(recent) == limit:
+                break
+        recent.reverse()
+        return recent
 
     async def build_model_context(
         self,
@@ -396,6 +751,7 @@ class ChessContextBuilder:
             engine_facts=engine_facts,
             relevant_profile=None,
             relevant_memory=[],
-            conversation_summary="",
+            conversation_summary=resolved.session.conversation_summary,
+            discussed_positions=self.validated_discussed_positions(resolved.session),
             allowed_evidence_refs=allowed_evidence_refs,
         )

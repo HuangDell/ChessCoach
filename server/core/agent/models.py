@@ -49,6 +49,8 @@ AgentActivity = Literal[
     "game_review",
     "position_analysis",
     "opening_learning",
+    "retry",
+    "training",
     "training_planning",
 ]
 
@@ -280,6 +282,8 @@ class PositionContext(ContractModel):
     fen: str
     recent_moves_uci: list[str] = Field(max_length=8)
     recent_moves_san: list[str] = Field(max_length=8)
+    exploration_moves_uci: list[str] = Field(default_factory=list, max_length=16)
+    exploration_moves_san: list[str] = Field(default_factory=list, max_length=16)
     selected_move_uci: str | None = None
     selected_move_san: str | None = None
     reference: PositionReference | None = None
@@ -297,6 +301,19 @@ class PositionContext(ContractModel):
         cleaned = [value.strip() for value in values]
         if any(not value for value in cleaned):
             raise ValueError("recent SAN moves must not be empty")
+        return cleaned
+
+    @field_validator("exploration_moves_uci")
+    @classmethod
+    def _valid_exploration_uci(cls, values: list[str]) -> list[str]:
+        return [_validate_uci(value) for value in values]
+
+    @field_validator("exploration_moves_san")
+    @classmethod
+    def _valid_exploration_san(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("exploration SAN moves must not be empty")
         return cleaned
 
     @field_validator("selected_move_uci")
@@ -318,9 +335,22 @@ class PositionContext(ContractModel):
     def _paired_move_notation(self) -> "PositionContext":
         if len(self.recent_moves_uci) != len(self.recent_moves_san):
             raise ValueError("recent UCI and SAN histories must contain the same number of plies")
+        if len(self.exploration_moves_uci) != len(self.exploration_moves_san):
+            raise ValueError("exploration requires paired UCI and SAN notation")
         if (self.selected_move_uci is None) != (self.selected_move_san is None):
             raise ValueError("selected move requires both UCI and SAN notation")
-        if self.reference is not None and self.reference.fen not in (None, self.fen):
+        if self.exploration_moves_uci:
+            if self.reference is None or self.reference.fen is None:
+                raise ValueError("exploration requires a canonical base position reference")
+            reached = _replay_line(
+                self.reference.fen,
+                self.exploration_moves_uci,
+                self.exploration_moves_san,
+                label="exploration",
+            )
+            if reached.fen() != self.fen:
+                raise ValueError("exploration moves must reach the supplied FEN")
+        elif self.reference is not None and self.reference.fen not in (None, self.fen):
             raise ValueError("position context FEN must match its reference FEN")
         return self
 
@@ -329,6 +359,7 @@ class TaskContext(ContractModel):
     activity: AgentActivity = "conversation"
     user_goal: str | None = None
     review_side: ReviewSide | None = None
+    personalization_enabled: bool = False
 
 
 class GameContext(ContractModel):
@@ -396,6 +427,10 @@ class AgentSessionState(ContractModel):
     position: PositionContext | None = None
     discussed_positions: list[PositionReference] = Field(default_factory=list)
     conversation_summary: str = ""
+    conversation_summary_references: list[PositionReference] = Field(
+        default_factory=list,
+        max_length=5,
+    )
     generation: int = Field(default=0, ge=0)
     created_at: str = Field(min_length=1)
     updated_at: str = Field(min_length=1)
@@ -459,11 +494,13 @@ class AgentSessionContextRequest(ContractModel):
 class AgentMessageRequest(ContractModel):
     message: str = Field(min_length=1)
     expected_generation: int = Field(ge=0)
+    position_reference: PositionReference | None = None
 
 
 class AgentSessionSummary(ContractModel):
     session_id: str = Field(min_length=1)
     generation: int = Field(ge=0)
+    conversation_summary: str = ""
 
 
 class ResolvedChessContext(ContractModel):
@@ -475,6 +512,46 @@ class ResolvedChessContext(ContractModel):
     training: dict[str, Any] | None
 
 
+class ReviewPriorityCandidate(ContractModel):
+    """Deterministic, comparable features for one bounded review focus candidate."""
+
+    reference: PositionReference
+    classification: str = Field(min_length=1)
+    category: str | None = None
+    severity: float = Field(ge=0)
+    criticality: float = Field(ge=0)
+    fact_confidence: float = Field(ge=0, le=1)
+    recurrence_evidence: int = Field(default=0, ge=0)
+    training_available: bool = False
+    user_goal_relevance: float = Field(default=0, ge=0, le=1)
+    largest_error: bool = False
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
+
+
+class ReviewPrioritizationContext(ContractModel):
+    game_id: str = Field(min_length=1)
+    review_side: ReviewSide
+    candidates: list[ReviewPriorityCandidate] = Field(min_length=1, max_length=8)
+    max_selection: int = Field(default=3, ge=1, le=3)
+
+    @model_validator(mode="after")
+    def _owned_bounded_candidates(self) -> "ReviewPrioritizationContext":
+        identities: set[tuple[str | None, str | None, str | None]] = set()
+        for candidate in self.candidates:
+            reference = candidate.reference
+            if reference.game_id != self.game_id or reference.review_side != self.review_side:
+                raise ValueError("review priority candidate belongs to another review")
+            identity = (reference.game_id, reference.review_side, reference.critical_id)
+            if identity in identities:
+                raise ValueError("review priority candidates must be unique")
+            identities.add(identity)
+        if not any(candidate.largest_error for candidate in self.candidates):
+            raise ValueError("review priorities must retain the largest error")
+        return self
+
+
 class ModelVisibleContext(ContractModel):
     task: TaskContext
     position: PositionContext | None
@@ -482,6 +559,9 @@ class ModelVisibleContext(ContractModel):
     relevant_profile: RelevantProfileContext | None
     relevant_memory: list[LearningMemoryItem] = Field(max_length=5)
     conversation_summary: str
+    discussed_positions: list[PositionReference] = Field(default_factory=list, max_length=5)
+    opening_metadata: LookupOpeningResult | None = None
+    review_priorities: ReviewPrioritizationContext | None = None
     allowed_evidence_refs: list[str]
 
     _valid_evidence_refs = field_validator("allowed_evidence_refs")(_clean_unique_strings)
@@ -785,14 +865,17 @@ class LookupOpeningInput(ContractModel):
 class LookupOpeningResult(ContractModel):
     eco: str | None = None
     name: str | None = None
+    classification: Literal["recognized", "unrecognized"] = "unrecognized"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GetPlayerProfileInput(ContractModel):
     focus_skill_ids: list[str] = Field(default_factory=list)
+    focus_categories: list[str] = Field(default_factory=list)
     limit: int = Field(default=3, ge=1, le=3)
 
     _valid_skill_ids = field_validator("focus_skill_ids")(_clean_unique_strings)
+    _valid_categories = field_validator("focus_categories")(_clean_unique_strings)
 
 
 class GetPlayerProfileResult(ContractModel):
