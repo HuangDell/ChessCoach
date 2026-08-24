@@ -99,6 +99,8 @@ class AgentEvalDatasetTests(unittest.TestCase):
                 self.assertTrue(case["input"]["message"])
                 self.assertIn("position_fixture", case["input"])
                 self.assertIsInstance(case["input"]["profile_enabled"], bool)
+                if case["category"] == "profile_disabled":
+                    self.assertIs(case["input"].get("memory_enabled"), False)
                 self.assertIn(case["expected"]["outcome"]["completion"], {"full", "partial", "error"})
                 for section in ("grounding", "personalization"):
                     expected = case["expected"][section]

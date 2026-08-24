@@ -85,6 +85,7 @@ fact category 筛选，多个合理候选着均可通过，不要求猜中 Engin
 | `CHESS_AGENT_MAX_TOOL_CALLS` | 单次 Agent run 最大工具调用 | `6` |
 | `CHESS_AGENT_MAX_ENGINE_CALLS` | 单次 Agent run 最大 Engine 工具调用 | `2` |
 | `CHESS_AGENT_TIMEOUT` | 单次 Agent run wall-clock timeout 秒数 | `120` |
+| `CHESS_PERSONALIZE_HISTORY` | 是否读取 canonical learning memory 用于个性化、复盘排序和弱点训练 | `1` |
 
 设置面板会把个人配置保存到数据目录下的 `settings.json`。代码目录不保存个人棋局。
 
@@ -123,6 +124,19 @@ Retry 和个人题的每次提交都追加保存到 `<DATA_DIR>/history/attempts
 `critical_id`、复盘方、所选 UCI、判定、提示次数和是否解决；旧版
 `<DATA_DIR>/training/attempts.jsonl` 会继续被读取。已存在的 Stage 2 MultiPV/实战线会
 直接复用；只有未被预分析覆盖的合法着法才会触发一次按需 Stockfish 分析。
+
+长期学习事实统一保存在 `<DATA_DIR>/learning/`：`observations.jsonl` 是可从 analysis/attempt
+artifact 重建、按稳定 key 去重的 canonical evidence；`estimates.json` 是 taxonomy v1、
+aggregation policy v1 下生成的 recent/lifetime cache。Recent 窗口固定为最近 30 天，单次失败
+最多进入 `watch`；weakness 至少需要两次 failure 且跨两个独立局面，strength 至少需要三次
+success 且跨两个独立局面。旧 `/api/profile` 继续保留 category、accuracy 和 training 统计形状，
+但 weakness、coach summary、Agent memory 和弱点题目偏置只读取 canonical estimates。
+
+应用启动时会同步执行幂等 backfill 并校验 estimates。学习文件损坏或版本不兼容时会从
+observations 重建；backfill 或 learning projection 失败只关闭本进程的个性化能力，并暴露可操作
+的 `learning_sync_error` / `learning_storage_error`，不会阻止棋盘、历史或 Engine Review 启动。
+关闭 `CHESS_PERSONALIZE_HISTORY` 后，Agent service、profile tool 和 retrieval 会在读取学习文件前
+直接短路。
 
 分析成功后，`<DATA_DIR>/history/games.jsonl` 会按 `(game_id, reviewed_side)` 原子更新，
 而不是重复追加同一盘。Personal coach 可按最近 7 天、30 天或全部历史聚合胜负、accuracy、

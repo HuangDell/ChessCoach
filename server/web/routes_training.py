@@ -31,8 +31,24 @@ def submit_attempt(body: AttemptBody) -> JSONResponse:
             hints_used=body.hints_used,
             source="puzzle" if body.source == "puzzle" else "retry",
         )
+    except training.TrainingGameDeletedError as exc:
+        return JSONResponse(
+            {"error": {"code": exc.code, "message": str(exc)}},
+            status_code=409,
+        )
     except training.TrainingPositionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except training.LearningProjectionError as exc:
+        return JSONResponse(
+            {
+                "error": {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "attempt_id": exc.attempt_id,
+                }
+            },
+            status_code=500,
+        )
     return JSONResponse(result)
 
 
@@ -60,4 +76,3 @@ def get_hint(
 def get_attempts(game_id: str | None = None, critical_id: str | None = None) -> dict:
     attempts = training.load_attempts(game_id=game_id, critical_id=critical_id)
     return {"attempts": attempts, "count": len(attempts)}
-

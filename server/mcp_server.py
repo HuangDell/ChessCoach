@@ -32,6 +32,7 @@ from server.core import puzzle_session
 from server.core import puzzles as puzzles_mod
 from server.core import session as session_mod
 from server.core import settings
+from server.core import training
 from server.web import runner as web_runner
 from server.web.routes_puzzles import _has_engine
 
@@ -236,6 +237,23 @@ def next_puzzle(
     lifecycle.touch()
     if not config.PUZZLES_ENABLED:
         return {"error": "Puzzle mode is disabled (CHESS_PUZZLES=0)."}
+    with puzzle_session.transition():
+        return _next_puzzle_locked(
+            theme=theme,
+            difficulty=difficulty,
+            weakness=weakness,
+            source=source,
+        )
+
+
+def _next_puzzle_locked(
+    *,
+    theme: Optional[str],
+    difficulty: Optional[str],
+    weakness: bool,
+    source: str,
+) -> dict:
+    """Select and install a puzzle while shared-session replacement is serialized."""
     state = puzzle_rating.load_state()
 
     if source == "your_games":
@@ -324,9 +342,16 @@ def solve_puzzle(moves: str, explain: bool = True) -> dict:
     lifecycle.touch()
     if not config.PUZZLES_ENABLED:
         return {"error": "Puzzle mode is disabled (CHESS_PUZZLES=0)."}
-    prog = puzzle_session.get_current()
-    if prog is None:
-        return {"error": "No active puzzle - call next_puzzle first."}
+    with puzzle_session.transition():
+        prog = puzzle_session.get_current()
+        if prog is None:
+            return {"error": "No active puzzle - call next_puzzle first."}
+        with prog.finalize_lock:
+            return _solve_puzzle_locked(prog, moves=moves, explain=explain)
+
+
+def _solve_puzzle_locked(prog, *, moves: str, explain: bool) -> dict:
+    """Solve against the progress selected under the shared-session transition lock."""
     if prog.finished:
         return {"error": "This puzzle is already finished - call next_puzzle for another."}
 
@@ -337,7 +362,10 @@ def solve_puzzle(moves: str, explain: bool = True) -> dict:
     is_mistake = prog.puzzle.get("source") == "your_games"
     if is_mistake:
         # Mistake puzzles are single-move, eval-threshold, unrated.
-        out = puzzle_flow.apply_mistake_move(prog, tokens[0])
+        try:
+            out = puzzle_flow.apply_mistake_move(prog, tokens[0])
+        except training.TrainingGameDeletedError as exc:
+            return puzzle_flow.discard_deleted_personal_puzzle(exc)
     else:
         out = puzzle_flow.apply_solver_moves(prog, tokens)
 

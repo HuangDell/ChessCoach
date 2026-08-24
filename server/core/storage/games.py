@@ -5,6 +5,9 @@ import json
 import os
 import re
 import shutil
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from server import config
@@ -12,15 +15,73 @@ from server.core.game_identity import GAME_ID_LENGTH
 from server.core.importers.pgn import ImportedGame
 
 _GAME_ID_RE = re.compile(rf"^[0-9a-f]{{{GAME_ID_LENGTH}}}$")
+_GAME_MUTATION_LOCKS = tuple(threading.RLock() for _ in range(64))
+_GAME_MUTATION_GENERATIONS: dict[str, int] = {}
 
 
 class GameNotFoundError(FileNotFoundError):
     pass
 
 
-def _game_dir(game_id: str) -> str:
+class AnalysisArtifactMissingError(GameNotFoundError):
+    """Raised only when the requested analysis artifact file no longer exists."""
+
+
+class GameMutationSupersededError(RuntimeError):
+    """Raised when an in-flight writer was made stale by a completed game deletion."""
+
+
+def _validate_game_id(game_id: str) -> None:
     if not _GAME_ID_RE.fullmatch(game_id or ""):
         raise GameNotFoundError("Unknown game.")
+
+
+def _mutation_lock(game_id: str) -> threading.RLock:
+    _validate_game_id(game_id)
+    return _GAME_MUTATION_LOCKS[int(game_id, 16) % len(_GAME_MUTATION_LOCKS)]
+
+
+def game_mutation_generation(game_id: str) -> int:
+    """Return the process-local generation captured by work that may later persist this game."""
+
+    lock = _mutation_lock(game_id)
+    with lock:
+        return _GAME_MUTATION_GENERATIONS.get(game_id, 0)
+
+
+@contextmanager
+def coordinated_game_mutation(
+    game_id: str, *, expected_generation: int | None = None
+) -> Iterator[None]:
+    """Serialize a complete per-game mutation and reject work superseded by deletion."""
+
+    lock = _mutation_lock(game_id)
+    with lock:
+        current = _GAME_MUTATION_GENERATIONS.get(game_id, 0)
+        if expected_generation is not None and expected_generation != current:
+            raise GameMutationSupersededError(
+                f"Game {game_id} was deleted while this analysis was running."
+            )
+        yield
+
+
+@contextmanager
+def superseding_game_deletion(game_id: str) -> Iterator[None]:
+    """Serialize deletion and invalidate older writers only when the transaction succeeds."""
+
+    lock = _mutation_lock(game_id)
+    with lock:
+        previous = _GAME_MUTATION_GENERATIONS.get(game_id, 0)
+        _GAME_MUTATION_GENERATIONS[game_id] = previous + 1
+        try:
+            yield
+        except BaseException:
+            _GAME_MUTATION_GENERATIONS[game_id] = previous
+            raise
+
+
+def _game_dir(game_id: str) -> str:
+    _validate_game_id(game_id)
     return os.path.join(config.DATA_DIR, "games", game_id)
 
 
@@ -89,7 +150,11 @@ def load_analysis(game_id: str, review_side: str | None = None) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as handle:
             analysis = json.load(handle)
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except FileNotFoundError as exc:
+        raise AnalysisArtifactMissingError(
+            "Analysis is not available for this game and side."
+        ) from exc
+    except json.JSONDecodeError as exc:
         raise GameNotFoundError("Analysis is not available for this game and side.") from exc
     if analysis.get("game_id") != game_id:
         raise GameNotFoundError("Analysis artifact identity mismatch.")

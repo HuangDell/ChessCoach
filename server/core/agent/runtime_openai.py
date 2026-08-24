@@ -516,7 +516,7 @@ class OpenAIAgentsRuntime:
                 focus_categories: list[str] | None = None,
                 limit: int = 3,
             ) -> str:
-                """Read at most three evidence-backed profile items relevant to this task."""
+                """Read at most five evidence-backed profile items relevant to this task."""
                 try:
                     payload = GetPlayerProfileInput(
                         focus_skill_ids=focus_skill_ids or [],
@@ -550,8 +550,9 @@ class OpenAIAgentsRuntime:
                     get_player_profile,
                     name_override="get_player_profile",
                     description_override=(
-                        "Read up to three deterministic weakness or strength items with game-backed "
-                        "evidence. Use only when personalization is enabled and relevant."
+                        "Read up to five deterministic weakness or strength items with verified "
+                        "canonical examples that may reference a game, critical position, position, "
+                        "or puzzle. Use only when personalization is enabled and relevant."
                     ),
                     strict_mode=True,
                 )

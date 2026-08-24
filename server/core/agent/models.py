@@ -5,6 +5,7 @@ validated boundary between the runtime, domain tools, storage, and web layer.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Generic, Literal, Mapping, TypeVar
 
@@ -53,6 +54,13 @@ AgentActivity = Literal[
     "training",
     "training_planning",
 ]
+LearningEvidenceType = Literal[
+    "fact_motif",
+    "fact_composite",
+    "attempt_outcome",
+    "puzzle_theme",
+    "clock_outcome",
+]
 
 
 class ContractModel(BaseModel):
@@ -99,6 +107,19 @@ def _non_empty_optional(value: str | None, *, label: str = "identifier") -> str 
     if not value:
         raise ValueError(f"{label} must not be empty")
     return value
+
+
+def _validate_utc_datetime(value: str) -> str:
+    """Validate and canonicalize an ISO-8601 instant in UTC."""
+
+    value = value.strip()
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("timestamp must be an ISO-8601 UTC datetime") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError("timestamp must use UTC")
+    return parsed.isoformat().replace("+00:00", "Z")
 
 
 def _legal_move(board: chess.Board, move: "MoveReference", *, label: str) -> chess.Move:
@@ -231,15 +252,16 @@ class CandidateLine(ContractModel):
 
 
 class ChessReference(ContractModel):
-    kind: Literal["position", "critical_position", "game", "skill"]
+    kind: Literal["position", "critical_position", "game", "puzzle", "skill"]
     game_id: str | None = None
     review_side: ReviewSide | None = None
     critical_id: str | None = None
+    puzzle_id: str | None = None
     ply: int | None = Field(default=None, ge=0)
     fen: str | None = None
     skill_id: str | None = None
 
-    @field_validator("game_id", "critical_id", "skill_id")
+    @field_validator("game_id", "critical_id", "puzzle_id", "skill_id")
     @classmethod
     def _clean_reference_value(cls, value: str | None) -> str | None:
         if value is None:
@@ -258,24 +280,59 @@ class ChessReference(ContractModel):
     def _matches_kind(self) -> "ChessReference":
         required = {
             "position": self.fen is not None or self.game_id is not None,
-            "critical_position": self.game_id is not None and self.critical_id is not None,
+            "critical_position": (
+                self.game_id is not None
+                and self.review_side is not None
+                and self.critical_id is not None
+            ),
             "game": self.game_id is not None,
+            "puzzle": self.puzzle_id is not None,
             "skill": self.skill_id is not None,
         }
         if not required[self.kind]:
             raise ValueError(f"{self.kind} reference is missing its identifying field")
+        if self.review_side is not None and self.game_id is None:
+            raise ValueError("review_side requires game_id")
+        if self.critical_id is not None and self.game_id is None:
+            raise ValueError("critical_id requires game_id")
+        if self.puzzle_id is not None and self.kind != "puzzle":
+            raise ValueError("puzzle_id is only valid for puzzle references")
+        if self.skill_id is not None and self.kind != "skill":
+            raise ValueError("skill_id is only valid for skill references")
+        if self.kind == "puzzle" and self.game_id is not None:
+            if self.review_side is None or self.critical_id is None:
+                raise ValueError("game-backed puzzle references require review_side and critical_id")
         return self
 
 
 class LearningMemoryItem(ContractModel):
     skill_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
+    status: Literal["unknown", "watch", "weakness", "strength"]
+    confidence_level: Literal["insufficient", "emerging", "established"]
+    window: Literal["recent", "lifetime"]
     evidence_count: int = Field(ge=1)
-    window_games: int = Field(ge=1)
-    examples: list[ChessReference]
+    window_games: int = Field(ge=0)
+    examples: list[ChessReference] = Field(min_length=1, max_length=3)
     evidence_refs: list[str] = Field(min_length=1)
 
     _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
+
+
+class MemoryQuery(ContractModel):
+    """Trusted Core inputs for bounded deterministic learning-memory retrieval."""
+
+    activity: AgentActivity
+    current_facts: dict[str, Any] = Field(default_factory=dict)
+    focus_skill_id: str | None = None
+    focus_category: str | None = None
+    window: Literal["recent", "lifetime"] = "recent"
+    limit: int = Field(default=3, ge=1, le=5)
+
+    @field_validator("focus_skill_id", "focus_category")
+    @classmethod
+    def _valid_optional_focus(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="memory focus")
 
 
 class PositionContext(ContractModel):
@@ -872,7 +929,7 @@ class LookupOpeningResult(ContractModel):
 class GetPlayerProfileInput(ContractModel):
     focus_skill_ids: list[str] = Field(default_factory=list)
     focus_categories: list[str] = Field(default_factory=list)
-    limit: int = Field(default=3, ge=1, le=3)
+    limit: int = Field(default=3, ge=1, le=5)
 
     _valid_skill_ids = field_validator("focus_skill_ids")(_clean_unique_strings)
     _valid_categories = field_validator("focus_categories")(_clean_unique_strings)
@@ -880,7 +937,7 @@ class GetPlayerProfileInput(ContractModel):
 
 class GetPlayerProfileResult(ContractModel):
     analyzed_games: int = Field(ge=0)
-    relevant_estimates: list["SkillEstimate"] = Field(default_factory=list, max_length=3)
+    relevant_estimates: list["SkillEstimate"] = Field(default_factory=list, max_length=5)
     training_success_rate: float | None = Field(default=None, ge=0, le=100)
     recent: dict[str, int | float] = Field(default_factory=dict)
     lifetime: dict[str, int | float] = Field(default_factory=dict)
@@ -890,8 +947,14 @@ class GetPlayerProfileResult(ContractModel):
         for estimate in self.relevant_estimates:
             if estimate.evidence_count < 1 or not estimate.examples:
                 raise ValueError("profile estimates require evidence and example references")
-            if not any(example.game_id is not None for example in estimate.examples):
-                raise ValueError("profile estimate examples must reference a game")
+            if any(
+                example.kind not in {"game", "critical_position", "position", "puzzle"}
+                for example in estimate.examples
+            ):
+                raise ValueError(
+                    "profile estimate examples must reference a game, critical position, "
+                    "position, or puzzle"
+                )
             if estimate.distinct_games > self.analyzed_games:
                 raise ValueError("estimate distinct_games cannot exceed analyzed_games")
         return self
@@ -958,7 +1021,7 @@ class SkillDefinition(ContractModel):
     parent_id: str | None = None
     label: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    supported_evidence_types: list[str] = Field(min_length=1)
+    supported_evidence_types: list[LearningEvidenceType] = Field(min_length=1)
     aliases: list[str] = Field(default_factory=list)
 
     _valid_evidence_types = field_validator("supported_evidence_types")(
@@ -980,15 +1043,66 @@ class LearningObservation(ContractModel):
         "puzzle_attempt",
         "training_attempt",
     ]
+    evidence_type: LearningEvidenceType
     game_id: str | None = None
     review_side: ReviewSide | None = None
     critical_id: str | None = None
     attempt_id: str | None = None
+    puzzle_id: str | None = None
     severity: float | None = Field(default=None, ge=0)
     evidence_refs: list[str] = Field(min_length=1)
     occurred_at: str = Field(min_length=1)
 
     _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
+
+    @field_validator(
+        "observation_id",
+        "dedupe_key",
+        "skill_id",
+        "game_id",
+        "critical_id",
+        "attempt_id",
+        "puzzle_id",
+    )
+    @classmethod
+    def _valid_observation_identifiers(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="observation identifier")
+
+    _valid_occurred_at = field_validator("occurred_at")(_validate_utc_datetime)
+
+    @model_validator(mode="after")
+    def _valid_source_ownership(self) -> "LearningObservation":
+        source_evidence = {
+            "game_fact": {"fact_motif", "fact_composite", "clock_outcome"},
+            "retry_attempt": {"attempt_outcome"},
+            "training_attempt": {"attempt_outcome"},
+            "puzzle_attempt": {"attempt_outcome", "puzzle_theme"},
+        }
+        if self.evidence_type not in source_evidence[self.source_type]:
+            raise ValueError("evidence_type is not supported by source_type")
+
+        game_fields = (self.game_id, self.review_side, self.critical_id)
+        has_complete_game_owner = all(value is not None for value in game_fields)
+        has_partial_game_owner = any(value is not None for value in game_fields)
+        if has_partial_game_owner and not has_complete_game_owner:
+            raise ValueError("game ownership requires game_id, review_side, and critical_id")
+
+        if self.source_type == "game_fact":
+            if not has_complete_game_owner:
+                raise ValueError("game facts require complete game ownership")
+            if self.attempt_id is not None or self.puzzle_id is not None:
+                raise ValueError("game facts cannot claim attempt or puzzle ownership")
+        elif self.source_type in {"retry_attempt", "training_attempt"}:
+            if self.attempt_id is None or not has_complete_game_owner:
+                raise ValueError("game training attempts require attempt and game ownership")
+            if self.puzzle_id is not None:
+                raise ValueError("game training attempts cannot claim puzzle ownership")
+        else:
+            if self.attempt_id is None or self.puzzle_id is None:
+                raise ValueError("puzzle attempts require attempt_id and puzzle_id")
+            if has_complete_game_owner:
+                raise ValueError("puzzle attempts cannot also claim game ownership")
+        return self
 
 
 class SkillEstimate(ContractModel):
@@ -997,6 +1111,7 @@ class SkillEstimate(ContractModel):
     skill_id: str = Field(min_length=1)
     evidence_count: int = Field(ge=0)
     distinct_games: int = Field(ge=0)
+    distinct_positions: int = Field(ge=0)
     success_count: int = Field(ge=0)
     partial_count: int = Field(ge=0)
     failure_count: int = Field(ge=0)
@@ -1005,7 +1120,15 @@ class SkillEstimate(ContractModel):
     last_seen: str | None = None
     confidence_level: Literal["insufficient", "emerging", "established"]
     status: Literal["unknown", "watch", "weakness", "strength"]
-    examples: list[ChessReference]
+    examples: list[ChessReference] = Field(max_length=3)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _backfill_distinct_positions(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "distinct_positions" not in value:
+            value = dict(value)
+            value["distinct_positions"] = value.get("distinct_games", 0)
+        return value
 
     @model_validator(mode="after")
     def _consistent_counts(self) -> "SkillEstimate":
@@ -1014,6 +1137,10 @@ class SkillEstimate(ContractModel):
             raise ValueError("outcome counts must add up to evidence_count")
         if self.distinct_games > self.evidence_count:
             raise ValueError("distinct_games cannot exceed evidence_count")
+        if self.distinct_positions > self.evidence_count:
+            raise ValueError("distinct_positions cannot exceed evidence_count")
+        if self.distinct_games > self.distinct_positions:
+            raise ValueError("distinct_games cannot exceed distinct_positions")
         if self.recent_failure_count > self.failure_count:
             raise ValueError("recent failures cannot exceed all failures")
         return self

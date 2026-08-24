@@ -17,7 +17,6 @@ from pydantic import BaseModel
 
 from server import config
 from server import claude_bridge
-from server.core import lines
 from server.core import local_llm
 from server.core import puzzle_flow
 from server.core import puzzle_mistakes
@@ -26,6 +25,7 @@ from server.core import puzzle_session
 from server.core import puzzle_storm
 from server.core import puzzles as puzzles_mod
 from server.core import training
+from server.core.learning.workflows import LearningProjectionError
 
 router = APIRouter()
 
@@ -158,6 +158,29 @@ def puzzle_next(
     """
     if not config.PUZZLES_ENABLED:
         return _disabled()
+    with puzzle_session.transition():
+        return _puzzle_next_locked(
+            theme=theme,
+            difficulty=difficulty,
+            weakness=weakness,
+            source=source,
+            category=category,
+            game_id=game_id,
+            critical_id=critical_id,
+        )
+
+
+def _puzzle_next_locked(
+    *,
+    theme: str | None,
+    difficulty: str | None,
+    weakness: bool,
+    source: str,
+    category: str | None,
+    game_id: str | None,
+    critical_id: str | None,
+) -> JSONResponse:
+    """Select and install a regular puzzle while replacement is serialized."""
     state = puzzle_rating.load_state()
     if source == "your_games":
         return _mistake_puzzle_response(
@@ -222,91 +245,41 @@ class MoveBody(BaseModel):
     uci: str
 
 
-def _score_attempt(prog, *, score: float, hinted_or_given: bool) -> dict:
-    """Apply one terminal outcome to the rating state at most once. Returns a rating summary.
+def _learning_error(exc: LearningProjectionError) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": {
+                "code": exc.code,
+                "message": str(exc),
+                "attempt_id": exc.attempt_id,
+            }
+        },
+        status_code=500,
+    )
 
-    Thin alias for the shared `puzzle_flow.score_attempt` so the board and the MCP tools rate an
-    attempt by exactly the same rule.
-    """
-    return puzzle_flow.score_attempt(prog, score=score, hinted_or_given=hinted_or_given)
+
+def _training_game_deleted_error(exc: training.TrainingGameDeletedError) -> JSONResponse:
+    """Discard a personal puzzle whose authoritative game source no longer exists."""
+    return JSONResponse(
+        puzzle_flow.discard_deleted_personal_puzzle(exc),
+        status_code=409,
+    )
 
 
 def _mistake_move(prog, uci: str) -> JSONResponse:
     """Validate a move for a 'from your games' mistake puzzle: accept any move whose win% drop is
     under the game's inaccuracy threshold (multi-solution). UNRATED - never touches Glicko."""
-    puzzle = prog.puzzle
-    if puzzle.get("critical_id") and puzzle.get("game_id"):
-        try:
-            feedback = training.evaluate_attempt(
-                game_id=puzzle["game_id"],
-                critical_id=puzzle["critical_id"],
-                selected_move=uci,
-                review_side=puzzle.get("reviewed_side"),
-                hints_used=prog.hints_used,
-                source="puzzle",
-            )
-        except training.TrainingPositionError as exc:
-            return JSONResponse(
-                {"correct": False, "is_complete": False, "can_retry": True, "error": str(exc)},
-                status_code=400,
-            )
-        solved = bool(feedback["solved"])
-        prog.tried.append(
-            {"uci": uci, "fen_before": puzzle["fen"], "correct": solved, "ply_index": 1}
-        )
-        if solved:
-            prog.finished = True
-            if not prog.scored:
-                state = puzzle_rating.load_state()
-                puzzle_mistakes.record_practice_result(state, puzzle["key"], solved=True)
-                puzzle_rating.save_state(state)
-                prog.scored = True
-        else:
-            prog.attempts += 1
-            prog.failed = True
+    try:
+        return JSONResponse(puzzle_flow.apply_mistake_move(prog, uci))
+    except training.TrainingGameDeletedError as exc:
+        return _training_game_deleted_error(exc)
+    except training.TrainingPositionError as exc:
         return JSONResponse(
-            {
-                **feedback,
-                "correct": solved,
-                "is_complete": solved,
-                "can_retry": not solved,
-                "source": "your_games",
-                "refutation_san": (feedback.get("variation") or {}).get("san", [])[1:],
-                "refutation_uci": (feedback.get("variation") or {}).get("uci", [])[1:],
-            }
+            {"correct": False, "is_complete": False, "can_retry": True, "error": str(exc)},
+            status_code=400,
         )
-
-    result = lines.engine_line(puzzle["fen"], move=uci)
-    move = result.get("move")
-    if not move:  # illegal / unparseable move
-        return JSONResponse({"correct": False, "is_complete": False, "can_retry": True,
-                             "error": "Illegal move."})
-    swing = float(move.get("win_swing", 99.0))
-    accept = float(puzzle.get("accept_swing", 5.0))
-    solved = swing < accept
-    prog.tried.append({"uci": uci, "fen_before": puzzle["fen"], "correct": solved, "ply_index": 1})
-
-    if solved:
-        prog.finished = True
-        if not prog.scored:
-            state = puzzle_rating.load_state()
-            puzzle_mistakes.record_practice_result(state, puzzle["key"], solved=True)
-            puzzle_rating.save_state(state)
-            prog.scored = True
-        return JSONResponse({
-            "correct": True, "is_complete": True, "source": "your_games",
-            "win_swing": round(swing, 1), "better_move_san": move.get("better_move_san"),
-            "is_engine_best": move.get("is_engine_best"),
-        })
-
-    prog.attempts += 1
-    prog.failed = True
-    return JSONResponse({
-        "correct": False, "is_complete": False, "can_retry": True, "source": "your_games",
-        "win_swing": round(swing, 1),
-        "refutation_san": move.get("refutation_line_san", []),
-        "refutation_uci": move.get("refutation_line_uci", []),
-    })
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
 
 
 @router.post("/puzzle/move")
@@ -314,52 +287,52 @@ def puzzle_move(body: MoveBody) -> JSONResponse:
     """Validate the solver's move at the current step; advance, fail, or complete the puzzle."""
     if not config.PUZZLES_ENABLED:
         return _disabled()
-    prog = puzzle_session.get_current()
-    if prog is None or prog.id != body.id:
-        return JSONResponse({"error": "No active puzzle (load one first)."}, status_code=409)
+    with puzzle_session.transition():
+        prog = puzzle_session.get_current()
+        if prog is None or prog.id != body.id:
+            return JSONResponse({"error": "No active puzzle (load one first)."}, status_code=409)
+        with prog.finalize_lock:
+            return _puzzle_move_locked(prog, body.uci)
+
+
+def _puzzle_move_locked(prog, uci: str) -> JSONResponse:
+    """Apply a move to the progress selected under the session transition lock."""
+    if prog.learning_sync_error:
+        return _learning_error(
+            LearningProjectionError(
+                prog.learning_sync_error,
+                operation="puzzle_attempt_sync",
+                attempt_id=prog.attempt_id,
+            )
+        )
+    if prog.finished:
+        return JSONResponse({"error": "Puzzle is already finished."}, status_code=409)
 
     if prog.puzzle.get("source") == "your_games":
-        return _mistake_move(prog, body.uci)
+        return _mistake_move(prog, uci)
 
-    result = puzzles_mod.validate_step(prog.puzzle, prog.ply_index, body.uci)
-    moves = prog.puzzle.get("moves", [])
-    # Remember what was tried (and from where) so the coach can analyse it, engine-grounded.
-    prog.tried.append({
-        "uci": body.uci,
-        "fen_before": puzzles_mod.position_fen(prog.puzzle, prog.ply_index),
-        "correct": result["correct"],
-        "ply_index": prog.ply_index,
-    })
-
-    if not result["correct"]:
-        prog.attempts += 1
-        summary = None
-        # The first wrong move costs the rating (Lichess-style), but we do NOT reveal the solution:
-        # the user can keep trying, or press "Show solution". So no expected/solution in the response.
-        if not prog.scored:
-            prog.failed = True
-            summary = _score_attempt(prog, score=0.0, hinted_or_given=False)
-        return JSONResponse({"correct": False, "is_complete": False, "can_retry": True, "rating": summary})
-
-    if result["is_complete"]:
-        prog.finished = True
-        summary = None
-        if not prog.scored:
-            solved_clean = not prog.failed and prog.hints_used == 0
-            summary = _score_attempt(
-                prog,
-                score=1.0 if solved_clean else 0.0,
-                hinted_or_given=prog.hints_used > 0,
-            )
-        return JSONResponse({"correct": True, "is_complete": True, "rating": summary})
-
-    # Correct but more to come: skip past the solver move + the forced opponent reply.
-    prog.ply_index += 2
-    return JSONResponse({
-        "correct": True,
-        "is_complete": False,
-        "opponent_reply_uci": result.get("opponent_reply_uci"),
-    })
+    try:
+        result = puzzle_flow.apply_solver_moves(prog, [uci])
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
+    step = (result.get("steps") or [{}])[-1]
+    if not step.get("correct"):
+        return JSONResponse(
+            {
+                "correct": False,
+                "is_complete": False,
+                "can_retry": True,
+                "rating": result.get("rating"),
+            }
+        )
+    return JSONResponse(
+        {
+            "correct": True,
+            "is_complete": bool(step.get("is_complete")),
+            "opponent_reply_uci": step.get("opponent_reply_uci"),
+            "rating": result.get("rating"),
+        }
+    )
 
 
 class PuzzleIdBody(BaseModel):
@@ -371,9 +344,18 @@ def puzzle_hint(body: PuzzleIdBody) -> JSONResponse:
     """Reveal the piece to move at the current step (and make the attempt unrated)."""
     if not config.PUZZLES_ENABLED:
         return _disabled()
-    prog = puzzle_session.get_current()
-    if prog is None or prog.id != body.id:
-        return JSONResponse({"error": "No active puzzle."}, status_code=409)
+    with puzzle_session.transition():
+        prog = puzzle_session.get_current()
+        if prog is None or prog.id != body.id:
+            return JSONResponse({"error": "No active puzzle."}, status_code=409)
+        with prog.finalize_lock:
+            return _puzzle_hint_locked(prog)
+
+
+def _puzzle_hint_locked(prog) -> JSONResponse:
+    """Reveal a hint and update its rating gate as one progress transition."""
+    if prog.finished:
+        return JSONResponse({"error": "Puzzle is already finished."}, status_code=409)
     # "From your games" mistake puzzles have no forced `moves` line — hint the engine's best move
     # (from the original analysis) instead. They're already unrated, so no rating consequence.
     if prog.puzzle.get("source") == "your_games":
@@ -386,6 +368,8 @@ def puzzle_hint(body: PuzzleIdBody) -> JSONResponse:
                     level=level,
                     review_side=prog.puzzle.get("reviewed_side"),
                 )
+            except training.TrainingGameDeletedError as exc:
+                return _training_game_deleted_error(exc)
             except training.TrainingPositionError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             prog.hints_used = max(prog.hints_used, level)
@@ -408,48 +392,41 @@ def puzzle_giveup(body: PuzzleIdBody) -> JSONResponse:
     """Reveal the full remaining solution and score the puzzle 0 (unrated)."""
     if not config.PUZZLES_ENABLED:
         return _disabled()
-    prog = puzzle_session.get_current()
-    if prog is None or prog.id != body.id:
-        return JSONResponse({"error": "No active puzzle."}, status_code=409)
+    with puzzle_session.transition():
+        prog = puzzle_session.get_current()
+        if prog is None or prog.id != body.id:
+            return JSONResponse({"error": "No active puzzle."}, status_code=409)
+        with prog.finalize_lock:
+            return _puzzle_giveup_locked(prog)
+
+
+def _puzzle_giveup_locked(prog) -> JSONResponse:
+    """Finalize the progress selected under the session transition lock."""
+    if prog.learning_sync_error:
+        return _learning_error(
+            LearningProjectionError(
+                prog.learning_sync_error,
+                operation="puzzle_attempt_sync",
+                attempt_id=prog.attempt_id,
+            )
+        )
+    if prog.finished:
+        return JSONResponse({"error": "Puzzle is already finished."}, status_code=409)
 
     if prog.puzzle.get("source") == "your_games":
-        # Reveal the engine's best move (from the original analysis) + record a spaced-rep miss.
-        # Never touches Glicko.
-        if not prog.scored:
-            prog.failed = True
-            state = puzzle_rating.load_state()
-            puzzle_mistakes.record_practice_result(state, prog.puzzle["key"], solved=False)
-            puzzle_rating.save_state(state)
-            prog.scored = True
-        prog.finished = True
-        if prog.puzzle.get("critical_id") and prog.puzzle.get("game_id"):
-            try:
-                result = training.reveal_solution(
-                    game_id=prog.puzzle["game_id"],
-                    critical_id=prog.puzzle["critical_id"],
-                    review_side=prog.puzzle.get("reviewed_side"),
-                    hints_used=prog.hints_used,
-                    source="puzzle",
-                )
-            except training.TrainingPositionError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-            return JSONResponse(result)
-        best_uci = prog.puzzle.get("best_uci")
-        best_san = prog.puzzle.get("best_san")
-        return JSONResponse({
-            "solution_uci": [best_uci] if best_uci else [],
-            "solution_san": [best_san] if best_san else [],
-        })
+        try:
+            return JSONResponse(puzzle_flow.give_up_mistake(prog))
+        except training.TrainingGameDeletedError as exc:
+            return _training_game_deleted_error(exc)
+        except training.TrainingPositionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except LearningProjectionError as exc:
+            return _learning_error(exc)
 
-    if not prog.scored:
-        prog.failed = True
-        _score_attempt(prog, score=0.0, hinted_or_given=True)
-    prog.finished = True
-    moves = prog.puzzle.get("moves", [])
-    return JSONResponse({
-        "solution_uci": moves[prog.ply_index:],
-        "solution_san": puzzles_mod.solution_san(prog.puzzle),
-    })
+    try:
+        return JSONResponse(puzzle_flow.give_up(prog))
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
 
 
 @router.get("/puzzle/state")
@@ -480,9 +457,16 @@ def puzzle_current() -> JSONResponse:
     """
     if not config.PUZZLES_ENABLED:
         return JSONResponse({"active": False})
-    prog = puzzle_session.get_current()
-    if prog is None:
-        return JSONResponse({"active": False})
+    with puzzle_session.transition():
+        prog = puzzle_session.get_current()
+        if prog is None:
+            return JSONResponse({"active": False})
+        with prog.finalize_lock:
+            return _puzzle_current_locked(prog)
+
+
+def _puzzle_current_locked(prog) -> JSONResponse:
+    """Build a coherent snapshot of the selected progress."""
     p = prog.puzzle
     state = puzzle_rating.load_state()
 
@@ -575,7 +559,10 @@ def storm_start() -> JSONResponse:
     if not puzzles_mod._baseline():
         return JSONResponse({"error": "No puzzles available."}, status_code=404)
     state = puzzle_rating.load_state()
-    return JSONResponse(puzzle_storm.start(state))
+    try:
+        return JSONResponse(puzzle_storm.start(state))
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
 
 
 class StormMoveBody(BaseModel):
@@ -588,7 +575,10 @@ def storm_move(body: StormMoveBody) -> JSONResponse:
     if not config.PUZZLES_ENABLED:
         return _disabled()
     state = puzzle_rating.load_state()
-    return JSONResponse(puzzle_storm.submit_move(state, body.uci))
+    try:
+        return JSONResponse(puzzle_storm.submit_move(state, body.uci))
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
 
 
 @router.get("/puzzle/storm/next")
@@ -597,7 +587,10 @@ def storm_next() -> JSONResponse:
     if not config.PUZZLES_ENABLED:
         return _disabled()
     state = puzzle_rating.load_state()
-    return JSONResponse(puzzle_storm.next_puzzle(state))
+    try:
+        return JSONResponse(puzzle_storm.next_puzzle(state))
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
 
 
 @router.get("/puzzle/storm/state")
@@ -672,13 +665,9 @@ def storm_end() -> JSONResponse:
     """Abandon the current run (leaving storm mode). Persists the highscore reached so far."""
     if not config.PUZZLES_ENABLED:
         return _disabled()
-    run = puzzle_storm.get_run()
-    if run is not None and not run.ended:
-        state = puzzle_rating.load_state()
-        # Fold the reached score into the highscore before dropping the run.
-        if run.score > int(state.get("storm_high", 0) or 0):
-            state["storm_high"] = run.score
-        state["storm_best_combo"] = max(int(state.get("storm_best_combo", 0) or 0), run.best_combo)
-        puzzle_rating.save_state(state)
-    puzzle_storm.clear()
-    return JSONResponse({"ended": True})
+    state = puzzle_rating.load_state()
+    try:
+        result = puzzle_storm.end(state)
+    except LearningProjectionError as exc:
+        return _learning_error(exc)
+    return JSONResponse({**result, "ended": True})

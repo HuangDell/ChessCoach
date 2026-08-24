@@ -7,7 +7,11 @@ attempts, whether hints were used, and whether it has already been failed/scored
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import time
+import threading
+import uuid
+from collections.abc import Iterator
 from typing import Optional
 
 
@@ -26,6 +30,10 @@ class PuzzleProgress:
         self.scored: bool = False  # guard so one puzzle moves the rating at most once
         self.finished: bool = False  # solving is over (solved, or the solution was revealed)
         self.started_at: float = time.time()
+        # Stable for the lifetime of this served puzzle, including retries after a wrong move.
+        self.attempt_id: str = uuid.uuid4().hex
+        self.learning_sync_error: str | None = None
+        self.finalize_lock = threading.RLock()
 
     @property
     def id(self) -> str:
@@ -37,18 +45,34 @@ class PuzzleProgress:
 
 
 _CURRENT: Optional[PuzzleProgress] = None
+_TRANSITION_LOCK = threading.RLock()
+
+
+@contextmanager
+def transition() -> Iterator[None]:
+    """Keep selection and replacement of the process-wide puzzle coherent.
+
+    Callers that coordinate singleton replacement with a ``PuzzleProgress`` mutation must
+    acquire this lock first and that progress' ``finalize_lock`` second. The lock is reentrant
+    so transition owners may use ``set_current`` and ``clear_current`` atomically.
+    """
+    with _TRANSITION_LOCK:
+        yield
 
 
 def set_current(puzzle: dict) -> PuzzleProgress:
     global _CURRENT
-    _CURRENT = PuzzleProgress(puzzle)
-    return _CURRENT
+    with _TRANSITION_LOCK:
+        _CURRENT = PuzzleProgress(puzzle)
+        return _CURRENT
 
 
 def get_current() -> Optional[PuzzleProgress]:
-    return _CURRENT
+    with _TRANSITION_LOCK:
+        return _CURRENT
 
 
 def clear_current() -> None:
     global _CURRENT
-    _CURRENT = None
+    with _TRANSITION_LOCK:
+        _CURRENT = None

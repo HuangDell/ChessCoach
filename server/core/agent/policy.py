@@ -97,7 +97,8 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "- The conversation summary is continuity-only, never chess truth. Re-read the current "
         "checkpoint, Engine facts, or tools for scores, legality, lines, classification, and FEN.\n"
         "- Cite only evidence_refs present in this context or successful tool results. Claim a "
-        "recurring weakness or strength only after get_player_profile returns concrete evidence. "
+        "recurring weakness or strength only from relevant_memory or after get_player_profile "
+        "returns concrete evidence. "
         "When personalization_enabled is false, do not request or imply profile evidence.\n"
         "- If review_priorities is present, choose one to three entries only from that shortlist, "
         "retain its largest_error entry, and do not change any classification or invent a score.\n"
@@ -138,8 +139,16 @@ def _matches_reference(
                 *context.relevant_profile.strengths,
             ]
         return any(item.skill_id == reference.skill_id for item in estimates) or any(
+            item.skill_id == reference.skill_id for item in context.relevant_memory
+        ) or any(
             reference == allowed for allowed in validated_tool_references
         )
+    if any(
+        reference == example
+        for item in context.relevant_memory
+        for example in item.examples
+    ):
+        return True
     if any(reference == allowed for allowed in validated_tool_references):
         return True
     priorities = context.review_priorities

@@ -7,6 +7,7 @@ transport compatibility requirement for the new Agent runtime.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import tempfile
@@ -38,6 +39,9 @@ import httpx
 from server import claude_bridge, config
 from server.core import app_liveness, history, lifecycle, training
 from server.core.explanation.models import ProviderResponse
+from server.core.agent.models import ChessReference, LearningMemoryItem, LearningObservation
+from server.core.learning.observations import ObservationStore
+from server.core.explanation.builder import build_request
 from server.core.explanation.providers import (
     ExplanationProvider,
     ExplanationProviderError,
@@ -247,8 +251,36 @@ class LegacyChatContractTests(_BackendBaselineCase):
 
 class ProfileContractTests(_BackendBaselineCase):
     def test_profile_aggregates_games_weakness_and_training_from_local_files(self) -> None:
+        config.PERSONALIZE_HISTORY = True
         for index in range(1, 4):
             history.append_record(history_record(index), data_dir=self._data.name)
+        ObservationStore(self._data.name).append_many(
+            [
+                LearningObservation(
+                    observation_id="obs-" + hashlib.sha256(
+                        (
+                            f"game_fact:{index:020x}:white:ply-3:"
+                            "calculation.opponent_forcing_moves:failure"
+                        ).encode("utf-8")
+                    ).hexdigest()[:32],
+                    dedupe_key=(
+                        f"game_fact:{index:020x}:white:ply-3:"
+                        "calculation.opponent_forcing_moves:failure"
+                    ),
+                    skill_id="calculation.opponent_forcing_moves",
+                    outcome="failure",
+                    source_type="game_fact",
+                    evidence_type="fact_motif",
+                    game_id=f"{index:020x}",
+                    review_side="white",
+                    critical_id="ply-3",
+                    severity=10.0,
+                    evidence_refs=[f"review:{index:020x}:white:ply-3"],
+                    occurred_at=f"2026-08-{20 + index:02d}T12:00:00Z",
+                )
+                for index in range(1, 4)
+            ]
+        )
         training.record_attempt(
             game_id=f"{1:020x}",
             critical_id="ply-3",
@@ -500,6 +532,99 @@ class BoundedExplanationContractTests(_BackendBaselineCase):
         self.assertEqual(200, stored.status_code)
         self.assertEqual(CRITICAL_ID, stored.json()["positions"][0]["critical_id"])
         self.assertNotIn("api_key", stored.json())
+
+    def test_explanation_uses_only_canonical_promoted_memory(self) -> None:
+        memory_item = LearningMemoryItem(
+            skill_id="calculation.candidate_moves",
+            summary=(
+                "Recent evidence marks Candidate moves as an established weakness "
+                "(3 observations across 2 positions)."
+            ),
+            status="weakness",
+            confidence_level="established",
+            window="recent",
+            evidence_count=3,
+            window_games=2,
+            examples=[
+                ChessReference(
+                    kind="critical_position",
+                    game_id="historical-game",
+                    review_side="white",
+                    critical_id="ply-9",
+                )
+            ],
+            evidence_refs=["learning:calculation.candidate_moves:verified-example"],
+        )
+        watch_item = memory_item.model_copy(
+            update={
+                "status": "watch",
+                "evidence_refs": ["learning:calculation.candidate_moves:watch-example"],
+            }
+        )
+        malformed_item = {
+            **memory_item.model_dump(mode="json"),
+            "examples": [],
+        }
+        critical = self.analysis["critical_positions"][0]
+        with patch(
+            "server.core.explanation.builder.learning_memory.is_available",
+            return_value=True,
+        ), patch(
+            "server.core.explanation.builder.learning_memory.retrieve_memory",
+            return_value=[watch_item, malformed_item, memory_item],
+        ) as retrieve, patch("server.core.history.resolve_identity") as resolve_identity, patch(
+            "server.core.history.get_profile"
+        ) as get_profile:
+            config.PERSONALIZE_HISTORY = True
+            request = build_request(self.analysis, critical)
+
+        query = retrieve.call_args.args[0]
+        self.assertEqual("game_review", query.activity)
+        self.assertEqual("missed_capture", query.focus_category)
+        self.assertEqual(3, query.limit)
+        self.assertEqual(
+            [memory_item.model_dump(mode="json", exclude_none=True)],
+            request.payload["relevant_memory"],
+        )
+        self.assertIn(memory_item.evidence_refs[0], request.allowed_evidence_refs)
+        self.assertIn(memory_item.evidence_refs[0], request.user_prompt)
+        self.assertNotIn("related_history", request.payload)
+        resolve_identity.assert_not_called()
+        get_profile.assert_not_called()
+
+    def test_explanation_memory_short_circuits_when_disabled_or_unhealthy(self) -> None:
+        critical = self.analysis["critical_positions"][0]
+        with patch(
+            "server.core.explanation.builder.learning_memory.is_available"
+        ) as health, patch(
+            "server.core.explanation.builder.learning_memory.retrieve_memory"
+        ) as retrieve, patch("server.core.history.resolve_identity") as resolve_identity, patch(
+            "server.core.history.get_profile"
+        ) as get_profile:
+            config.PERSONALIZE_HISTORY = False
+            disabled = build_request(self.analysis, critical)
+            health.assert_not_called()
+            retrieve.assert_not_called()
+            resolve_identity.assert_not_called()
+            get_profile.assert_not_called()
+
+        with patch(
+            "server.core.explanation.builder.learning_memory.is_available",
+            return_value=False,
+        ) as health, patch(
+            "server.core.explanation.builder.learning_memory.retrieve_memory"
+        ) as retrieve, patch("server.core.history.resolve_identity") as resolve_identity, patch(
+            "server.core.history.get_profile"
+        ) as get_profile:
+            config.PERSONALIZE_HISTORY = True
+            unhealthy = build_request(self.analysis, critical)
+            health.assert_called_once_with()
+            retrieve.assert_not_called()
+            resolve_identity.assert_not_called()
+            get_profile.assert_not_called()
+
+        self.assertNotIn("relevant_memory", disabled.payload)
+        self.assertNotIn("relevant_memory", unhealthy.payload)
 
     def test_provider_failure_returns_stable_error_and_does_not_write_artifact(self) -> None:
         analysis_path = Path(self._data.name) / "games" / GAME_ID / "analysis.json"

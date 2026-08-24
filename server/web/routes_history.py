@@ -18,7 +18,17 @@ from server.core import game_analysis
 from server.core import history
 from server.core import lichess
 from server.core import multipgn
-from server.core.storage import GameNotFoundError, clear_engine_caches
+from server.core.learning.workflows import (
+    LearningProjectionError,
+    delete_game_learning,
+    restore_learning_from_sources,
+)
+from server.core.storage import (
+    GameNotFoundError,
+    clear_engine_caches,
+    coordinated_learning_source_mutation,
+    superseding_game_deletion,
+)
 from server.web import jobs
 
 router = APIRouter()
@@ -89,13 +99,36 @@ def get_local_profile(days: int = 30) -> dict:
 
 @router.delete("/games/{game_id}")
 def delete_local_game(game_id: str) -> JSONResponse:
+    learning_removed: int | None = None
+    deletion_error: history.GameDeletionError | None = None
     try:
-        result = history.delete_game_data(game_id)
+        with superseding_game_deletion(game_id):
+            with coordinated_learning_source_mutation():
+                learning_removed = delete_game_learning(game_id)
+                try:
+                    result = history.delete_game_data(game_id)
+                except history.GameDeletionError as exc:
+                    deletion_error = exc
+                    restore_learning_from_sources()
+                    raise
     except (GameNotFoundError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
+    except LearningProjectionError as exc:
+        message = str(exc)
+        if deletion_error is not None:
+            message = f"{deletion_error} Canonical learning recovery also failed: {exc}"
+        return JSONResponse(
+            {"error": {"code": exc.code, "message": message}},
+            status_code=500,
+        )
+    except history.GameDeletionError as exc:
+        return JSONResponse(
+            {"error": {"code": "game_deletion_error", "message": str(exc)}},
+            status_code=500,
+        )
     if not result["artifact_deleted"] and not result["history_records_removed"]:
         return JSONResponse({"error": "Game not found."}, status_code=404)
-    return JSONResponse(result)
+    return JSONResponse({**result, "learning_observations_removed": learning_removed})
 
 
 @router.post("/data/engine-cache/clear")

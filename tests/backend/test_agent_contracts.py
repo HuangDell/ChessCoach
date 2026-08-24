@@ -26,11 +26,13 @@ from server.core.agent.models import (
     ChessReference,
     EngineProvenance,
     EngineScore,
+    GetPlayerProfileInput,
     GetPlayerProfileResult,
     GetReviewContextInput,
     GetReviewContextResult,
     LearningMemoryItem,
     LearningObservation,
+    MemoryQuery,
     ModelVisibleContext,
     MoveReference,
     PositionContext,
@@ -108,6 +110,7 @@ def skill_estimate(status: str = "weakness") -> SkillEstimate:
         skill_id="calculation.candidate_moves",
         evidence_count=2,
         distinct_games=2,
+        distinct_positions=2,
         success_count=success,
         partial_count=0,
         failure_count=failures,
@@ -617,7 +620,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
             parent_id="calculation",
             label="Candidate moves",
             description="Scan forcing candidate moves.",
-            supported_evidence_types=["game_fact"],
+            supported_evidence_types=["fact_motif"],
         )
         LearningObservation(
             observation_id="observation-1",
@@ -625,6 +628,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
             skill_id="calculation.candidate_moves",
             outcome="failure",
             source_type="game_fact",
+            evidence_type="fact_motif",
             game_id="game-1",
             review_side="white",
             critical_id="ply-33",
@@ -637,6 +641,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
             skill_id="calculation.candidate_moves",
             evidence_count=2,
             distinct_games=2,
+            distinct_positions=2,
             success_count=0,
             partial_count=0,
             failure_count=2,
@@ -647,9 +652,20 @@ class DocumentedDtoContractTests(unittest.TestCase):
             status="weakness",
             examples=[chess_ref],
         )
+        legacy_estimate = SkillEstimate.model_validate(
+            {
+                key: value
+                for key, value in estimate.model_dump(mode="python").items()
+                if key != "distinct_positions"
+            }
+        )
+        self.assertEqual(legacy_estimate.distinct_games, legacy_estimate.distinct_positions)
         memory = LearningMemoryItem(
             skill_id=estimate.skill_id,
             summary="Two recent failures.",
+            status="weakness",
+            confidence_level="emerging",
+            window="recent",
             evidence_count=2,
             window_games=2,
             examples=[chess_ref],
@@ -670,6 +686,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
                 skill_id="calculation.candidate_moves",
                 evidence_count=2,
                 distinct_games=1,
+                distinct_positions=1,
                 success_count=0,
                 partial_count=0,
                 failure_count=1,
@@ -709,7 +726,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
                 weaknesses=[no_examples],
             )
 
-    def test_player_profile_result_requires_game_backed_estimate_evidence(self) -> None:
+    def test_player_profile_result_requires_verified_estimate_evidence(self) -> None:
         estimate = skill_estimate("weakness")
         result = GetPlayerProfileResult(
             analyzed_games=2,
@@ -721,6 +738,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
             update={
                 "evidence_count": 0,
                 "distinct_games": 0,
+                "distinct_positions": 0,
                 "success_count": 0,
                 "failure_count": 0,
                 "recent_failure_count": 0,
@@ -749,7 +767,7 @@ class DocumentedDtoContractTests(unittest.TestCase):
                 ]
             }
         )
-        with self.assertRaisesRegex(ValidationError, "reference a game"):
+        with self.assertRaisesRegex(ValidationError, "game, critical position"):
             GetPlayerProfileResult(
                 analyzed_games=2,
                 relevant_estimates=[skill_only],
@@ -760,6 +778,90 @@ class DocumentedDtoContractTests(unittest.TestCase):
                 analyzed_games=1,
                 relevant_estimates=[estimate],
             )
+
+    def test_learning_observation_requires_source_ownership_and_utc(self) -> None:
+        base: dict[str, Any] = {
+            "observation_id": "observation-1",
+            "dedupe_key": "game_fact:game-1:white:ply-3:skill:failure",
+            "skill_id": "tactics.fork_detection",
+            "outcome": "failure",
+            "source_type": "game_fact",
+            "evidence_type": "fact_motif",
+            "game_id": "game-1",
+            "review_side": "white",
+            "critical_id": "ply-3",
+            "evidence_refs": ["analysis:game-1:ply-3"],
+            "occurred_at": "2026-08-21T10:00:00+00:00",
+        }
+        observation = LearningObservation.model_validate(base)
+        self.assertEqual("2026-08-21T10:00:00Z", observation.occurred_at)
+
+        invalid_updates = (
+            {"review_side": None},
+            {"attempt_id": "attempt-1"},
+            {"evidence_type": "attempt_outcome"},
+            {"occurred_at": "2026-08-21T18:00:00+08:00"},
+            {"occurred_at": "2026-08-21T10:00:00"},
+        )
+        for update in invalid_updates:
+            with self.subTest(update=update), self.assertRaises(ValidationError):
+                LearningObservation.model_validate({**base, **update})
+
+        puzzle = LearningObservation.model_validate(
+            {
+                **base,
+                "dedupe_key": "attempt:attempt-1:tactics.fork_detection:success",
+                "source_type": "puzzle_attempt",
+                "evidence_type": "puzzle_theme",
+                "game_id": None,
+                "review_side": None,
+                "critical_id": None,
+                "attempt_id": "attempt-1",
+                "puzzle_id": "lichess-123",
+                "outcome": "success",
+            }
+        )
+        self.assertEqual("lichess-123", puzzle.puzzle_id)
+
+    def test_memory_and_profile_limits_support_bounded_phase3_retrieval(self) -> None:
+        self.assertEqual(3, GetPlayerProfileInput().limit)
+        self.assertEqual(5, GetPlayerProfileInput(limit=5).limit)
+        with self.assertRaises(ValidationError):
+            GetPlayerProfileInput(limit=6)
+
+        query = MemoryQuery(
+            activity="game_review",
+            current_facts={"primary_category": "fork"},
+            focus_skill_id="tactics.fork_detection",
+            window="lifetime",
+            limit=5,
+        )
+        self.assertEqual("lifetime", query.window)
+        with self.assertRaises(ValidationError):
+            MemoryQuery(activity="training", limit=6)
+
+        puzzle = ChessReference(kind="puzzle", puzzle_id="lichess-123", fen=START_FEN)
+        estimate = skill_estimate().model_copy(
+            update={"distinct_games": 0, "examples": [puzzle]}
+        )
+        GetPlayerProfileResult(analyzed_games=0, relevant_estimates=[estimate])
+        memory = LearningMemoryItem(
+            skill_id=estimate.skill_id,
+            summary="Verified recent evidence.",
+            status="watch",
+            confidence_level="emerging",
+            window="recent",
+            evidence_count=2,
+            window_games=0,
+            examples=[puzzle],
+            evidence_refs=["estimate:tactics.fork_detection"],
+        )
+        self.assertEqual(0, memory.window_games)
+
+        with self.assertRaises(ValidationError):
+            ChessReference(kind="puzzle")
+        with self.assertRaises(ValidationError):
+            ChessReference(kind="game", game_id="game-1", puzzle_id="puzzle-1")
 
 
 class FakeContractTests(unittest.IsolatedAsyncioTestCase):

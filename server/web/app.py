@@ -16,6 +16,7 @@ from server import config
 from server.core import app_liveness
 from server.core import engine
 from server.core import lifecycle
+from server.core.learning import initialize_learning
 from server.core.agent.service import ChessAgentService, create_default_agent_service
 from server.web.routes_agent import router as agent_router
 from server.web.routes_board import router as board_router
@@ -120,6 +121,7 @@ _FRONTEND_DIR = _resolve_frontend_dir()
 async def _lifespan(app: FastAPI):
     """Own process-wide resources for every supported ASGI launch path."""
     lifecycle.start_watchdog()
+    app.state.learning_status = initialize_learning()
     service = getattr(app.state, "agent_service", None)
     owns_agent_service = service is None
     try:

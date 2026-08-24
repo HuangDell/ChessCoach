@@ -32,6 +32,8 @@ from server.core.agent.models import (
     GetReviewContextResult,
     LookupOpeningInput,
     LookupOpeningResult,
+    LearningMemoryItem,
+    MemoryQuery,
     MoveReference,
     PositionContext,
     PositionReference,
@@ -41,6 +43,7 @@ from server.core.agent.models import (
     ToolResult,
 )
 from server.core.evaluation import classify
+from server.core.learning import memory, taxonomy
 from server.core.storage import games
 
 
@@ -453,94 +456,10 @@ def _compact_profile_stats(raw: dict[str, Any]) -> dict[str, int | float]:
     return out
 
 
-def _profile_example(raw: dict[str, Any]) -> ChessReference | None:
-    game_id = str(raw.get("game_id") or "").strip()
-    if not game_id:
-        return None
-    review_side = str(raw.get("reviewed_side") or "").strip()
-    critical_id = str(raw.get("critical_id") or "").strip()
-    try:
-        if critical_id and review_side in {"white", "black"}:
-            return ChessReference(
-                kind="critical_position",
-                game_id=game_id,
-                review_side=cast(ReviewSide, review_side),
-                critical_id=critical_id,
-                ply=(int(raw["ply"]) if raw.get("ply") is not None else None),
-            )
-        return ChessReference(kind="game", game_id=game_id)
-    except (TypeError, ValueError, ValidationError):
-        return None
-
-
-def _profile_estimate(
-    raw: dict[str, Any],
-    *,
-    analyzed_games: int,
-    weakness_categories: set[str],
-) -> SkillEstimate | None:
-    category = str(raw.get("category") or "").strip()
-    count = max(0, int(raw.get("count") or 0))
-    if not category or category == "uncategorized" or count < 1:
-        return None
-    examples = [
-        example
-        for example in (_profile_example(item) for item in (raw.get("examples") or [])[:3])
-        if example is not None
-    ]
-    if not examples:
-        return None
-    distinct_games = min(
-        analyzed_games,
-        count,
-        max(1, int(raw.get("game_count") or len({item.game_id for item in examples}))),
-    )
-    is_weakness = category in weakness_categories and count >= 2 and distinct_games >= 2
-    confidence = (
-        "established"
-        if is_weakness and count >= 3
-        else "emerging"
-        if count >= 2
-        else "insufficient"
-    )
-    last_seen = next(
-        (
-            str(item.get("date"))
-            for item in (raw.get("examples") or [])
-            if item.get("date")
-        ),
-        None,
-    )
-    return SkillEstimate(
-        taxonomy_version=1,
-        skill_id=category,
-        evidence_count=count,
-        distinct_games=distinct_games,
-        success_count=0,
-        partial_count=0,
-        failure_count=count,
-        cumulative_loss=max(0.0, float(raw.get("cumulative_win_loss") or 0.0)),
-        recent_failure_count=count,
-        last_seen=last_seen,
-        confidence_level=confidence,
-        status="weakness" if is_weakness else "watch",
-        examples=examples,
-    )
-
-
 def _profile_evidence_refs(estimates: list[SkillEstimate]) -> list[str]:
     refs: list[str] = []
     for estimate in estimates:
-        for example in estimate.examples:
-            if example.game_id is None:
-                continue
-            if example.review_side and example.critical_id:
-                ref = (
-                    f"profile:{example.game_id}:{example.review_side}:"
-                    f"{example.critical_id}:{estimate.skill_id}"
-                )
-            else:
-                ref = f"profile:{example.game_id}:{estimate.skill_id}"
+        for ref in memory.evidence_refs_for_estimate(estimate):
             if ref not in refs:
                 refs.append(ref)
     return refs
@@ -559,6 +478,7 @@ class AgentTools:
         opening_classifier: OpeningClassifier = openings.classify_from_fens,
         opening_history_fens: list[str] | None = None,
         profile_loader: ProfileLoader | None = None,
+        estimate_loader: memory.EstimateLoader | None = None,
         personalization_enabled: bool | None = None,
         depth: int | None = None,
         multipv: int = 3,
@@ -575,6 +495,7 @@ class AgentTools:
         self._opening_classifier = opening_classifier
         self._opening_history_fens = list(opening_history_fens or [])
         self._profile_loader = profile_loader or _load_local_player_profile
+        self._estimate_loader = estimate_loader
         self.personalization_enabled = (
             config.PERSONALIZE_HISTORY
             if personalization_enabled is None
@@ -592,44 +513,48 @@ class AgentTools:
     def last_execution(self) -> ToolExecution[Any] | None:
         return self.executions[-1] if self.executions else None
 
+    def personalization_available(self) -> bool:
+        """Check settings and process health without reading profile or estimate files."""
+
+        return self.personalization_enabled and memory.is_available()
+
+    def learning_memory(self, query: MemoryQuery) -> list[LearningMemoryItem]:
+        if not self.personalization_available():
+            return []
+        return memory.retrieve_memory(
+            query,
+            personalization_enabled=True,
+            estimate_loader=self._estimate_loader,
+        )
+
     def review_recurrence_evidence(self) -> dict[str, dict[str, Any]]:
         """Return bounded, game-backed category recurrence for deterministic prioritization.
 
         This is a Core-side helper, not a model tool.  Disabled personalization and any profile
         failure both degrade to no recurrence signal without reading unrelated history.
         """
-        if not self.personalization_enabled:
+        if not self.personalization_available():
             return {}
         try:
-            profile = self._profile_loader()
-            recent = profile.get("recent") or {}
-            rows = recent.get("categories") or []
+            items = self.learning_memory(
+                MemoryQuery(activity="game_review", window="recent", limit=5)
+            )
             evidence: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                if not isinstance(row, dict):
+            for item in items:
+                if item.status != "weakness":
                     continue
-                category = str(row.get("category") or "").strip()
-                count = max(0, int(row.get("count") or 0))
-                if not category or category == "uncategorized" or count < 2:
-                    continue
-                refs: list[str] = []
-                for raw_example in (row.get("examples") or [])[:3]:
-                    if not isinstance(raw_example, dict):
-                        continue
-                    example = _profile_example(raw_example)
-                    if example is None or example.game_id is None:
-                        continue
-                    if example.review_side and example.critical_id:
-                        ref = (
-                            f"profile:{example.game_id}:{example.review_side}:"
-                            f"{example.critical_id}:{category}"
-                        )
-                    else:
-                        ref = f"profile:{example.game_id}:{category}"
-                    if ref not in refs:
-                        refs.append(ref)
-                if refs:
-                    evidence[category] = {"count": count, "evidence_refs": refs}
+                definition = taxonomy.get_skill_definition(item.skill_id)
+                aliases = (
+                    [item.skill_id, *definition.aliases]
+                    if definition is not None
+                    else [item.skill_id]
+                )
+                value = {
+                    "count": item.evidence_count,
+                    "evidence_refs": list(item.evidence_refs),
+                }
+                for alias in aliases:
+                    evidence[alias] = value
             return evidence
         except Exception:  # noqa: BLE001 - recurrence is an optional prioritization feature
             return {}
@@ -881,56 +806,69 @@ class AgentTools:
                     ),
                 ),
             )
+        if not memory.is_available():
+            status = memory.health_status()
+            operation = str(status.get("operation") or "startup synchronization")
+            return cast(
+                ToolExecution[GetPlayerProfileResult],
+                _failure(
+                    "get_player_profile",
+                    _tool_error(
+                        "profile_unavailable",
+                        f"Canonical learning memory is unavailable after {operation}; "
+                        "Engine Review remains available.",
+                        recoverable=True,
+                    ),
+                ),
+            )
         try:
-            profile = self._profile_loader()
+            raw_focus = [*request.focus_skill_ids, *request.focus_categories]
+            resolved_focus = [taxonomy.resolve_skill_id(value) for value in raw_focus]
+            if any(value is None for value in resolved_focus):
+                estimates: list[SkillEstimate] = []
+            elif resolved_focus:
+                estimates = []
+                for skill_id in dict.fromkeys(cast(list[str], resolved_focus)):
+                    estimates.extend(
+                        memory.retrieve_estimates(
+                            MemoryQuery(
+                                activity="training_planning",
+                                focus_skill_id=skill_id,
+                                window="recent",
+                                limit=1,
+                            ),
+                            personalization_enabled=True,
+                            estimate_loader=self._estimate_loader,
+                        )
+                    )
+                estimates = estimates[: request.limit]
+            else:
+                estimates = memory.retrieve_estimates(
+                    MemoryQuery(
+                        activity="training_planning",
+                        window="recent",
+                        limit=request.limit,
+                    ),
+                    personalization_enabled=True,
+                    estimate_loader=self._estimate_loader,
+                )
+
+            try:
+                profile = self._profile_loader()
+            except Exception:  # noqa: BLE001 - canonical estimates remain usable without legacy stats
+                profile = {}
             if not isinstance(profile, dict):
-                raise TypeError("Profile boundary returned a non-object value.")
-            analyzed_games = max(0, int(profile.get("games_analyzed") or 0))
+                profile = {}
+            analyzed_games = max(
+                max((estimate.distinct_games for estimate in estimates), default=0),
+                max(0, int(profile.get("games_analyzed") or 0)),
+            )
             recent = profile.get("recent") or {}
             lifetime = profile.get("lifetime") or {}
-            if not isinstance(recent, dict) or not isinstance(lifetime, dict):
-                raise TypeError("Profile aggregates are invalid.")
-            weakness_categories = {
-                str(item.get("category") or "")
-                for item in recent.get("weaknesses", []) or []
-                if isinstance(item, dict)
-            }
-            focus = {
-                str(item).strip().casefold()
-                for item in [*request.focus_categories, *request.focus_skill_ids]
-                if str(item).strip()
-            }
-            rows = [item for item in recent.get("categories", []) or [] if isinstance(item, dict)]
-            if focus:
-                rows = [
-                    item
-                    for item in rows
-                    if str(item.get("category") or "").casefold() in focus
-                    or any(
-                        value.endswith(f".{str(item.get('category') or '').casefold()}")
-                        for value in focus
-                    )
-                ]
-            rows.sort(
-                key=lambda item: (
-                    -int(str(item.get("category") or "") in weakness_categories),
-                    -int(item.get("count") or 0),
-                    -float(item.get("cumulative_win_loss") or 0.0),
-                    str(item.get("category") or ""),
-                )
-            )
-            estimates = [
-                estimate
-                for estimate in (
-                    _profile_estimate(
-                        item,
-                        analyzed_games=analyzed_games,
-                        weakness_categories=weakness_categories,
-                    )
-                    for item in rows
-                )
-                if estimate is not None
-            ][: request.limit]
+            if not isinstance(recent, dict):
+                recent = {}
+            if not isinstance(lifetime, dict):
+                lifetime = {}
             training = recent.get("training") or {}
             training_rate = (
                 float(training["solve_rate"])

@@ -5,10 +5,11 @@ import json
 from typing import Any
 
 from server import config
-from server.core import history
+from server.core.agent.models import LearningMemoryItem, MemoryQuery
 from server.core.explanation.models import ExplanationRequest
+from server.core.learning import memory as learning_memory
 
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 EXPLANATION_SCHEMA_VERSION = 1
 
 _BASE_EVIDENCE_REFS = (
@@ -42,35 +43,43 @@ def _display_move(move_number: int, side: str, san: str) -> str:
     return f"{prefix}{san}"
 
 
-def _relevant_history(analysis: dict, facts: dict) -> dict | None:
-    """Return only aggregate motifs related to this position, never raw historical games."""
-    if not config.PERSONALIZE_HISTORY:
-        return None
-    categories = {
-        str(category)
-        for category in [facts.get("primary_category"), *(facts.get("secondary_categories") or [])]
-        if category
-    }
-    if not categories:
-        return None
+def _relevant_memory(critical: dict, facts: dict) -> list[LearningMemoryItem]:
+    """Return only promoted canonical evidence relevant to this verified position."""
+    if not config.PERSONALIZE_HISTORY or not learning_memory.is_available():
+        return []
+    focus_category = str(facts.get("primary_category") or "").strip()
+    if not focus_category:
+        return []
     try:
-        player_id, _platform, _name = history.resolve_identity(
-            analysis.get("headers") or {}, str(analysis.get("review_side") or "")
+        items = learning_memory.retrieve_memory(
+            MemoryQuery(
+                activity="game_review",
+                current_facts={
+                    "classification": critical.get("classification"),
+                    "signals": critical.get("signals") or [],
+                    "facts": facts,
+                },
+                focus_category=focus_category,
+                window="recent",
+                limit=3,
+            ),
+            personalization_enabled=True,
         )
-        profile = history.get_profile(player_id)
-    except Exception:
-        return None
-    related: dict[str, Any] = {"player_id": player_id}
-    for scope in ("recent", "lifetime"):
-        aggregate = profile.get(scope) or {}
-        matches = [
-            item
-            for item in aggregate.get("top_motifs") or []
-            if item.get("motif") in categories
-        ][:3]
-        if matches:
-            related[scope] = {"games": aggregate.get("games"), "matching_motifs": matches}
-    return related if len(related) > 1 else None
+    except Exception:  # noqa: BLE001 - optional memory cannot block Engine explanations
+        return []
+
+    promoted: list[LearningMemoryItem] = []
+    for item in items:
+        try:
+            validated = LearningMemoryItem.model_validate(item)
+        except (TypeError, ValueError):
+            continue
+        if validated.status not in {"weakness", "strength"}:
+            continue
+        if validated.confidence_level not in {"emerging", "established"}:
+            continue
+        promoted.append(validated)
+    return promoted[:3]
 
 
 def _allowed_refs(facts: dict) -> list[str]:
@@ -174,11 +183,19 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
             "classification_evidence": facts.get("classification_evidence") or [],
         },
     }
-    related_history = _relevant_history(analysis, facts)
-    if related_history:
-        payload["related_history"] = related_history
+    relevant_memory = _relevant_memory(critical, facts)
+    if relevant_memory:
+        payload["relevant_memory"] = [
+            item.model_dump(mode="json", exclude_none=True) for item in relevant_memory
+        ]
 
     allowed_refs = _allowed_refs(facts)
+    allowed_refs.extend(
+        evidence_ref
+        for item in relevant_memory
+        for evidence_ref in item.evidence_refs
+        if evidence_ref not in allowed_refs
+    )
     if config.EXPLANATION_LANGUAGE == "en":
         system_prompt = (
             "You are a chess review coach. Turn only the supplied Engine results and deterministic "

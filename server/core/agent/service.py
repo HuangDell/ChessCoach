@@ -38,6 +38,7 @@ from server.core.agent.models import (
     AgentSessionSummary,
     ChessReference,
     GetPlayerProfileResult,
+    MemoryQuery,
     PositionContext,
     PositionReference,
     SessionError,
@@ -66,6 +67,7 @@ from server.core.agent.sessions import (
 )
 from server.core.agent.summary import ConversationSummaryBuilder
 from server.core.agent.tools import ActiveReviewArtifact, AgentTools
+from server.core.learning import memory as learning_memory
 
 
 ToolsFactory = Callable[[ResolvedContextBundle], AgentTools]
@@ -562,10 +564,40 @@ class ChessAgentService:
             request.message,
             review_loader=tools.get_review_context,
         )
+        availability_check = getattr(tools, "personalization_available", None)
         personalization_enabled = bool(
             config.PERSONALIZE_HISTORY
             and getattr(tools, "personalization_enabled", True)
+            and learning_memory.is_available()
+            and (
+                availability_check()
+                if callable(availability_check)
+                else True
+            )
         )
+        relevant_memory = []
+        memory_loader = getattr(tools, "learning_memory", None)
+        if personalization_enabled and callable(memory_loader):
+            facts = model_context.engine_facts
+            current_facts = (
+                {
+                    "classification": facts.classification,
+                    "facts": facts.facts,
+                }
+                if facts is not None
+                else {}
+            )
+            try:
+                relevant_memory = memory_loader(
+                    MemoryQuery(
+                        activity=model_context.task.activity,
+                        current_facts=current_facts,
+                        window="recent",
+                        limit=5,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - memory cannot make Agent/Engine Review unavailable
+                relevant_memory = []
         review_priorities = None
         if is_review_priority_request(request.message) and bundle.analysis is not None:
             recurrence_loader = getattr(tools, "review_recurrence_evidence", None)
@@ -583,6 +615,10 @@ class ChessAgentService:
             except PrioritizationError as exc:
                 raise ChessContextError("invalid_session_context", str(exc)) from exc
         allowed_evidence = list(model_context.allowed_evidence_refs)
+        for item in relevant_memory:
+            for evidence_ref in item.evidence_refs:
+                if evidence_ref not in allowed_evidence:
+                    allowed_evidence.append(evidence_ref)
         if review_priorities is not None:
             for candidate in review_priorities.candidates:
                 for evidence_ref in candidate.evidence_refs:
@@ -593,6 +629,7 @@ class ChessAgentService:
                 "task": model_context.task.model_copy(
                     update={"personalization_enabled": personalization_enabled}
                 ),
+                "relevant_memory": relevant_memory,
                 "review_priorities": review_priorities,
                 "allowed_evidence_refs": allowed_evidence,
             }

@@ -14,6 +14,7 @@ from server.core.agent.models import (
     LookupOpeningInput,
     ModelVisibleContext,
     PositionContext,
+    SkillEstimate,
     SuggestedAction,
     TaskContext,
 )
@@ -50,6 +51,59 @@ class RecordingProfileLoader:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+class RecordingEstimateLoader:
+    def __init__(self, result: list[SkillEstimate] | Exception) -> None:
+        self.result = result
+        self.calls = 0
+
+    def __call__(self, _window: str) -> list[SkillEstimate]:
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return list(self.result)
+
+
+def canonical_estimate(
+    skill_id: str = "calculation.candidate_moves",
+    *,
+    evidence_count: int = 3,
+    distinct_games: int = 2,
+    distinct_positions: int = 2,
+    status: str = "weakness",
+    confidence: str = "established",
+) -> SkillEstimate:
+    return SkillEstimate(
+        taxonomy_version=1,
+        skill_id=skill_id,
+        evidence_count=evidence_count,
+        distinct_games=distinct_games,
+        distinct_positions=distinct_positions,
+        success_count=0,
+        partial_count=0,
+        failure_count=evidence_count,
+        cumulative_loss=33.0,
+        recent_failure_count=evidence_count,
+        confidence_level=confidence,
+        status=status,
+        examples=[
+            ChessReference(
+                kind="critical_position",
+                game_id="game-1",
+                review_side="white",
+                critical_id="ply-11",
+                ply=11,
+            ),
+            ChessReference(
+                kind="critical_position",
+                game_id="game-2" if distinct_games > 1 else "game-1",
+                review_side="black" if distinct_games > 1 else "white",
+                critical_id="ply-20",
+                ply=20,
+            ),
+        ][:distinct_positions],
+    )
 
 
 def profile_fixture() -> dict:
@@ -189,26 +243,32 @@ class OpeningToolTests(unittest.IsolatedAsyncioTestCase):
 class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
     def test_recurrence_helper_is_profile_gated_and_degrades_to_empty(self) -> None:
         disabled_loader = RecordingProfileLoader(profile_fixture())
+        disabled_estimates = RecordingEstimateLoader([canonical_estimate()])
         disabled = AgentTools(
             profile_loader=disabled_loader,
+            estimate_loader=disabled_estimates,
             personalization_enabled=False,
         ).review_recurrence_evidence()
         self.assertEqual({}, disabled)
         self.assertEqual(0, disabled_loader.calls)
+        self.assertEqual(0, disabled_estimates.calls)
 
         enabled_loader = RecordingProfileLoader(profile_fixture())
+        enabled_estimates = RecordingEstimateLoader([canonical_estimate()])
         enabled = AgentTools(
             profile_loader=enabled_loader,
+            estimate_loader=enabled_estimates,
             personalization_enabled=True,
         ).review_recurrence_evidence()
-        self.assertEqual(1, enabled_loader.calls)
+        self.assertEqual(0, enabled_loader.calls)
+        self.assertEqual(1, enabled_estimates.calls)
         self.assertEqual(3, enabled["missed_capture"]["count"])
         self.assertEqual(2, len(enabled["missed_capture"]["evidence_refs"]))
         self.assertNotIn("hanging_piece", enabled)
 
-        failed_loader = RecordingProfileLoader(RuntimeError("unavailable"))
+        failed_loader = RecordingEstimateLoader(RuntimeError("unavailable"))
         failed = AgentTools(
-            profile_loader=failed_loader,
+            estimate_loader=failed_loader,
             personalization_enabled=True,
         ).review_recurrence_evidence()
         self.assertEqual({}, failed)
@@ -222,7 +282,10 @@ class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
         ) as get_profile, patch(
             "server.core.agent.tools.config.DATA_DIR", "/tmp/agent-profile-test"
         ):
-            result = await AgentTools(personalization_enabled=True).get_player_profile(
+            result = await AgentTools(
+                personalization_enabled=True,
+                estimate_loader=RecordingEstimateLoader([]),
+            ).get_player_profile(
                 GetPlayerProfileInput(focus_categories=["missed_capture"], limit=1)
             )
 
@@ -243,7 +306,11 @@ class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_profile_is_focused_bounded_and_game_backed(self) -> None:
         loader = RecordingProfileLoader(profile_fixture())
-        tools = AgentTools(profile_loader=loader, personalization_enabled=True)
+        tools = AgentTools(
+            profile_loader=loader,
+            estimate_loader=RecordingEstimateLoader([canonical_estimate()]),
+            personalization_enabled=True,
+        )
 
         result = await tools.get_player_profile(
             GetPlayerProfileInput(focus_categories=["missed_capture"], limit=1)
@@ -256,7 +323,7 @@ class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(4, data.analyzed_games)
         self.assertEqual(1, len(data.relevant_estimates))
         estimate = data.relevant_estimates[0]
-        self.assertEqual("missed_capture", estimate.skill_id)
+        self.assertEqual("calculation.candidate_moves", estimate.skill_id)
         self.assertEqual("weakness", estimate.status)
         self.assertEqual(3, estimate.evidence_count)
         self.assertEqual(2, estimate.distinct_games)
@@ -265,7 +332,7 @@ class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(4, data.recent["training_attempts"])
         self.assertEqual(60.0, data.lifetime["training_solve_rate"])
         self.assertEqual(2, len(result.evidence_refs))
-        self.assertTrue(all(item.startswith("profile:game-") for item in result.evidence_refs))
+        self.assertTrue(all(item.startswith("learning:") for item in result.evidence_refs))
 
         allowed = _successful_profile_references(tools)
         historical = estimate.examples[1]
@@ -299,6 +366,18 @@ class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_single_game_category_stays_watch_and_loader_error_is_typed(self) -> None:
         result = await AgentTools(
             profile_loader=RecordingProfileLoader(profile_fixture()),
+            estimate_loader=RecordingEstimateLoader(
+                [
+                    canonical_estimate(
+                        "tactics.loose_piece_awareness",
+                        evidence_count=1,
+                        distinct_games=1,
+                        distinct_positions=1,
+                        status="watch",
+                        confidence="insufficient",
+                    )
+                ]
+            ),
             personalization_enabled=True,
         ).get_player_profile(
             GetPlayerProfileInput(focus_categories=["hanging_piece"], limit=3)
@@ -308,16 +387,18 @@ class PlayerProfileToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("insufficient", result.data.relevant_estimates[0].confidence_level)
 
         failed = await AgentTools(
-            profile_loader=RecordingProfileLoader(OSError("broken profile")),
+            profile_loader=RecordingProfileLoader(profile_fixture()),
+            estimate_loader=RecordingEstimateLoader(OSError("broken estimates")),
             personalization_enabled=True,
         ).get_player_profile(GetPlayerProfileInput())
         self.assertFalse(failed.ok)
         self.assertEqual("profile_unavailable", failed.error.code)
         self.assertTrue(failed.error.recoverable)
 
-    def test_profile_limit_cannot_exceed_three(self) -> None:
+    def test_profile_limit_supports_five_but_not_six(self) -> None:
+        self.assertEqual(5, GetPlayerProfileInput(limit=5).limit)
         with self.assertRaises(ValidationError):
-            GetPlayerProfileInput(limit=4)
+            GetPlayerProfileInput(limit=6)
 
 
 def priority_artifact(count: int = 10) -> dict:

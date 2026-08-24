@@ -164,7 +164,8 @@ class _FakeAgents:
             return _RunResult()
 
     @staticmethod
-    def function_tool(function, **_kwargs):
+    def function_tool(function, **kwargs):
+        function._test_tool_options = kwargs
         return function
 
 
@@ -409,12 +410,21 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
                 session_provider=lambda _session_id: object(),
             )
             registered = {tool.__name__: tool for tool in runtime._sdk_tools(local)}
+            profile_description = registered["get_player_profile"]._test_tool_options[
+                "description_override"
+            ]
             opening = json.loads(await registered["lookup_opening"](START_FEN, []))
             profile = json.loads(await registered["get_player_profile"]([], [], 3))
             await runtime.close()
 
         self.assertEqual("A00", opening["data"]["eco"])
         self.assertEqual(0, profile["data"]["analyzed_games"])
+        self.assertEqual(
+            "Read up to five deterministic weakness or strength items with verified "
+            "canonical examples that may reference a game, critical position, position, "
+            "or puzzle. Use only when personalization is enabled and relevant.",
+            profile_description,
+        )
         self.assertEqual(
             ["lookup_opening", "get_player_profile"],
             [record.name for record in local.budget.records],

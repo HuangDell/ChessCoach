@@ -20,6 +20,7 @@ import gzip
 import json
 import os
 import random
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -27,20 +28,14 @@ import chess
 
 from .. import config
 from . import puzzle_shards
+from .agent.models import MemoryQuery
+from .learning import memory as learning_memory
 
 _BASELINE = Path(__file__).resolve().parent.parent / "data" / "puzzles" / "baseline.jsonl.gz"
 
 # Selection: start with a tight band around the user's rating and widen until we have enough.
 _BAND = 100
 _MIN_POOL = 12
-# "Train my weaknesses" only kicks in once there's enough signal to trust — otherwise the very first
-# game or puzzle skews the whole stream (the user explicitly asked not to be biased that early).
-_MIN_HISTORY_GAMES = 5  # analysed games before game-motif weaknesses drive selection
-_MIN_PUZZLE_ATTEMPTS = 10  # total puzzle attempts before in-app theme stats drive selection
-
-# Map a game-history motif (history.tag_motifs) onto a puzzle theme tag, so "train my weaknesses"
-# can bias selection toward the tactics the player actually misses in real games. None = no clean
-# puzzle-theme equivalent (e.g. a pawn grab isn't a curated tactic motif).
 # Lichess tags every puzzle with THEME tags, but many are metadata, not trainable skills: the
 # puzzle's length ("oneMove"), where it came from ("master"), the game phase, or the resulting eval
 # ("crushing"). Surfacing "master 0%" or "oneMove 0%" in the "Work on" card is noise — only real
@@ -53,6 +48,86 @@ _NON_MOTIF_THEMES: frozenset[str] = frozenset({
 })
 
 
+def validate_curated_puzzle(puzzle: Mapping[str, object]) -> dict:
+    """Validate and normalize one externally sourced curated puzzle.
+
+    The setup move owns the position presented to the solver, so a supplied
+    ``solve_fen`` must match the position obtained by legally replaying that
+    move.  The complete solution line is replayed as well; malformed shard
+    rows must never reach a session or become durable learning sources.
+    """
+    if not isinstance(puzzle, Mapping):
+        raise ValueError("Curated puzzle must be an object.")
+
+    puzzle_id = puzzle.get("id")
+    if not isinstance(puzzle_id, str) or not puzzle_id.strip():
+        raise ValueError("Curated puzzle requires a stable id.")
+
+    fen = puzzle.get("fen")
+    if not isinstance(fen, str) or not fen.strip():
+        raise ValueError("Curated puzzle requires an owning FEN.")
+    try:
+        board = chess.Board(fen.strip())
+    except ValueError as exc:
+        raise ValueError("Curated puzzle has an invalid owning FEN.") from exc
+    if not board.is_valid():
+        raise ValueError("Curated puzzle has an invalid owning FEN.")
+
+    moves = puzzle.get("moves")
+    if not isinstance(moves, list) or len(moves) < 2:
+        raise ValueError("Curated puzzle requires a setup move and solver line.")
+    normalized_moves: list[str] = []
+    solve_fen: str | None = None
+    side_to_move: str | None = None
+    for index, raw_move in enumerate(moves):
+        if not isinstance(raw_move, str) or not raw_move.strip():
+            raise ValueError("Curated puzzle solution moves must be non-empty UCI strings.")
+        try:
+            move = chess.Move.from_uci(raw_move.strip())
+        except ValueError as exc:
+            raise ValueError("Curated puzzle contains an invalid UCI move.") from exc
+        if move not in board.legal_moves:
+            raise ValueError("Curated puzzle contains a move that is not legal in its owning FEN.")
+        board.push(move)
+        normalized_moves.append(move.uci())
+        if index == 0:
+            solve_fen = board.fen()
+            side_to_move = "white" if board.turn == chess.WHITE else "black"
+
+    supplied_solve_fen = puzzle.get("solve_fen")
+    if supplied_solve_fen is not None:
+        if not isinstance(supplied_solve_fen, str) or not supplied_solve_fen.strip():
+            raise ValueError("Curated puzzle solve FEN must be a non-empty string.")
+        try:
+            supplied_board = chess.Board(supplied_solve_fen.strip())
+        except ValueError as exc:
+            raise ValueError("Curated puzzle has an invalid solve FEN.") from exc
+        if not supplied_board.is_valid() or supplied_board.fen() != solve_fen:
+            raise ValueError("Curated puzzle solve FEN does not belong to its setup move.")
+
+    themes = puzzle.get("themes")
+    if (
+        not isinstance(themes, list)
+        or not themes
+        or any(not isinstance(theme, str) or not theme.strip() for theme in themes)
+    ):
+        raise ValueError("Curated puzzle requires verified non-empty theme strings.")
+    normalized_themes = [theme.strip() for theme in themes]
+    if len(set(normalized_themes)) != len(normalized_themes):
+        raise ValueError("Curated puzzle themes must be unique.")
+
+    normalized = dict(puzzle)
+    normalized.update(
+        id=puzzle_id.strip(),
+        fen=chess.Board(fen.strip()).fen(),
+        moves=normalized_moves,
+        themes=normalized_themes,
+        solve_fen=solve_fen,
+        side_to_move=side_to_move,
+    )
+    return normalized
+
+
 def is_trainable_theme(theme: str) -> bool:
     """Is this a real tactical/mate motif a player can drill, vs. a Lichess metadata tag?"""
     return bool(theme) and theme not in _NON_MOTIF_THEMES
@@ -60,37 +135,46 @@ def is_trainable_theme(theme: str) -> bool:
 
 def weak_theme_stats(by_theme: dict, *, min_seen: int = 4, max_rate: float = 0.7,
                      limit: int = 3) -> list[dict]:
-    """The "Work on" list: trainable themes with enough attempts and a poor solve rate, worst first.
+    """Adapt canonical puzzle-skill weaknesses to the legacy Work On card shape.
 
-    Returns `[{theme, seen, solved, rate}]` (rate 0..1). Meta tags are excluded so the card only
-    ever suggests genuine motifs (fork, pin, backRankMate, ...), never "master"/"oneMove".
+    ``by_theme`` and the legacy thresholds remain signature-compatible but no longer promote a
+    second weakness system.
     """
-    out = []
-    for theme, stat in (by_theme or {}).items():
-        if not is_trainable_theme(theme):
+    del by_theme, min_seen, max_rate
+    if not config.PERSONALIZE_HISTORY:
+        return []
+    try:
+        estimates = learning_memory.retrieve_estimates(
+            MemoryQuery(activity="training", window="recent", limit=5),
+            personalization_enabled=True,
+        )
+    except Exception:  # noqa: BLE001 - puzzle stats remain available without learning memory
+        return []
+    output = []
+    for estimate in estimates:
+        theme = _SKILL_TO_THEME.get(estimate.skill_id)
+        if estimate.status != "weakness" or theme is None:
             continue
-        seen = int((stat or {}).get("seen", 0) or 0)
-        solved = int((stat or {}).get("solved", 0) or 0)
-        if seen >= min_seen and (solved / seen) < max_rate:
-            out.append({"theme": theme, "seen": seen, "solved": solved, "rate": solved / seen})
-    out.sort(key=lambda x: x["rate"])  # worst solve rate first
-    return out[:limit]
+        output.append(
+            {
+                "theme": theme,
+                "seen": estimate.evidence_count,
+                "solved": estimate.success_count,
+                "rate": estimate.success_count / estimate.evidence_count,
+            }
+        )
+    return output[:limit]
 
 
-_MOTIF_TO_THEME: dict[str, Optional[str]] = {
-    "missed_fork": "fork",
-    "allowed_fork": "fork",
-    "back_rank": "backRankMate",
-    "hung_piece": "hangingPiece",
-    "missed_capture": "hangingPiece",
-    "missed_mate": "mateIn2",
-    "allowed_mate": "mateIn2",
-    "pawn_grab": None,
+_SKILL_TO_THEME: dict[str, str] = {
+    "tactics.fork_detection": "fork",
+    "tactics.mating_threat_detection": "mateIn2",
+    "tactics.loose_piece_awareness": "hangingPiece",
 }
 
 
 def _load_jsonl_gz(path: str) -> list[dict]:
-    """Parse a gzip-JSONL puzzle shard. Missing/corrupt -> [] (degrade); bad lines skipped."""
+    """Parse and validate a gzip-JSONL puzzle shard; bad rows are never served."""
     out: list[dict] = []
     try:
         with gzip.open(path, "rt", encoding="utf-8") as fh:
@@ -99,8 +183,8 @@ def _load_jsonl_gz(path: str) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
+                    out.append(validate_curated_puzzle(json.loads(line)))
+                except (json.JSONDecodeError, ValueError):
                     continue
     except OSError:
         return []
@@ -159,54 +243,20 @@ def available_themes() -> list[str]:
 
 
 def weakness_themes(state: dict) -> list[str]:
-    """Puzzle themes the player is weak on, blending their game history and in-app puzzle stats.
-
-    (a) Game history: recurring motifs from the coaching profile (history.get_profile recent
-        top_motifs, count>=2) mapped through `_MOTIF_TO_THEME`.
-    (b) Puzzle self-stats: themes with a poor solve rate in `state['by_theme']` (already puzzle
-        theme tags, no mapping needed).
-    Union, capped, best-effort — either half degrading to empty is fine. Returns [] when there's no
-    signal (caller then falls back to normal rating-band selection)."""
-    themes: list[str] = []
-
-    # (a) game-history motifs -> themes. Only once we've analysed enough games that the recurring
-    # motifs mean something (not just whatever the single most-recent game happened to contain).
-    try:
-        from . import history
-        profile = history.get_profile() or {}
-        recent = profile.get("recent") or {}
-        if int(recent.get("games", 0) or 0) >= _MIN_HISTORY_GAMES:
-            for entry in recent.get("top_motifs") or []:
-                if entry.get("count", 0) < 2:
-                    continue
-                mapped = _MOTIF_TO_THEME.get(entry.get("motif", ""))
-                if mapped and mapped not in themes:
-                    themes.append(mapped)
-    except Exception:  # noqa: BLE001 - weakness bias must never break selection
-        pass
-
-    # (b) in-app puzzle per-theme weakness (worst solve rate first, min sample size). Held back until
-    # the player has attempted enough puzzles overall, so the first puzzle's theme can't dominate.
-    try:
-        by_theme = state.get("by_theme", {}) or {}
-        total_attempts = sum(int((s or {}).get("seen", 0) or 0) for s in by_theme.values())
-        if total_attempts >= _MIN_PUZZLE_ATTEMPTS:
-            scored = []
-            for theme, stat in by_theme.items():
-                if not is_trainable_theme(theme):  # skip metadata tags (master/oneMove/phase/…)
-                    continue
-                seen = int(stat.get("seen", 0) or 0)
-                solved = int(stat.get("solved", 0) or 0)
-                if seen >= 4:
-                    scored.append((solved / seen, theme))
-            scored.sort()  # worst rate first
-            for rate, theme in scored:
-                if rate < 0.6 and theme not in themes:
-                    themes.append(theme)
-    except Exception:  # noqa: BLE001
-        pass
-
-    return themes[:4]
+    """Return Lichess themes for canonical established/emerging weaknesses only."""
+    del state
+    if not config.PERSONALIZE_HISTORY:
+        return []
+    items = learning_memory.retrieve_memory(
+        MemoryQuery(activity="training", window="recent", limit=5),
+        personalization_enabled=True,
+    )
+    return [
+        theme
+        for item in items
+        if item.status == "weakness"
+        if (theme := _SKILL_TO_THEME.get(item.skill_id)) is not None
+    ][:4]
 
 
 def _candidates(rating: float, themes: Optional[Iterable[str]]) -> list[dict]:
@@ -282,19 +332,8 @@ def get_puzzle(puzzle_id: str) -> Optional[dict]:
 
 
 def _with_side(puzzle: dict) -> dict:
-    """Attach `side_to_move` = the colour the solver plays (the position AFTER the setup move)."""
-    out = dict(puzzle)
-    try:
-        board = chess.Board(puzzle["fen"])
-        moves = puzzle.get("moves", [])
-        if moves:
-            board.push_uci(moves[0])
-        out["side_to_move"] = "white" if board.turn == chess.WHITE else "black"
-        out["solve_fen"] = board.fen()  # the position the solver actually sees
-    except (ValueError, KeyError):
-        out["side_to_move"] = "white"
-        out["solve_fen"] = puzzle.get("fen", "")
-    return out
+    """Return a normalized puzzle whose setup-owned solver position is verified."""
+    return validate_curated_puzzle(puzzle)
 
 
 def validate_step(puzzle: dict, ply_index: int, uci: str) -> dict:

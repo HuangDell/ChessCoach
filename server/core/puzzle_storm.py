@@ -21,6 +21,7 @@ import time
 from typing import Optional
 
 from .. import config
+from .learning.workflows import LearningProjectionError, finalize_puzzle_attempt
 from . import puzzle_rating
 from . import puzzle_session
 from . import puzzles as puzzles_mod
@@ -83,14 +84,47 @@ def _log_entry(puzzle: dict, *, solved: bool, your_move: Optional[str]) -> dict:
     }
 
 
+def _finalize_progress(
+    progress,
+    *,
+    outcome: str,
+    selected_move: str | None = None,
+) -> dict | None:
+    """Finalize one Storm source, keeping persistence failures retryable."""
+    try:
+        persisted = finalize_puzzle_attempt(
+            progress,
+            outcome=outcome,
+            source="storm",
+            selected_move=selected_move,
+        )
+    except LearningProjectionError as exc:
+        if exc.operation == "puzzle_attempt_sync":
+            # The attempt is durable and backfillable; make all later calls fail closed without
+            # repeating per-puzzle side effects.
+            progress.scored = True
+            progress.learning_sync_error = str(exc)
+        raise
+    progress.scored = True
+    return persisted
+
+
 def get_run() -> Optional[StormRun]:
-    return _RUN
+    with puzzle_session.transition():
+        return _RUN
 
 
 def start(state: dict, *, now: Optional[float] = None) -> dict:
     """Begin a fresh storm run and serve the first puzzle. Counts as a day of practice."""
+    with puzzle_session.transition():
+        return _start_locked(state, now=now)
+
+
+def _start_locked(state: dict, *, now: Optional[float]) -> dict:
     global _RUN
     t = _now(now)
+    if _RUN is not None and not _RUN.ended:
+        _finish(_RUN, state, now=t)
     seed = (int(state.get("user_seed", 0)) ^ int(t)) & 0x7FFFFFFF
     _RUN = StormRun(state.get("rating", 1500.0), seed, t, config.PUZZLE_STORM_DURATION)
     puzzle_rating.touch_daily_streak(state)
@@ -124,12 +158,20 @@ def _serve(run: StormRun, *, now: float) -> Optional[dict]:
 
 def next_puzzle(state: dict, *, now: Optional[float] = None) -> dict:
     """Serve the next puzzle after the current one resolved. Ends the run if the clock is up."""
+    with puzzle_session.transition():
+        return _next_puzzle_locked(state, now=now)
+
+
+def _next_puzzle_locked(state: dict, *, now: Optional[float]) -> dict:
     t = _now(now)
     run = _RUN
     if run is None:
         return {"ended": True, "active": False}
     if run.remaining(t) <= 0:
         return _finish(run, state, now=t)
+    progress = puzzle_session.get_current()
+    if progress is not None and not progress.finished:
+        return {"error": "Current storm puzzle is still active.", **state_view(now=t)}
     puzzle = _serve(run, now=t)
     view = state_view(now=t)
     view["puzzle"] = puzzle
@@ -139,26 +181,53 @@ def next_puzzle(state: dict, *, now: Optional[float] = None) -> dict:
 
 
 def submit_move(state: dict, uci: str, *, now: Optional[float] = None) -> dict:
+    """Serialize selection and mutation of the shared current storm puzzle."""
+    with puzzle_session.transition():
+        t = _now(now)
+        run = _RUN
+        if run is None or run.ended:
+            return {"error": "No active storm.", "ended": True}
+        progress = puzzle_session.get_current()
+        if progress is None:
+            return {"error": "No active puzzle."}
+        # Lock order is session transition -> progress finalization throughout Storm.
+        with progress.finalize_lock:
+            return _submit_move_locked(state, uci, run=run, progress=progress, now=t)
+
+
+def _submit_move_locked(
+    state: dict,
+    uci: str,
+    *,
+    run: StormRun,
+    progress,
+    now: float,
+) -> dict:
     """Validate one solver move in the current storm puzzle and apply storm scoring.
 
     Returns per-move progress plus the live storm state. `puzzle_done` marks that the current puzzle
     resolved (solved or missed) so the caller should request the next one; a correct-but-not-final
     move returns the forced `opponent_reply_uci` and keeps the same puzzle.
     """
-    t = _now(now)
-    run = _RUN
-    if run is None or run.ended:
-        return {"error": "No active storm.", "ended": True}
-    if run.remaining(t) <= 0:
-        return _finish(run, state, now=t)
+    if run.remaining(now) <= 0:
+        return _finish(run, state, now=now)
 
-    prog = puzzle_session.get_current()
-    if prog is None:
-        return {"error": "No active puzzle."}
+    prog = progress
+    if prog.learning_sync_error:
+        raise LearningProjectionError(
+            prog.learning_sync_error,
+            operation="puzzle_attempt_sync",
+            attempt_id=prog.attempt_id,
+        )
+    if prog.finished:
+        return {"error": "Current storm puzzle is already resolved.", "puzzle_done": True}
 
     result = puzzles_mod.validate_step(prog.puzzle, prog.ply_index, uci)
 
     if not result["correct"]:
+        persisted = _finalize_progress(prog, outcome="failure", selected_move=uci)
+        if persisted is None:
+            return {"error": "Current storm puzzle is already resolved.", "puzzle_done": True}
         run.combo = 0
         run.misses += 1
         run.results.append(False)
@@ -166,12 +235,15 @@ def submit_move(state: dict, uci: str, *, now: Optional[float] = None) -> dict:
         run.deadline -= _WRONG_PENALTY  # a wrong move costs time
         prog.finished = True
         out = {"correct": False, "puzzle_done": True, "solved": False}
-        out.update(state_view(now=t))
-        if run.remaining(t) <= 0:
-            return _finish(run, state, now=t, extra=out)
+        out.update(state_view(now=now))
+        if run.remaining(now) <= 0:
+            return _finish(run, state, now=now, extra=out)
         return out
 
     if result["is_complete"]:
+        persisted = _finalize_progress(prog, outcome="success", selected_move=uci)
+        if persisted is None:
+            return {"error": "Current storm puzzle is already resolved.", "puzzle_done": True}
         run.score += 1
         run.combo += 1
         run.best_combo = max(run.best_combo, run.combo)
@@ -183,7 +255,7 @@ def submit_move(state: dict, uci: str, *, now: Optional[float] = None) -> dict:
             run.deadline += bonus
         prog.finished = True
         out = {"correct": True, "puzzle_done": True, "solved": True, "time_bonus": bonus}
-        out.update(state_view(now=t))
+        out.update(state_view(now=now))
         return out
 
     # Correct but more to come: auto-play the forced reply and stay on this puzzle.
@@ -194,31 +266,52 @@ def submit_move(state: dict, uci: str, *, now: Optional[float] = None) -> dict:
         "solved": False,
         "opponent_reply_uci": result.get("opponent_reply_uci"),
     }
-    out.update(state_view(now=t))
+    out.update(state_view(now=now))
     return out
 
 
 def state_view(*, now: Optional[float] = None) -> dict:
     """The live storm state (score, combo, remaining time), for the timer/scoreboard."""
-    t = _now(now)
-    run = _RUN
-    if run is None:
-        return {"active": False, "ended": True}
-    return {
-        "active": not run.ended,
-        "ended": run.ended,
-        "score": run.score,
-        "combo": run.combo,
-        "best_combo": run.best_combo,
-        "misses": run.misses,
-        "remaining": run.remaining(t),
-        "duration": config.PUZZLE_STORM_DURATION,
-        "results": run.results[-30:],
-    }
+    with puzzle_session.transition():
+        t = _now(now)
+        run = _RUN
+        if run is None:
+            return {"active": False, "ended": True}
+        return {
+            "active": not run.ended,
+            "ended": run.ended,
+            "score": run.score,
+            "combo": run.combo,
+            "best_combo": run.best_combo,
+            "misses": run.misses,
+            "remaining": run.remaining(t),
+            "duration": config.PUZZLE_STORM_DURATION,
+            "results": run.results[-30:],
+        }
 
 
 def _finish(run: StormRun, state: dict, *, now: float, extra: Optional[dict] = None) -> dict:
     """End the run, persist the highscore + best combo, and return the final scoreboard."""
+    with puzzle_session.transition():
+        progress = puzzle_session.get_current()
+        if progress is None:
+            return _finish_locked(run, state, now=now, extra=extra, progress=None)
+        with progress.finalize_lock:
+            return _finish_locked(run, state, now=now, extra=extra, progress=progress)
+
+
+def _finish_locked(
+    run: StormRun,
+    state: dict,
+    *,
+    now: float,
+    extra: Optional[dict],
+    progress,
+) -> dict:
+    if run.ended:
+        return {"ended": True}
+    if progress is not None and not progress.finished and not progress.scored:
+        _finalize_progress(progress, outcome="failure")
     run.ended = True
     run.deadline = min(run.deadline, now)
     puzzle_session.clear_current()
@@ -247,7 +340,25 @@ def _finish(run: StormRun, state: dict, *, now: float, extra: Optional[dict] = N
     return view
 
 
+def end(state: dict, *, now: Optional[float] = None) -> dict:
+    """Finalize an abandoned active puzzle, persist the run, then clear process state."""
+    with puzzle_session.transition():
+        return _end_locked(state, now=now)
+
+
+def _end_locked(state: dict, *, now: Optional[float]) -> dict:
+    global _RUN
+    run = _RUN
+    if run is None:
+        puzzle_session.clear_current()
+        return {"ended": True}
+    view = _finish(run, state, now=_now(now)) if not run.ended else {"ended": True}
+    _RUN = None
+    return view
+
+
 def clear() -> None:
     """Drop any active run (e.g. on leaving storm mode)."""
     global _RUN
-    _RUN = None
+    with puzzle_session.transition():
+        _RUN = None

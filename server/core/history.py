@@ -18,7 +18,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -27,10 +29,14 @@ from typing import Optional
 import chess
 
 from server import config
+from server.core.agent.models import MemoryQuery
 from server.core import game_identity
 from server.core import openings
 from server.core import session as session_mod
 from server.core.evaluation import classify_speed
+from server.core.learning.estimates import EstimateStore, rank_estimates
+from server.core.learning import memory as learning_memory
+from server.core.learning import taxonomy as learning_taxonomy
 from server.core.session import ReviewSession
 
 SCHEMA_VERSION = 1
@@ -45,6 +51,10 @@ _PIECE_VALUE = {
     chess.QUEEN: 9,
     chess.KING: 100,
 }
+
+
+class GameDeletionError(RuntimeError):
+    """A game could not be deleted without risking inconsistent persistent data."""
 
 
 # --------------------------------------------------------------------------------------
@@ -79,15 +89,175 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _fsync_directory(path: str) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_bytes(path: str, content: bytes) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def _atomic_jsonl(path: str, records: list[dict]) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        for record in records:
-            fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    content = "".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
+    ).encode("utf-8")
+    _atomic_write_bytes(path, content)
+
+
+def _snapshot_file(path: str) -> bytes | None:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+
+
+def _restore_file_snapshot(path: str, content: bytes | None) -> None:
+    """Restore bytes without going through a possibly failing normal transaction writer."""
+
+    directory = os.path.dirname(path)
+    if content is None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return
+        _fsync_directory(directory)
+        return
+
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.rollback.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _profile_snapshots(profile_dir: str) -> tuple[bool, dict[str, bytes]]:
+    existed = os.path.isdir(profile_dir)
+    if not existed:
+        return False, {}
+    snapshots: dict[str, bytes] = {}
+    for name in os.listdir(profile_dir):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(profile_dir, name)
+        if os.path.isfile(path):
+            content = _snapshot_file(path)
+            if content is not None:
+                snapshots[path] = content
+    return True, snapshots
+
+
+def _restore_deletion_snapshots(
+    file_snapshots: dict[str, bytes | None],
+    *,
+    profile_dir: str,
+    profile_dir_existed: bool,
+    profiles: dict[str, bytes],
+) -> None:
+    try:
+        current_profiles = {
+            os.path.join(profile_dir, name)
+            for name in os.listdir(profile_dir)
+            if name.endswith(".json") and os.path.isfile(os.path.join(profile_dir, name))
+        }
+    except FileNotFoundError:
+        current_profiles = set()
+    for path in sorted(current_profiles - set(profiles)):
+        _restore_file_snapshot(path, None)
+    for path, content in sorted(profiles.items()):
+        _restore_file_snapshot(path, content)
+    for path, content in file_snapshots.items():
+        _restore_file_snapshot(path, content)
+    if not profile_dir_existed:
+        try:
+            os.rmdir(profile_dir)
+        except (FileNotFoundError, OSError):
+            pass
+
+
+def _stage_game_artifact(directory: str, base: str) -> str | None:
+    """Atomically hide an artifact; irreversible cleanup happens only after commit."""
+
+    if not os.path.isdir(directory):
+        return None
+    staging_root = os.path.join(base, ".deleted-games")
+    os.makedirs(staging_root, exist_ok=True)
+    descriptor, staged_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(directory)}.", suffix=".deleting", dir=staging_root
+    )
+    os.close(descriptor)
+    os.unlink(staged_path)
+    try:
+        os.replace(directory, staged_path)
+        _fsync_directory(os.path.dirname(directory))
+        _fsync_directory(staging_root)
+    except OSError:
+        if os.path.isdir(staged_path) and not os.path.exists(directory):
+            os.replace(staged_path, directory)
+        raise
+    return staged_path
+
+
+def _read_attempt_rows_for_deletion(path: str) -> list[dict] | None:
+    """Strictly preflight an attempt log before any owning artifact is removed."""
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            rows: list[dict] = []
+            for line_number, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise GameDeletionError(
+                        f"Could not safely delete game: invalid attempt data in {path} "
+                        f"at line {line_number}."
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise GameDeletionError(
+                        f"Could not safely delete game: invalid attempt row in {path} "
+                        f"at line {line_number}."
+                    )
+                rows.append(row)
+            return rows
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise GameDeletionError(f"Could not read attempt data before deleting game: {exc}") from exc
 
 
 # --------------------------------------------------------------------------------------
@@ -454,12 +624,13 @@ def _view_summary(agg: dict) -> str:
             f"accuracy {agg['avg_accuracy']}% "
             f"({r.get('win', 0)}W-{r.get('loss', 0)}L-{r.get('draw', 0)}D)"
         )
-    motifs = agg.get("top_motifs", [])
-    if motifs:
+    weaknesses = agg.get("weaknesses", [])
+    if weaknesses:
         named = ", ".join(
-            f"{_MOTIF_LABELS.get(m['motif'], m['motif'])} (×{m['count']})" for m in motifs[:4]
+            f"{str(item['category']).replace('_', ' ')} (x{item['count']})"
+            for item in weaknesses[:3]
         )
-        bits.append(f"recurring: {named}")
+        bits.append(f"established weaknesses: {named}")
     if agg.get("weakest_phase"):
         bits.append(f"weakest phase {agg['weakest_phase']}")
     return "; ".join(bits)
@@ -544,15 +715,21 @@ def _dominant_motif(mistakes: list) -> Optional[str]:
 
 
 def _is_recurring(motif: str, data_dir: Optional[str]) -> bool:
-    """True if `motif` is a repeated theme in the player's recent profile (best-effort)."""
-    try:
-        profile = get_profile(my_player_id(data_dir), data_dir)
-        for entry in (profile.get("recent") or {}).get("top_motifs", []):
-            if entry.get("motif") == motif and entry.get("count", 0) >= 2:
-                return True
-    except Exception:
-        return False
-    return False
+    """True only when canonical recent memory promotes the motif to weakness."""
+
+    aliases = {
+        "missed_fork": "fork",
+        "allowed_fork": "fork",
+        "hung_piece": "hanging_piece",
+        "back_rank": "allowed_mate",
+    }
+    focus = aliases.get(motif, motif)
+    items = learning_memory.retrieve_memory(
+        MemoryQuery(activity="game_review", focus_category=focus, window="recent", limit=1),
+        data_dir=_data_dir(data_dir),
+        personalization_enabled=config.PERSONALIZE_HISTORY,
+    )
+    return bool(items and items[0].status == "weakness")
 
 
 def coach_summary(sess: ReviewSession, data_dir: Optional[str] = None) -> Optional[str]:
@@ -1043,7 +1220,11 @@ def insights(days: Optional[int] = None, data_dir: Optional[str] = None) -> dict
     for m in agg.get("top_motifs", []):
         m["label"] = _MOTIF_LABELS.get(m["motif"], m["motif"])
     agg["trend"] = _trend(records)
-    agg["coach_summary"] = _personal_coach_summary(agg)
+    _apply_canonical_learning(
+        agg,
+        data_dir=data_dir,
+        window="lifetime" if not days else "recent",
+    )
     return {"schema_version": SCHEMA_VERSION, "player_id": me, "days": days or 0, **agg}
 
 
@@ -1065,33 +1246,134 @@ def _fast_limit(speed: str) -> float:
     return {"bullet": 1.5, "blitz": 3.0, "rapid": 6.0, "classical": 12.0}.get(speed, 4.0)
 
 
-def _weakness_rows(category_rows: list[dict], games: int) -> list[dict]:
-    total = sum(int(item["count"]) for item in category_rows) or 1
-    total_loss = sum(float(item["cumulative_win_loss"]) for item in category_rows) or 1.0
-    if games < 3:
+_PREFERRED_LEGACY_CATEGORY = {
+    "tactics.fork_detection": "fork",
+    "tactics.mating_threat_detection": "allowed_mate",
+    "tactics.loose_piece_awareness": "hanging_piece",
+    "calculation.opponent_forcing_moves": "missed_opponent_threat",
+    "calculation.exchange_sequence": "wrong_exchange_sequence",
+    "calculation.candidate_moves": "missed_capture",
+    "strategy.king_safety": "king_safety",
+    "strategy.piece_activity": "piece_activity",
+    "opening.development": "development",
+    "endgame.conversion": "conversion",
+    "practical.blunder_check": "blunder_check",
+    "practical.time_management": "time_management",
+}
+
+
+def _legacy_learning_example(reference: object) -> dict:
+    return {
+        key: value
+        for key, value in {
+            "game_id": getattr(reference, "game_id", None),
+            "reviewed_side": getattr(reference, "review_side", None),
+            "critical_id": getattr(reference, "critical_id", None),
+            "ply": getattr(reference, "ply", None),
+            "fen": getattr(reference, "fen", None),
+            "puzzle_id": getattr(reference, "puzzle_id", None),
+        }.items()
+        if value is not None
+    }
+
+
+def _is_legacy_training_reference(reference: object) -> bool:
+    """Whether the legacy profile can open this example as a game retry."""
+
+    return bool(
+        getattr(reference, "game_id", None)
+        and getattr(reference, "review_side", None)
+        and getattr(reference, "critical_id", None)
+    )
+
+
+def _canonical_weakness_rows(
+    aggregate: dict,
+    *,
+    data_dir: Optional[str],
+    window: str,
+) -> list[dict]:
+    """Adapt canonical weaknesses to the legacy frontend row shape."""
+
+    if not config.PERSONALIZE_HISTORY or not learning_memory.is_available():
         return []
-    weaknesses = []
-    for item in category_rows:
-        count = int(item["count"])
-        share = count / total
-        impact_share = float(item["cumulative_win_loss"]) / total_loss
-        if item["category"] == "uncategorized" or count < 2:
-            continue
-        if share < 0.20 and impact_share < 0.25:
-            continue
-        weaknesses.append(
+    try:
+        estimates = EstimateStore(_data_dir(data_dir)).ensure_current(window=window)
+    except Exception:  # noqa: BLE001 - profile display degrades without affecting history
+        return []
+    weaknesses = [
+        estimate
+        for estimate in rank_estimates(estimates)
+        if estimate.status == "weakness"
+        and any(_is_legacy_training_reference(item) for item in estimate.examples)
+    ][:3]
+    category_rows = [
+        row for row in aggregate.get("categories", []) if isinstance(row, dict)
+    ]
+    total_failures = sum(estimate.failure_count for estimate in weaknesses) or 1
+    total_loss = sum(estimate.cumulative_loss for estimate in weaknesses) or 1.0
+    output: list[dict] = []
+    for estimate in weaknesses:
+        matching = [
+            row
+            for row in category_rows
+            if learning_taxonomy.resolve_skill_id(str(row.get("category") or ""))
+            == estimate.skill_id
+        ]
+        base = max(
+            matching,
+            key=lambda row: (
+                int(row.get("count") or 0),
+                float(row.get("cumulative_win_loss") or 0.0),
+            ),
+            default={},
+        )
+        examples = [
+            _legacy_learning_example(item)
+            for item in estimate.examples
+            if _is_legacy_training_reference(item)
+        ]
+        count = estimate.failure_count
+        cumulative_loss = estimate.cumulative_loss
+        category = str(
+            base.get("category")
+            or _PREFERRED_LEGACY_CATEGORY.get(estimate.skill_id)
+            or estimate.skill_id
+        )
+        output.append(
             {
-                **item,
-                "share": round(share * 100.0, 1),
-                "impact_share": round(impact_share * 100.0, 1),
-                "data_window_games": games,
-                "typical_position": (item.get("examples") or [None])[0],
+                **base,
+                "skill_id": estimate.skill_id,
+                "category": category,
+                "count": count,
+                "game_count": estimate.distinct_games,
+                "cumulative_win_loss": round(cumulative_loss, 1),
+                "average_severity": round(cumulative_loss / count, 1) if count else 0.0,
+                "primary_phase": str(base.get("primary_phase") or "training"),
+                "examples": examples,
+                "share": round(count / total_failures * 100.0, 1),
+                "impact_share": round(cumulative_loss / total_loss * 100.0, 1),
+                "data_window_games": int(aggregate.get("games") or 0),
+                "typical_position": examples[0],
+                "confidence_level": estimate.confidence_level,
             }
         )
-    return sorted(
-        weaknesses,
-        key=lambda item: (-float(item["cumulative_win_loss"]), -int(item["count"])),
-    )[:3]
+    return output
+
+
+def _apply_canonical_learning(
+    aggregate: dict,
+    *,
+    data_dir: Optional[str],
+    window: str,
+) -> dict:
+    aggregate["weaknesses"] = _canonical_weakness_rows(
+        aggregate,
+        data_dir=data_dir,
+        window=window,
+    )
+    aggregate["coach_summary"] = _personal_coach_summary(aggregate)
+    return aggregate
 
 
 def _personal_coach_summary(aggregate: dict) -> dict:
@@ -1295,7 +1577,7 @@ def _aggregate(records: list[dict], attempts: Optional[list[dict]] = None) -> di
             },
             "weakest_phase": max(phase_loss, key=phase_loss.get) if any(phase_loss.values()) else None,
             "categories": category_rows,
-            "weaknesses": _weakness_rows(category_rows, games),
+            "weaknesses": [],
             "training": _attempt_summary(attempts or []),
             "by_speed": [
                 {
@@ -1365,7 +1647,7 @@ def build_profile(player_id: str, data_dir: Optional[str] = None) -> dict:
 
     recent_aggregate = _aggregate(recent_records, attempts=attempts_for(recent_records))
     recent_aggregate["trend"] = _trend(recent_records)
-    recent_aggregate["coach_summary"] = _personal_coach_summary(recent_aggregate)
+    _apply_canonical_learning(recent_aggregate, data_dir=data_dir, window="recent")
     profile["recent"] = {"window": recent_n if recent_n > 0 else None, **recent_aggregate}
 
     lifetime_n = config.PROFILE_LIFETIME
@@ -1373,7 +1655,7 @@ def build_profile(player_id: str, data_dir: Optional[str] = None) -> dict:
         lifetime_records = records if lifetime_n is None else records[-lifetime_n:]
         lifetime_aggregate = _aggregate(lifetime_records, attempts=attempts_for(lifetime_records))
         lifetime_aggregate["trend"] = _trend(lifetime_records)
-        lifetime_aggregate["coach_summary"] = _personal_coach_summary(lifetime_aggregate)
+        _apply_canonical_learning(lifetime_aggregate, data_dir=data_dir, window="lifetime")
         profile["lifetime"] = lifetime_aggregate
 
     profile["recent_games"] = [
@@ -1392,13 +1674,8 @@ def build_profile(player_id: str, data_dir: Optional[str] = None) -> dict:
 def write_profile(player_id: str, data_dir: Optional[str] = None) -> dict:
     profile = build_profile(player_id, data_dir)
     path = _profile_path(player_id, data_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(profile, fh, ensure_ascii=False, indent=2)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    content = (json.dumps(profile, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    _atomic_write_bytes(path, content)
     return profile
 
 
@@ -1459,61 +1736,99 @@ def get_profile(player_id: Optional[str] = None, data_dir: Optional[str] = None)
 
 def delete_game_data(game_id: str, data_dir: Optional[str] = None) -> dict:
     """Remove one game, every indexed side, linked attempts, and rebuild derived profiles."""
-    from server.core.storage import delete_game
+    from server.core.storage import (
+        coordinated_attempt_log_mutation,
+        coordinated_game_mutation,
+        coordinated_learning_source_mutation,
+    )
 
     base = _data_dir(data_dir)
-    if data_dir is not None and os.path.abspath(base) != os.path.abspath(config.DATA_DIR):
-        # The storage module deliberately resolves through config.DATA_DIR. This branch exists for
-        # isolated verification tools that pass an explicit temporary root.
-        directory = os.path.join(base, "games", game_id)
-        if not re.fullmatch(r"[0-9a-f]{20}", game_id or ""):
-            raise ValueError("Unknown game.")
-        artifact_deleted = os.path.isdir(directory)
-        if artifact_deleted:
-            import shutil
+    if not re.fullmatch(r"[0-9a-f]{20}", game_id or ""):
+        raise ValueError("Unknown game.")
+    directory = os.path.join(base, "games", game_id)
+    staged_artifact: str | None = None
 
-            shutil.rmtree(directory)
-    else:
-        artifact_deleted = delete_game(game_id)
+    with coordinated_game_mutation(game_id):
+        with coordinated_learning_source_mutation():
+            with coordinated_attempt_log_mutation(), _HISTORY_LOCK:
+                file_snapshots: dict[str, bytes | None] = {}
+                profile_dir = os.path.join(base, "profiles")
+                profile_dir_existed = False
+                profiles: dict[str, bytes] = {}
+                mutations_started = False
+                try:
+                    records = load_records(data_dir=data_dir)
+                    kept = [item for item in records if item.get("game_id") != game_id]
+                    removed_records = len(records) - len(kept)
 
-    with _HISTORY_LOCK:
-        records = load_records(data_dir=data_dir)
-        kept = [item for item in records if item.get("game_id") != game_id]
-        removed_records = len(records) - len(kept)
-        _atomic_jsonl(_history_path(data_dir), kept)
-
-        removed_attempts = 0
-        for path in {
-            _attempts_path(data_dir),
-            os.path.join(base, "training", "attempts.jsonl"),
-        }:
-            if not os.path.isfile(path):
-                continue
-            parsed = []
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    for line in fh:
-                        try:
-                            item = json.loads(line)
-                        except json.JSONDecodeError:
+                    attempt_updates: list[tuple[str, list[dict], int]] = []
+                    attempt_paths = dict.fromkeys(
+                        (
+                            _attempts_path(data_dir),
+                            os.path.join(base, "training", "attempts.jsonl"),
+                        )
+                    )
+                    for path in attempt_paths:
+                        rows = _read_attempt_rows_for_deletion(path)
+                        if rows is None:
                             continue
-                        if item.get("game_id") == game_id:
-                            removed_attempts += 1
-                        else:
-                            parsed.append(item)
-                _atomic_jsonl(path, parsed)
-            except OSError:
-                continue
+                        remaining = [row for row in rows if row.get("game_id") != game_id]
+                        attempt_updates.append((path, remaining, len(rows) - len(remaining)))
 
-        profile_dir = os.path.join(base, "profiles")
+                    mutable_paths = [
+                        path for path, _remaining, removed in attempt_updates if removed
+                    ]
+                    if removed_records:
+                        mutable_paths.append(_history_path(data_dir))
+                    file_snapshots = {path: _snapshot_file(path) for path in mutable_paths}
+                    profile_dir_existed, profiles = _profile_snapshots(profile_dir)
+
+                    removed_attempts = sum(update[2] for update in attempt_updates)
+                    mutations_started = True
+                    for path, remaining, removed in attempt_updates:
+                        if removed:
+                            _atomic_jsonl(path, remaining)
+                    if removed_records:
+                        _atomic_jsonl(_history_path(data_dir), kept)
+
+                    try:
+                        for name in os.listdir(profile_dir):
+                            if name.endswith(".json"):
+                                os.unlink(os.path.join(profile_dir, name))
+                    except FileNotFoundError:
+                        pass
+                    for player_id in sorted(
+                        {item.get("player_id") for item in kept if item.get("player_id")}
+                    ):
+                        write_profile(str(player_id), data_dir)
+
+                    staged_artifact = _stage_game_artifact(directory, base)
+                    artifact_deleted = staged_artifact is not None
+                except Exception as exc:
+                    if mutations_started:
+                        try:
+                            _restore_deletion_snapshots(
+                                file_snapshots,
+                                profile_dir=profile_dir,
+                                profile_dir_existed=profile_dir_existed,
+                                profiles=profiles,
+                            )
+                        except OSError as rollback_exc:
+                            raise GameDeletionError(
+                                f"Could not safely delete game {game_id}; deletion failed ({exc}) "
+                                f"and index rollback also failed: {rollback_exc}"
+                            ) from rollback_exc
+                    if isinstance(exc, GameDeletionError):
+                        raise
+                    raise GameDeletionError(
+                        f"Could not safely delete game {game_id}; deletion was rolled back: {exc}"
+                    ) from exc
+
+    if staged_artifact is not None:
         try:
-            for name in os.listdir(profile_dir):
-                if name.endswith(".json"):
-                    os.unlink(os.path.join(profile_dir, name))
-        except OSError:
+            shutil.rmtree(staged_artifact)
+        except Exception:  # noqa: BLE001 - committed hidden tombstones are safe to clean later
             pass
-        for player_id in sorted({item.get("player_id") for item in kept if item.get("player_id")}):
-            write_profile(str(player_id), data_dir)
 
     return {
         "game_id": game_id,

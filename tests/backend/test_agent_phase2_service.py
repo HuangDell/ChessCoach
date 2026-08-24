@@ -19,6 +19,7 @@ from server.core.agent.models import (
     AgentSessionCreateRequest,
     ChessReference,
     PositionReference,
+    SkillEstimate,
     SuggestedAction,
 )
 from server.core.agent.service import ChessAgentService
@@ -241,6 +242,54 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(CRITICAL_ID, result.response.references[0].critical_id)
+
+    async def test_canonical_memory_is_injected_and_its_evidence_is_allowlisted(self) -> None:
+        session = self.create_review_session()
+        estimate = SkillEstimate(
+            taxonomy_version=1,
+            skill_id="calculation.candidate_moves",
+            evidence_count=2,
+            distinct_games=2,
+            distinct_positions=2,
+            success_count=0,
+            partial_count=0,
+            failure_count=2,
+            cumulative_loss=24.0,
+            recent_failure_count=2,
+            confidence_level="emerging",
+            status="weakness",
+            examples=[
+                ChessReference(kind="game", game_id="historical-1"),
+                ChessReference(kind="game", game_id="historical-2"),
+            ],
+        )
+
+        def tools_factory(bundle) -> AgentTools:
+            return AgentTools(
+                active_review=ActiveReviewArtifact.from_analysis(
+                    bundle.analysis,
+                    CRITICAL_ID,
+                ),
+                estimate_loader=lambda _window: [estimate],
+                profile_loader=lambda: {},
+                personalization_enabled=True,
+            )
+
+        self.service.tools_factory = tools_factory
+
+        async def run(request: AgentRunRequest) -> AgentRunResult:
+            self.assertTrue(request.model_context.task.personalization_enabled)
+            self.assertEqual(1, len(request.model_context.relevant_memory))
+            item = request.model_context.relevant_memory[0]
+            self.assertEqual("calculation.candidate_moves", item.skill_id)
+            self.assertTrue(set(item.evidence_refs).issubset(request.model_context.allowed_evidence_refs))
+            return AgentRunResult(response=critical_response(), tool_calls=[])
+
+        self.runtime.handler = run
+        await self.service.send_message(
+            session.session_id,
+            AgentMessageRequest(message="Explain this position.", expected_generation=0),
+        )
 
     async def test_disabled_personalization_does_not_read_profile_for_priorities(self) -> None:
         session = self.create_review_session()

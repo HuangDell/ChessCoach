@@ -18,6 +18,8 @@ import chess
 
 from server import config
 from server.core import lines
+from server.core.learning.workflows import LearningProjectionError, project_training_attempt
+from server.core.storage import coordinated_attempt_log_mutation
 from server.core.storage import games
 
 
@@ -36,6 +38,18 @@ _PRINCIPLES = {
 
 class TrainingPositionError(ValueError):
     """Raised when a requested game/critical-position pair is unavailable or inconsistent."""
+
+
+class TrainingGameDeletedError(TrainingPositionError):
+    """Raised when deletion supersedes in-flight work for a game-backed training source."""
+
+    code = "training_game_deleted"
+
+
+_DELETED_GAME_MESSAGE = (
+    "This game was deleted while the training attempt was being checked. "
+    "Reload your training positions before trying again."
+)
 
 
 def _now_iso() -> str:
@@ -68,6 +82,8 @@ def load_position(game_id: str, critical_id: str, review_side: str | None = None
     """Load one critical position and its containing analysis artifact."""
     try:
         analysis = games.load_analysis(game_id, review_side)
+    except games.AnalysisArtifactMissingError as exc:
+        raise TrainingGameDeletedError(_DELETED_GAME_MESSAGE) from exc
     except games.GameNotFoundError as exc:
         raise TrainingPositionError(str(exc)) from exc
     if analysis.get("review_side") not in {"white", "black"}:
@@ -225,15 +241,20 @@ def record_attempt(
     category: str | None = None,
     phase: str | None = None,
     review_side: str | None = None,
+    win_gap_from_best: float | None = None,
+    gave_up: bool = False,
+    attempt_id: str | None = None,
+    attempted_at: str | None = None,
     data_dir: str | None = None,
+    expected_generation: int | None = None,
 ) -> dict:
     attempt = {
         "schema_version": ATTEMPT_SCHEMA_VERSION,
-        "attempt_id": uuid.uuid4().hex,
+        "attempt_id": attempt_id or uuid.uuid4().hex,
         "game_id": game_id,
         "critical_id": critical_id,
         "reviewed_side": review_side,
-        "attempted_at": _now_iso(),
+        "attempted_at": attempted_at or _now_iso(),
         "selected_move": selected_move,
         "verdict": verdict,
         "hints_used": max(0, int(hints_used)),
@@ -241,14 +262,70 @@ def record_attempt(
         "source": source,
         "category": category,
         "phase": phase,
+        "win_gap_from_best": (
+            max(0.0, float(win_gap_from_best)) if win_gap_from_best is not None else None
+        ),
+        "gave_up": bool(gave_up),
     }
-    path = _attempt_path(data_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with _ATTEMPT_LOCK:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(attempt, ensure_ascii=False, sort_keys=True) + "\n")
-            handle.flush()
+    generation = (
+        games.game_mutation_generation(game_id)
+        if expected_generation is None
+        else expected_generation
+    )
+    with games.coordinated_game_mutation(game_id, expected_generation=generation):
+        path = _attempt_path(data_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with coordinated_attempt_log_mutation():
+            with _ATTEMPT_LOCK:
+                with open(path, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(attempt, ensure_ascii=False, sort_keys=True) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
     return attempt
+
+
+def finalize_attempt(
+    *,
+    analysis: dict,
+    game_id: str,
+    critical_id: str,
+    selected_move: str | None,
+    verdict: str,
+    hints_used: int,
+    solved: bool,
+    source: str,
+    category: str,
+    phase: str,
+    win_gap_from_best: float | None = None,
+    gave_up: bool = False,
+    data_dir: str | None = None,
+    expected_generation: int,
+) -> dict:
+    """Commit an attempt and its learning projection unless deletion superseded the source."""
+    try:
+        with games.coordinated_game_mutation(
+            game_id, expected_generation=expected_generation
+        ):
+            attempt = record_attempt(
+                game_id=game_id,
+                critical_id=critical_id,
+                selected_move=selected_move,
+                verdict=verdict,
+                hints_used=hints_used,
+                solved=solved,
+                source=source,
+                category=category,
+                phase=phase,
+                review_side=str(analysis.get("review_side") or "") or None,
+                win_gap_from_best=win_gap_from_best,
+                gave_up=gave_up,
+                data_dir=data_dir,
+                expected_generation=expected_generation,
+            )
+            project_training_attempt(attempt, analysis=analysis, data_dir=data_dir)
+            return attempt
+    except games.GameMutationSupersededError as exc:
+        raise TrainingGameDeletedError(_DELETED_GAME_MESSAGE) from exc
 
 
 def load_attempts(
@@ -329,6 +406,7 @@ def evaluate_attempt(
     hints_used: int = 0,
     source: str = "retry",
 ) -> dict:
+    generation = games.game_mutation_generation(game_id)
     analysis, position = load_position(game_id, critical_id, review_side)
     board = chess.Board(str(position["fen_before"]))
     try:
@@ -427,7 +505,8 @@ def evaluate_attempt(
         if uci:
             shapes.append({"orig": uci[:2], "dest": uci[2:4], "brush": "red"})
 
-    attempt = record_attempt(
+    attempt = finalize_attempt(
+        analysis=analysis,
         game_id=game_id,
         critical_id=critical_id,
         selected_move=selected_move,
@@ -437,7 +516,8 @@ def evaluate_attempt(
         source=source,
         category=_category(position),
         phase=_phase(position),
-        review_side=str(analysis.get("review_side") or "") or None,
+        win_gap_from_best=gap,
+        expected_generation=generation,
     )
     return {
         "attempt": attempt,
@@ -527,21 +607,24 @@ def reveal_solution(
     source: str = "puzzle",
 ) -> dict:
     """Return post-attempt study data and record a non-solved give-up attempt."""
+    generation = games.game_mutation_generation(game_id)
     analysis, position = load_position(game_id, critical_id, review_side)
     best_line = position.get("best_line") or {"uci": [], "san": []}
     best_uci = (best_line.get("uci") or [None])[0]
     best_san = (best_line.get("san") or [None])[0]
-    attempt = record_attempt(
+    attempt = finalize_attempt(
+        analysis=analysis,
         game_id=game_id,
         critical_id=critical_id,
         selected_move=None,
-        verdict="unknown",
+        verdict="give_up",
         hints_used=hints_used,
         solved=False,
         source=source,
         category=_category(position),
         phase=_phase(position),
-        review_side=str(analysis.get("review_side") or "") or None,
+        gave_up=True,
+        expected_generation=generation,
     )
     return {
         "attempt": attempt,
