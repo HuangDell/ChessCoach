@@ -14,6 +14,8 @@ from server.core.agent.models import (
     AgentSessionContextRequest,
     AgentSessionCreateRequest,
     AgentSessionResponse,
+    StartTrainingActionRequest,
+    StartTrainingActionResult,
 )
 from server.core.agent.service import AgentServiceFailure, ChessAgentService
 
@@ -25,6 +27,7 @@ _ERROR_STATUS = {
     "stale_agent_context": 409,
     "session_busy": 409,
     "invalid_session_context": 400,
+    "training_action_unavailable": 409,
     "agent_provider_error": 502,
     "invalid_agent_response": 502,
     "max_turns_exceeded": 502,
@@ -130,5 +133,21 @@ async def send_agent_message(
 ) -> AgentMessageResponse | JSONResponse:
     try:
         return await _service(request).send_message(session_id, body)
+    except AgentServiceFailure as exc:
+        return _error_response(exc)
+
+
+@router.post(
+    "/sessions/{session_id}/actions/start-training",
+    response_model=StartTrainingActionResult,
+    responses=_ERROR_RESPONSES,
+)
+async def start_agent_training(
+    session_id: str,
+    body: StartTrainingActionRequest,
+    request: Request,
+) -> StartTrainingActionResult | JSONResponse:
+    try:
+        return await _service(request).validate_start_training(session_id, body)
     except AgentServiceFailure as exc:
         return _error_response(exc)

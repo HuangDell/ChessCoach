@@ -26,10 +26,13 @@ from server.core.agent.models import (
     ChessReference,
     EngineProvenance,
     EngineScore,
+    CreateTrainingDraftInput,
     GetPlayerProfileInput,
     GetPlayerProfileResult,
     GetReviewContextInput,
     GetReviewContextResult,
+    GetTrainingCandidatesInput,
+    GetTrainingCandidatesResult,
     LookupOpeningInput,
     LookupOpeningResult,
     LearningMemoryItem,
@@ -41,10 +44,13 @@ from server.core.agent.models import (
     SkillEstimate,
     ToolError,
     ToolResult,
+    TrainingCandidate,
+    TrainingDraft,
 )
 from server.core.evaluation import classify
 from server.core.learning import memory, taxonomy
 from server.core.storage import games
+from server.core import training_planner
 
 
 ResultT = TypeVar("ResultT", bound=BaseModel)
@@ -472,6 +478,7 @@ class AgentTools:
         self,
         *,
         review_scope: ReviewArtifactScope | None = None,
+        current_game_id: str | None = None,
         active_review: ActiveReviewArtifact | None = None,
         analysis_loader: AnalysisLoader = games.load_analysis,
         engine_provider: PositionAnalysisProvider | None = None,
@@ -489,6 +496,9 @@ class AgentTools:
                 raise ValueError("active_review does not match review_scope")
             review_scope = active_review.scope
         self.review_scope = review_scope
+        self.current_game_id = current_game_id or (
+            review_scope.game_id if review_scope is not None else None
+        )
         self._active_review = active_review
         self._analysis_loader = analysis_loader
         self._engine_provider = engine_provider or CorePositionAnalysisProvider()
@@ -508,6 +518,7 @@ class AgentTools:
             int(line_plies if line_plies is not None else config.FACT_LINE_PLIES),
         )
         self.executions: list[ToolExecution[Any]] = []
+        self._training_candidate_allowlist: dict[str, TrainingCandidate] = {}
 
     @property
     def last_execution(self) -> ToolExecution[Any] | None:
@@ -688,6 +699,14 @@ class AgentTools:
             execution = await self._lookup_opening(request)
         elif name == "get_player_profile" and isinstance(request, GetPlayerProfileInput):
             execution = await self._get_player_profile(request)
+        elif name == "get_training_candidates" and isinstance(
+            request, GetTrainingCandidatesInput
+        ):
+            execution = await self._get_training_candidates(request)
+        elif name == "create_training_draft" and isinstance(
+            request, CreateTrainingDraftInput
+        ):
+            execution = await self._create_training_draft(request)
         else:
             raise ValueError(f"Unsupported Agent tool or input type: {name}")
         self.executions.append(execution)
@@ -727,6 +746,20 @@ class AgentTools:
     ) -> ToolResult[GetPlayerProfileResult]:
         execution = await self.execute("get_player_profile", request)
         return cast(ToolResult[GetPlayerProfileResult], execution.result)
+
+    async def get_training_candidates(
+        self,
+        request: GetTrainingCandidatesInput,
+    ) -> ToolResult[GetTrainingCandidatesResult]:
+        execution = await self.execute("get_training_candidates", request)
+        return cast(ToolResult[GetTrainingCandidatesResult], execution.result)
+
+    async def create_training_draft(
+        self,
+        request: CreateTrainingDraftInput,
+    ) -> ToolResult[TrainingDraft]:
+        execution = await self.execute("create_training_draft", request)
+        return cast(ToolResult[TrainingDraft], execution.result)
 
     async def _lookup_opening(
         self,
@@ -902,40 +935,202 @@ class AgentTools:
             engine_call_count=0,
         )
 
-    async def _get_review_context(
+    async def _get_training_candidates(
         self,
-        request: GetReviewContextInput,
-    ) -> ToolExecution[GetReviewContextResult]:
-        scope = self.review_scope
-        if (
-            scope is None
-            or request.game_id != scope.game_id
-            or request.review_side != scope.review_side
-        ):
+        request: GetTrainingCandidatesInput,
+    ) -> ToolExecution[GetTrainingCandidatesResult]:
+        if not self.personalization_enabled:
             return cast(
-                ToolExecution[GetReviewContextResult],
+                ToolExecution[GetTrainingCandidatesResult],
                 _failure(
-                    "get_review_context",
+                    "get_training_candidates",
                     _tool_error(
-                        "game_not_found",
-                        "The requested review is outside the active Agent session.",
+                        "profile_unavailable",
+                        "Personalized coaching is disabled in local settings.",
                         recoverable=False,
                     ),
                 ),
             )
-        if request.critical_id != scope.critical_id:
+        if not memory.is_available():
+            return cast(
+                ToolExecution[GetTrainingCandidatesResult],
+                _failure(
+                    "get_training_candidates",
+                    _tool_error(
+                        "profile_unavailable",
+                        "Canonical learning memory is unavailable; Engine Review remains available.",
+                        recoverable=True,
+                    ),
+                ),
+            )
+        try:
+            data = training_planner.get_training_candidates(
+                request,
+                current_game_id=self.current_game_id,
+                estimate_loader=self._estimate_loader,
+            )
+        except Exception:  # noqa: BLE001 - bounded local retrieval has a typed degradation path
+            return cast(
+                ToolExecution[GetTrainingCandidatesResult],
+                _failure(
+                    "get_training_candidates",
+                    _tool_error(
+                        "training_unavailable",
+                        "Personal training candidates could not be loaded from local artifacts.",
+                        recoverable=True,
+                    ),
+                ),
+            )
+        self._training_candidate_allowlist = {
+            candidate.reference.model_dump_json(exclude_none=True): candidate
+            for candidate in data.candidates
+        }
+        evidence = list(
+            dict.fromkeys(
+                evidence_ref
+                for candidate in data.candidates
+                for evidence_ref in candidate.evidence_refs
+            )
+        )
+        return _success(
+            "get_training_candidates",
+            data,
+            evidence,
+            cache_hit=True,
+            engine_call_count=0,
+        )
+
+    async def _create_training_draft(
+        self,
+        request: CreateTrainingDraftInput,
+    ) -> ToolExecution[TrainingDraft]:
+        selected: list[TrainingCandidate] = []
+        identities: set[str] = set()
+        for reference in request.position_references:
+            identity = reference.model_dump_json(exclude_none=True)
+            candidate = self._training_candidate_allowlist.get(identity)
+            if candidate is None or identity in identities:
+                return cast(
+                    ToolExecution[TrainingDraft],
+                    _failure(
+                        "create_training_draft",
+                        _tool_error(
+                            "position_not_found",
+                            "A draft position was not returned by this run's candidate retrieval.",
+                            recoverable=False,
+                        ),
+                    ),
+                )
+            identities.add(identity)
+            selected.append(candidate)
+
+        objectives: list[str] = []
+        for skill_id in request.objective_skill_ids:
+            canonical = taxonomy.resolve_skill_id(skill_id)
+            if canonical is None or canonical != skill_id:
+                return cast(
+                    ToolExecution[TrainingDraft],
+                    _failure(
+                        "create_training_draft",
+                        _tool_error(
+                            "training_unavailable",
+                            "A draft objective is not a canonical taxonomy skill.",
+                            recoverable=False,
+                        ),
+                    ),
+                )
+            objectives.append(canonical)
+        objective_set = set(objectives)
+        if (
+            not objective_set.issubset(
+                {skill_id for candidate in selected for skill_id in candidate.skill_ids}
+            )
+            or any(not objective_set.intersection(candidate.skill_ids) for candidate in selected)
+        ):
+            return cast(
+                ToolExecution[TrainingDraft],
+                _failure(
+                    "create_training_draft",
+                    _tool_error(
+                        "training_unavailable",
+                        "Draft objectives are not supported by the selected position evidence.",
+                        recoverable=False,
+                    ),
+                ),
+            )
+        allowed_evidence = {
+            evidence_ref for candidate in selected for evidence_ref in candidate.evidence_refs
+        }
+        if not set(request.evidence_refs).issubset(allowed_evidence):
+            return cast(
+                ToolExecution[TrainingDraft],
+                _failure(
+                    "create_training_draft",
+                    _tool_error(
+                        "training_unavailable",
+                        "The draft rationale cites evidence outside the retrieved candidates.",
+                        recoverable=False,
+                    ),
+                ),
+            )
+        draft = TrainingDraft.model_validate(request.model_dump(mode="python"))
+        evidence = request.evidence_refs or sorted(allowed_evidence)
+        return _success(
+            "create_training_draft",
+            draft,
+            evidence,
+            cache_hit=True,
+            engine_call_count=0,
+        )
+
+    async def _get_review_context(
+        self,
+        request: GetReviewContextInput,
+    ) -> ToolExecution[GetReviewContextResult]:
+        scope = ReviewArtifactScope(
+            game_id=request.game_id,
+            review_side=request.review_side,
+            critical_id=request.critical_id,
+        )
+        active_scope = scope == self.review_scope
+        candidate_allowed = any(
+            candidate.reference.game_id == scope.game_id
+            and candidate.reference.review_side == scope.review_side
+            and candidate.reference.critical_id == scope.critical_id
+            for candidate in self._training_candidate_allowlist.values()
+        )
+        if not active_scope and not candidate_allowed:
             return cast(
                 ToolExecution[GetReviewContextResult],
                 _failure(
                     "get_review_context",
                     _tool_error(
                         "position_not_found",
-                        "The requested position is not the active review position.",
+                        "The requested position is outside this run's verified context.",
                         recoverable=False,
                     ),
                 ),
             )
-        active, error = await self._load_active_review()
+        error: ToolError | None = None
+        active: ActiveReviewArtifact | None = None
+        if active_scope:
+            active, error = await self._load_active_review()
+        else:
+            try:
+                analysis = self._analysis_loader(scope.game_id, scope.review_side)
+                active = ActiveReviewArtifact.from_analysis(analysis, scope.critical_id)
+            except games.GameNotFoundError:
+                error = _tool_error(
+                    "game_not_found",
+                    "The candidate's source game is no longer available.",
+                    recoverable=True,
+                )
+            except (ArtifactConsistencyError, KeyError, TypeError, ValueError, ValidationError):
+                error = _tool_error(
+                    "position_not_found",
+                    "The candidate position is no longer available.",
+                    recoverable=False,
+                )
         if error is not None or active is None:
             return cast(
                 ToolExecution[GetReviewContextResult],
@@ -944,7 +1139,7 @@ class AgentTools:
                     error
                     or _tool_error(
                         "position_not_found",
-                        "The active review position is unavailable.",
+                        "The review position is unavailable.",
                         recoverable=True,
                     ),
                 ),

@@ -14,6 +14,7 @@ from server.core.agent.models import (
     ModelVisibleContext,
     SuggestedAction,
     ToolCallRecord,
+    TrainingDraft,
 )
 
 
@@ -39,6 +40,14 @@ _PRIORITY_QUESTION = re.compile(
     r"先复盘|先看哪|复盘哪里|重点局面|优先)",
     re.IGNORECASE,
 )
+_TRAINING_PLANNING_QUESTION = re.compile(
+    r"(?:what\s+should\s+i\s+(?:train|practice)|what\s+to\s+(?:train|practice)|"
+    r"train(?:ing)?\s+plan|practice\s+plan|next\s+(?:training|practice)|"
+    r"(?:build|create|make|plan)\b[^?.!\n]{0,60}\b(?:training|practice)\s+"
+    r"(?:plan|session|draft|set)|"
+    r"练什么|训练什么|怎么练|训练计划|练习计划|接下来练|下一步练)",
+    re.IGNORECASE,
+)
 _FOLLOW_UP_REFERENCE = re.compile(
     r"(?:\bhere\b|\bthere\b|that\s+(?:move|position|line)|this\s+(?:move|position)|"
     r"这里|这儿|那里|那儿|那一步|这个局面|这个变化|这里呢|那里呢)",
@@ -54,11 +63,18 @@ def is_follow_up_reference_request(message: str) -> bool:
     return bool(_FOLLOW_UP_REFERENCE.search(message))
 
 
+def is_training_planning_request(message: str) -> bool:
+    return bool(_TRAINING_PLANNING_QUESTION.search(message))
+
+
 def allowed_tools_for(message: str, context: ModelVisibleContext) -> list[AgentToolName]:
     """Expose only tools that can operate on the explicit current checkpoint."""
 
     allowed: list[AgentToolName] = []
-    if context.position is not None and context.engine_facts is not None:
+    planning = is_training_planning_request(message)
+    if (context.position is not None and context.engine_facts is not None) or (
+        planning and context.task.personalization_enabled
+    ):
         allowed.append("get_review_context")
     if context.position is not None and _MOVE_QUESTION.search(message):
         allowed.append("analyze_move")
@@ -72,9 +88,11 @@ def allowed_tools_for(message: str, context: ModelVisibleContext) -> list[AgentT
         allowed.append("lookup_opening")
     if (
         context.task.personalization_enabled
-        and (_PROFILE_QUESTION.search(message) or _PRIORITY_QUESTION.search(message))
+        and (_PROFILE_QUESTION.search(message) or _PRIORITY_QUESTION.search(message) or planning)
     ):
         allowed.append("get_player_profile")
+    if context.task.personalization_enabled and planning:
+        allowed.extend(["get_training_candidates", "create_training_draft"])
     return allowed
 
 
@@ -102,8 +120,11 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "When personalization_enabled is false, do not request or imply profile evidence.\n"
         "- If review_priorities is present, choose one to three entries only from that shortlist, "
         "retain its largest_error entry, and do not change any classification or invent a score.\n"
-        "- Suggested actions are limited to open_position, compare_move, and start_retry and must "
-        "target the current position or a validated review-priority candidate.\n\n"
+        "- For training planning, retrieve candidates before creating one draft. Draft positions "
+        "must come from that retrieval, objectives must use their canonical skill_ids, and the "
+        "start_training action must copy the successful draft with source agent_training_draft.\n"
+        "- Suggested actions are limited to open_position, compare_move, start_retry, and a "
+        "validated start_training draft.\n\n"
         "MODEL_VISIBLE_CONTEXT_JSON:\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
@@ -184,12 +205,43 @@ def _target_subset(target: dict[str, object], allowed: set[str]) -> bool:
     return bool(target) and set(target).issubset(allowed)
 
 
-def _validate_action(action: SuggestedAction, context: ModelVisibleContext) -> None:
+def _validate_action(
+    action: SuggestedAction,
+    context: ModelVisibleContext,
+    successful_training_drafts: Sequence[TrainingDraft],
+) -> None:
+    if action.kind == "start_training":
+        target = action.target.model_dump(
+            mode="python", exclude_none=True, exclude_defaults=True
+        )
+        if set(target) != {"position_references", "objective_skill_ids", "source"}:
+            raise AgentResponseValidationError("start_training has an invalid target.")
+        if target["source"] != "agent_training_draft":
+            raise AgentResponseValidationError("start_training has an invalid source.")
+        positions = action.target.position_references
+        objectives = set(action.target.objective_skill_ids)
+        if not positions or not objectives:
+            raise AgentResponseValidationError("start_training requires positions and objectives.")
+        for draft in successful_training_drafts:
+            if len(positions) > draft.recommended_count:
+                continue
+            draft_positions = {
+                reference.model_dump_json(exclude_none=True)
+                for reference in draft.position_references
+            }
+            if all(
+                reference.model_dump_json(exclude_none=True) in draft_positions
+                for reference in positions
+            ) and objectives.issubset(draft.objective_skill_ids):
+                return
+        raise AgentResponseValidationError(
+            "start_training does not match a successful draft from this run."
+        )
     if action.kind not in {"open_position", "compare_move", "start_retry"}:
         raise AgentResponseValidationError("Suggested action is not available in Phase 1.")
     position = context.position
     facts = context.engine_facts
-    target = action.target.model_dump(mode="python", exclude_none=True)
+    target = action.target.model_dump(mode="python", exclude_none=True, exclude_defaults=True)
     if action.kind == "compare_move":
         if position is None or not _target_subset(target, {"fen", "move_uci"}):
             raise AgentResponseValidationError("compare_move has an invalid target.")
@@ -249,6 +301,7 @@ def validate_agent_response(
     tool_calls: list[ToolCallRecord],
     *,
     validated_tool_references: Sequence[ChessReference] = (),
+    successful_training_drafts: Sequence[TrainingDraft] = (),
 ) -> AgentResponse:
     allowed_evidence = set(context.allowed_evidence_refs)
     for call in tool_calls:
@@ -262,7 +315,7 @@ def validate_agent_response(
     ):
         raise AgentResponseValidationError("Agent response references an unowned chess position.")
     for action in response.suggested_actions:
-        _validate_action(action, context)
+        _validate_action(action, context, successful_training_drafts)
     priorities = context.review_priorities
     if priorities is not None:
         shortlist = {

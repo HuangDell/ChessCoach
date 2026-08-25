@@ -79,6 +79,9 @@ def _mistake_puzzle_response(
     category: str | None = None,
     game_id: str | None = None,
     critical_id: str | None = None,
+    review_side: str | None = None,
+    fen: str | None = None,
+    ply: int | None = None,
 ) -> JSONResponse:
     """Serve a 'from your games' mistake puzzle (P3.5). Gated on the engine (it validates moves)."""
     if not _has_engine():
@@ -91,8 +94,24 @@ def _mistake_puzzle_response(
         category=category,
         game_id=game_id,
         critical_id=critical_id,
+        review_side=review_side,
+        fen=fen,
+        ply=ply,
     )
     if not puzzle:
+        if any((game_id, critical_id, review_side, fen, ply is not None)):
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "training_action_unavailable",
+                        "message": (
+                            "This training position changed or was deleted. Return to Review and "
+                            "request a fresh training draft."
+                        ),
+                    }
+                },
+                status_code=409,
+            )
         return JSONResponse(
             {"error": "No mistake puzzles yet - analyse some of your games first."},
             status_code=404,
@@ -148,6 +167,9 @@ def puzzle_next(
     category: str | None = None,
     game_id: str | None = None,
     critical_id: str | None = None,
+    review_side: str | None = None,
+    fen: str | None = None,
+    ply: int | None = None,
 ) -> JSONResponse:
     """Select a puzzle near the user's rating; auto-play the setup move; never reveal the solution.
 
@@ -167,6 +189,9 @@ def puzzle_next(
             category=category,
             game_id=game_id,
             critical_id=critical_id,
+            review_side=review_side,
+            fen=fen,
+            ply=ply,
         )
 
 
@@ -179,6 +204,9 @@ def _puzzle_next_locked(
     category: str | None,
     game_id: str | None,
     critical_id: str | None,
+    review_side: str | None,
+    fen: str | None,
+    ply: int | None,
 ) -> JSONResponse:
     """Select and install a regular puzzle while replacement is serialized."""
     state = puzzle_rating.load_state()
@@ -188,6 +216,9 @@ def _puzzle_next_locked(
             category=category,
             game_id=game_id,
             critical_id=critical_id,
+            review_side=review_side,
+            fen=fen,
+            ply=ply,
         )
     # Occasionally swap a curated tactic for an own-game mistake puzzle (Settings-toggleable), so the
     # trainer surfaces the player's real weaknesses without them switching source. Only when the

@@ -2,6 +2,7 @@ import { gamesApi } from "../api/games.js";
 import { puzzleApi } from "../api/puzzles.js";
 import { createLatestRequestScope, sleep } from "../core/async.js";
 import { escapeHtml } from "../core/dom.js";
+import { errorMessage } from "../core/errors.js";
 import { categoryLabel, renderMarkdown } from "../core/format.js";
 import { storageGet, storageSet } from "../core/storage.js";
 import { historyRows } from "../games/helpers.js";
@@ -42,6 +43,7 @@ export function createPuzzleTrainer({
   let animations = true;
   let advanceTimer = null;
   let previous = null;
+  let trainingDraft = null;
 
   const status = (message) => { $("pz-status").textContent = message || ""; };
 
@@ -77,6 +79,7 @@ export function createPuzzleTrainer({
     solution.clear();
     chat.reset();
     data = null;
+    trainingDraft = null;
     busy = false;
     boardView.setShapes([]);
   }
@@ -143,25 +146,56 @@ export function createPuzzleTrainer({
     request = requests.begin();
     busy = true;
     status("Loading…");
+    let resolvedOptions = options;
+    let draftIndex = null;
+    if (trainingDraft) {
+      draftIndex = trainingDraft.index + 1;
+      if (draftIndex >= trainingDraft.positionReferences.length) {
+        const completed = trainingDraft;
+        trainingDraft = null;
+        busy = false;
+        $("pz-next").textContent = "Next puzzle →";
+        await lifecycle.completeTraining?.({
+          objectiveSkillIds: completed.objectiveSkillIds,
+        });
+        return;
+      }
+      const reference = trainingDraft.positionReferences[draftIndex];
+      resolvedOptions = {
+        source: "your_games",
+        game_id: reference.game_id,
+        critical_id: reference.critical_id,
+        review_side: reference.review_side,
+        fen: reference.fen,
+        ply: reference.ply,
+      };
+    }
     const query = new URLSearchParams();
-    const nextSource = options.source !== undefined ? options.source : source;
+    const nextSource = resolvedOptions.source !== undefined ? resolvedOptions.source : source;
     if (nextSource && nextSource !== "lichess") query.set("source", nextSource);
     if (nextSource === "your_games") {
-      const nextCategory = options.category !== undefined ? options.category : category;
+      const nextCategory = resolvedOptions.category !== undefined
+        ? resolvedOptions.category
+        : category;
       if (nextCategory) query.set("category", nextCategory);
-      if (options.game_id) query.set("game_id", options.game_id);
-      if (options.critical_id) query.set("critical_id", options.critical_id);
+      if (resolvedOptions.game_id) query.set("game_id", resolvedOptions.game_id);
+      if (resolvedOptions.critical_id) query.set("critical_id", resolvedOptions.critical_id);
+      if (resolvedOptions.review_side) query.set("review_side", resolvedOptions.review_side);
+      if (resolvedOptions.fen) query.set("fen", resolvedOptions.fen);
+      if (resolvedOptions.ply != null) query.set("ply", String(resolvedOptions.ply));
     }
-    const nextDifficulty = options.difficulty !== undefined ? options.difficulty : difficulty;
+    const nextDifficulty = resolvedOptions.difficulty !== undefined
+      ? resolvedOptions.difficulty
+      : difficulty;
     if (nextDifficulty) query.set("difficulty", nextDifficulty);
     if (weakness && nextSource === "lichess") query.set("weakness", "1");
     let puzzle;
     try {
       puzzle = await puzzleApi.next(query, { signal: request.signal });
-    } catch (_) {
+    } catch (error) {
       if (currentGeneration !== generation || !request.isCurrent()) return;
       busy = false;
-      status("Couldn't load a puzzle.");
+      status(errorMessage(error, "Couldn't load this training position."));
       return;
     }
     if (currentGeneration !== generation || !request.isCurrent()) return;
@@ -170,6 +204,7 @@ export function createPuzzleTrainer({
       status((puzzle && puzzle.error) || "No puzzles available.");
       return;
     }
+    if (trainingDraft && draftIndex !== null) trainingDraft.index = draftIndex;
     applyPuzzle(puzzle, currentGeneration);
   }
 
@@ -186,6 +221,11 @@ export function createPuzzleTrainer({
     boardView.setLastMove(null);
     status("");
     resetCards(puzzle);
+    if (trainingDraft) {
+      status(
+        `Training ${trainingDraft.index + 1} of ${trainingDraft.positionReferences.length}`
+      );
+    }
     progress.updateStats(puzzle.your_rating, null);
     boardView.prepare(puzzle.fen);
     setTimeout(() => {
@@ -242,12 +282,12 @@ export function createPuzzleTrainer({
         { id: data.id, uci },
         { signal: request && request.signal }
       );
-    } catch (_) {
+    } catch (error) {
       if (currentGeneration !== generation) return;
       chess.undo();
       boardView.render(true);
       busy = false;
-      status("Move check failed — try again.");
+      status(errorMessage(error, "Move check failed — try again."));
       return;
     }
     if (currentGeneration !== generation) return;
@@ -361,6 +401,9 @@ export function createPuzzleTrainer({
     }
     data._outcome = outcome;
     data._yourMove = yourMove || null;
+    $("pz-next").textContent = trainingDraft && (
+      trainingDraft.index === trainingDraft.positionReferences.length - 1
+    ) ? "Complete training" : "Next puzzle →";
     $("pz-explain").hidden = !(getConfig() && getConfig().has_llm);
     progress.loadCard();
     if (!mine) solution.start({ id: data.id, solved, animate: false });
@@ -391,10 +434,11 @@ export function createPuzzleTrainer({
     let response;
     try {
       response = await puzzleApi.giveUp(data.id, { signal: request && request.signal });
-    } catch (_) {
+    } catch (error) {
       if (currentGeneration !== generation) return;
       busy = false;
       boardView.render(true);
+      status(errorMessage(error, "The solution could not be loaded."));
       return;
     }
     if (currentGeneration !== generation) return;
@@ -461,7 +505,10 @@ export function createPuzzleTrainer({
     let response;
     try {
       response = await puzzleApi.hint(data.id, { signal: request && request.signal });
-    } catch (_) {
+    } catch (error) {
+      if (currentGeneration === generation) {
+        status(errorMessage(error, "The hint could not be loaded."));
+      }
       return;
     }
     if (currentGeneration !== generation) return;
@@ -661,6 +708,7 @@ export function createPuzzleTrainer({
   }
 
   function setSource(nextSource) {
+    trainingDraft = null;
     if (nextSource === source) return;
     if (nextSource === "your_games" && !(getConfig() && getConfig().has_engine)) return;
     source = nextSource;
@@ -671,23 +719,43 @@ export function createPuzzleTrainer({
   }
 
   function setCategory(nextCategory) {
+    trainingDraft = null;
     category = nextCategory || "";
     storageSet(localStorage, CATEGORY_KEY, category);
     if (isActive() && source === "your_games") loadNext();
   }
 
   function setDifficulty(nextDifficulty) {
+    trainingDraft = null;
     difficulty = difficulty === nextDifficulty ? null : nextDifficulty;
     $("pz-easier").classList.toggle("active", difficulty === "easier");
     $("pz-harder").classList.toggle("active", difficulty === "harder");
     loadNext();
   }
 
-  function prepareTraining({ category: nextCategory = "" } = {}) {
+  function prepareTraining({
+    category: nextCategory = "",
+    positionReferences = [],
+    objectiveSkillIds = [],
+    draftSource = null,
+  } = {}) {
     source = "your_games";
-    category = nextCategory;
+    category = positionReferences.length ? "" : nextCategory;
     storageSet(localStorage, SOURCE_KEY, source);
     storageSet(localStorage, CATEGORY_KEY, category);
+    if (positionReferences.length) {
+      if (draftSource !== "agent_training_draft") {
+        throw new Error("The training draft source is invalid.");
+      }
+      trainingDraft = {
+        positionReferences: positionReferences.slice(0, 5),
+        objectiveSkillIds: objectiveSkillIds.slice(0, 5),
+        index: -1,
+      };
+      return { _draftStart: true };
+    }
+    trainingDraft = null;
+    return null;
   }
 
   function openStormReview(entry) {

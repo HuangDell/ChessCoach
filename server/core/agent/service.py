@@ -38,16 +38,21 @@ from server.core.agent.models import (
     AgentSessionSummary,
     ChessReference,
     GetPlayerProfileResult,
+    GetTrainingCandidatesResult,
     MemoryQuery,
     PositionContext,
     PositionReference,
     SessionError,
+    StartTrainingActionRequest,
+    StartTrainingActionResult,
+    TrainingDraft,
 )
 from server.core.agent.policy import (
     AgentResponseValidationError,
     allowed_tools_for,
     is_follow_up_reference_request,
     is_review_priority_request,
+    is_training_planning_request,
     validate_agent_response,
 )
 from server.core.agent.prioritization import PrioritizationError, build_review_prioritization
@@ -68,6 +73,7 @@ from server.core.agent.sessions import (
 from server.core.agent.summary import ConversationSummaryBuilder
 from server.core.agent.tools import ActiveReviewArtifact, AgentTools
 from server.core.learning import memory as learning_memory
+from server.core import training_planner
 
 
 ToolsFactory = Callable[[ResolvedContextBundle], AgentTools]
@@ -140,10 +146,12 @@ def _default_tools(bundle: ResolvedContextBundle) -> AgentTools:
         critical_id = str(bundle.critical.get("critical_id") or "")
         return AgentTools(
             active_review=ActiveReviewArtifact.from_analysis(bundle.analysis, critical_id),
+            current_game_id=bundle.context.session.active_game_id,
             opening_history_fens=opening_history_fens,
             personalization_enabled=config.PERSONALIZE_HISTORY,
         )
     return AgentTools(
+        current_game_id=bundle.context.session.active_game_id,
         opening_history_fens=opening_history_fens,
         personalization_enabled=config.PERSONALIZE_HISTORY,
     )
@@ -230,28 +238,63 @@ def _item_position_references(items: list[Any]) -> list[PositionReference]:
     return references
 
 
-def _successful_profile_references(tools: AgentTools) -> list[ChessReference]:
-    """Expose only typed references returned by a successful profile tool call this run."""
+def _successful_tool_references(tools: AgentTools) -> list[ChessReference]:
+    """Expose only typed references returned by successful retrieval tools this run."""
 
     references: list[ChessReference] = []
     identities: set[str] = set()
     for execution in getattr(tools, "executions", []):
         result = getattr(execution, "result", None)
         data = getattr(result, "data", None) if getattr(result, "ok", False) else None
-        if not isinstance(data, GetPlayerProfileResult):
-            continue
-        for estimate in data.relevant_estimates:
-            candidates = [
-                ChessReference(kind="skill", skill_id=estimate.skill_id),
-                *estimate.examples,
-            ]
-            for reference in candidates:
-                identity = reference.model_dump_json(exclude_none=True)
-                if identity in identities:
-                    continue
-                identities.add(identity)
-                references.append(reference)
+        candidates: list[ChessReference] = []
+        if isinstance(data, GetPlayerProfileResult):
+            for estimate in data.relevant_estimates:
+                candidates.extend(
+                    [
+                        ChessReference(kind="skill", skill_id=estimate.skill_id),
+                        *estimate.examples,
+                    ]
+                )
+        elif isinstance(data, GetTrainingCandidatesResult):
+            for candidate in data.candidates:
+                candidates.extend(
+                    ChessReference(kind="skill", skill_id=skill_id)
+                    for skill_id in candidate.skill_ids
+                )
+                reference = candidate.reference
+                candidates.append(
+                    ChessReference(
+                        kind="critical_position",
+                        game_id=reference.game_id,
+                        review_side=reference.review_side,
+                        critical_id=reference.critical_id,
+                        ply=reference.ply,
+                        fen=reference.fen,
+                    )
+                )
+        for reference in candidates:
+            identity = reference.model_dump_json(exclude_none=True)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            references.append(reference)
     return references
+
+
+def _successful_training_drafts(tools: AgentTools) -> list[TrainingDraft]:
+    drafts: list[TrainingDraft] = []
+    for execution in getattr(tools, "executions", []):
+        result = getattr(execution, "result", None)
+        data = getattr(result, "data", None) if getattr(result, "ok", False) else None
+        if isinstance(data, TrainingDraft):
+            drafts.append(data)
+    return drafts
+
+
+def _successful_profile_references(tools: AgentTools) -> list[ChessReference]:
+    """Backward-compatible name for callers that predate candidate retrieval."""
+
+    return _successful_tool_references(tools)
 
 
 def _position_reference_from_chess(reference: ChessReference) -> PositionReference | None:
@@ -407,7 +450,10 @@ class ChessAgentService:
             "available": availability.available,
             "model": availability.model,
             "endpoint_type": availability.endpoint_type,
-            "features": {"review_chat": True},
+            "features": {
+                "review_chat": True,
+                "personalized_training": bool(config.PERSONALIZE_HISTORY),
+            },
         }
 
     def session_for_runtime(self, session_id: str) -> GenerationGuardedSession:
@@ -445,6 +491,35 @@ class ChessAgentService:
             raise _session_error("session_not_found", str(exc), recoverable=False) from exc
         except SessionStoreError as exc:
             raise _session_error("invalid_session_context", str(exc), recoverable=False) from exc
+
+    async def validate_start_training(
+        self,
+        session_id: str,
+        request: StartTrainingActionRequest,
+    ) -> StartTrainingActionResult:
+        """Generation-guard and revalidate an ephemeral Agent draft against current artifacts."""
+
+        try:
+            async with self.coordinator.mutation(session_id):
+                self.checkpoint_store.assert_generation(
+                    session_id, request.expected_generation
+                )
+                target = request.action.target
+                return training_planner.validate_training_action(
+                    target.position_references,
+                    target.objective_skill_ids,
+                    source=target.source,
+                )
+        except SessionNotFoundError as exc:
+            raise _session_error("session_not_found", str(exc), recoverable=False) from exc
+        except StaleAgentContextError as exc:
+            raise _session_error("stale_agent_context", str(exc), recoverable=True) from exc
+        except (SessionStoreError, training_planner.TrainingActionUnavailableError) as exc:
+            raise _session_error(
+                "training_action_unavailable",
+                str(exc),
+                recoverable=True,
+            ) from exc
 
     async def update_context(
         self,
@@ -564,6 +639,14 @@ class ChessAgentService:
             request.message,
             review_loader=tools.get_review_context,
         )
+        if is_training_planning_request(request.message):
+            model_context = model_context.model_copy(
+                update={
+                    "task": model_context.task.model_copy(
+                        update={"activity": "training_planning"}
+                    )
+                }
+            )
         availability_check = getattr(tools, "personalization_available", None)
         personalization_enabled = bool(
             config.PERSONALIZE_HISTORY
@@ -664,7 +747,8 @@ class ChessAgentService:
                 result.response,
                 model_context,
                 result.tool_calls,
-                validated_tool_references=_successful_profile_references(tools),
+                validated_tool_references=_successful_tool_references(tools),
+                successful_training_drafts=_successful_training_drafts(tools),
             )
             if not guarded.staged_items:
                 await guarded.add_items(

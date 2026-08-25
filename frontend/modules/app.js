@@ -174,7 +174,10 @@ export function createApp() {
           layout.closeHistoryDrawer();
         },
         positionChanged: (fen) => review.setAgentTrainingPosition(fen),
-        leave: () => review.restoreBoard(),
+        async leave() {
+          review.restoreBoard();
+          await games.refreshProfile();
+        },
         async replayGame(row, puzzle) {
           review.setPendingPly(puzzle.ply != null ? puzzle.ply - 1 : null);
           await puzzles.setMode(false);

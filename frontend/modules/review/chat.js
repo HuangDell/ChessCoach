@@ -197,6 +197,7 @@ export function createReviewChat({
   let pendingMessage = null;
   let restoredSummary = "";
   const messageScope = createLatestRequestScope();
+  const actionScope = createLatestRequestScope();
 
   function addMessage(className, text) {
     const message = document.createElement("div");
@@ -219,7 +220,9 @@ export function createReviewChat({
       try {
         await handler();
       } catch (error) {
-        addMessage("bot err", errorMessage(error, "That coach action is no longer available."));
+        if (!error || error.name !== "AbortError") {
+          addMessage("bot err", errorMessage(error, "That coach action is no longer available."));
+        }
       } finally {
         button.disabled = false;
       }
@@ -227,7 +230,7 @@ export function createReviewChat({
     parent.appendChild(button);
   }
 
-  function addAgentResponse(response = {}, calls = []) {
+  function addAgentResponse(response = {}, calls = [], actionContext = {}) {
     const message = addMessage("bot", response.text || "(no answer)");
     const references = response.references || [];
     const actions = response.suggested_actions || [];
@@ -238,7 +241,26 @@ export function createReviewChat({
         addInteractiveButton(controls, referenceLabel(reference), () => onReference(reference));
       }
       for (const action of actions) {
-        addInteractiveButton(controls, action.label || "Open", () => onAction(action));
+        addInteractiveButton(controls, action.label || "Open", async () => {
+          const request = actionScope.begin();
+          if (
+            actionContext.uiGeneration !== generation ||
+            actionContext.sessionId !== agentSessionId ||
+            actionContext.agentGeneration !== agentGeneration
+          ) {
+            throw new Error("That coach action belongs to an older board context.");
+          }
+          const result = await onAction(action, {
+            sessionId: actionContext.sessionId,
+            expectedGeneration: actionContext.agentGeneration,
+            signal: request.signal,
+            isCurrent: request.isCurrent,
+          });
+          if (!request.isCurrent() || actionContext.uiGeneration !== generation) {
+            throw new DOMException("Superseded", "AbortError");
+          }
+          return result;
+        });
       }
       message.appendChild(controls);
     }
@@ -267,6 +289,7 @@ export function createReviewChat({
   function invalidatePending() {
     generation += 1;
     messageScope.cancel();
+    actionScope.cancel();
     if (pendingMessage) pendingMessage.remove();
     pendingMessage = null;
     $("chat-send").disabled = false;
@@ -495,7 +518,11 @@ export function createReviewChat({
     if (!request.isCurrent() || expectedGeneration !== generation) return;
     const session = adoptAgentSession(result);
     if (result.error) addMessage("bot err", errorMessage(result.error));
-    else addAgentResponse(result.response || {}, result.tool_calls || []);
+    else addAgentResponse(result.response || {}, result.tool_calls || [], {
+      sessionId: agentSessionId,
+      agentGeneration: session.generation,
+      uiGeneration: generation,
+    });
     renderConversationSummary(session);
   }
 

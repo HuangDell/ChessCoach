@@ -11,4 +11,6 @@ export const agentApi = {
     http.post(`${sessionPath(sessionId)}/context`, body, options),
   sendMessage: (sessionId, body, options) =>
     http.post(`${sessionPath(sessionId)}/messages`, body, options),
+  startTraining: (sessionId, body, options) =>
+    http.post(`${sessionPath(sessionId)}/actions/start-training`, body, options),
 };

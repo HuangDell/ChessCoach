@@ -228,6 +228,7 @@ export function createGamesController({ bridge }) {
   return {
     mount,
     loadHistory: library.loadHistory,
+    refreshProfile: insights.load,
     maybeAutoload,
     setConfig,
     applySavedSettings,

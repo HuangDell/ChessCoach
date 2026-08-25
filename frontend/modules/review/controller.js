@@ -313,8 +313,7 @@ async function openAgentTarget(target = {}) {
 function openAgentReference(reference) {
   return openAgentTarget(reference);
 }
-
-async function runAgentAction(action = {}) {
+async function runAgentAction(action = {}, capture = {}) {
   const target = action.target || {};
   if (action.kind === "open_position" || action.kind === "compare_move") {
     return openAgentTarget(target);
@@ -328,17 +327,24 @@ async function runAgentAction(action = {}) {
     return true;
   }
   if (action.kind === "start_training") {
+    if (!capture.sessionId || !Number.isInteger(capture.expectedGeneration)) {
+      throw new Error("That training draft is missing its Agent context.");
+    }
+    const verified = await agentApi.startTraining(capture.sessionId, {
+      expected_generation: capture.expectedGeneration,
+      action,
+    }, { signal: capture.signal });
+    if (capture.isCurrent && !capture.isCurrent())
+      throw new DOMException("Superseded", "AbortError");
     return bridge.trainPuzzle({
-      category: "",
-      gameId: target.game_id || currentGameId,
-      criticalId: target.critical_id || (activeCritical() && activeCritical().critical_id),
+      positionReferences: verified.position_references || [],
+      objectiveSkillIds: verified.objective_skill_ids || [],
+      source: verified.source,
     });
   }
   if (action.kind === "review_weakness") return openAgentTarget(target);
   throw new Error("That coach action is not supported in Review yet.");
 }
-
-// --- mistakes list -------------------------------------------------------
 async function selectMistake(i) {
   const stored = mistakes[i];
   const critical = stored && criticalPositions.find((item) => Number(item.ply) === Number(stored.ply));
@@ -707,7 +713,10 @@ function onAnalysisError(msg) {
     },
     setAgentTrainingPosition: syncTrainingContext,
     restoreBoard() {
-      if (timeline.length) gotoNode(navigation.cur);
+      if (timeline.length) {
+        gotoNode(navigation.cur);
+        chat.setContext(buildAgentContext());
+      }
       else {
         chess.reset();
         renderBoard();

@@ -41,7 +41,10 @@ export function createPuzzleController({ board, lifecycle }) {
     getConfig: () => config,
     isActive: () => active,
     isStormShown: () => !!(storm && storm.shown),
-    lifecycle,
+    lifecycle: {
+      ...lifecycle,
+      completeTraining: () => setMode(false),
+    },
     progress,
     solution,
   });
@@ -85,7 +88,7 @@ export function createPuzzleController({ board, lifecycle }) {
       $("pz-storm").hidden = true;
       $("pz-mode-solve").classList.add("active");
       $("pz-mode-storm").classList.remove("active");
-      lifecycle.leave();
+      await lifecycle.leave();
       return;
     }
 
@@ -158,9 +161,21 @@ export function createPuzzleController({ board, lifecycle }) {
     trainer.setPreferences(nextPreferences);
   }
 
-  async function train({ category = "", gameId = null, criticalId = null } = {}) {
-    trainer.prepareTraining({ category });
-    const puzzle = {
+  async function train({
+    category = "",
+    gameId = null,
+    criticalId = null,
+    positionReferences = [],
+    objectiveSkillIds = [],
+    source = null,
+  } = {}) {
+    const draftStart = trainer.prepareTraining({
+      category,
+      positionReferences,
+      objectiveSkillIds,
+      draftSource: source,
+    });
+    const puzzle = draftStart || {
       source: "your_games",
       category,
       game_id: gameId,

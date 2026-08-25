@@ -32,6 +32,7 @@ ToolErrorCode = Literal[
     "game_not_found",
     "position_not_found",
     "profile_unavailable",
+    "training_unavailable",
     "tool_budget_exceeded",
 ]
 AGENT_TOOL_PERMISSIONS: Mapping[AgentToolName, ToolPermission] = MappingProxyType(
@@ -625,7 +626,7 @@ class ModelVisibleContext(ContractModel):
 
 
 class ActionTarget(ContractModel):
-    """Closed structured-output target shared by the Phase 1 action kinds."""
+    """Closed structured-output target shared by grounded Agent actions."""
 
     game_id: str | None = None
     review_side: ReviewSide | None = None
@@ -633,6 +634,9 @@ class ActionTarget(ContractModel):
     ply: int | None = Field(default=None, ge=0)
     fen: str | None = None
     move_uci: str | None = None
+    position_references: list[PositionReference] = Field(default_factory=list, max_length=5)
+    objective_skill_ids: list[str] = Field(default_factory=list, max_length=5)
+    source: Literal["agent_training_draft"] | None = None
 
     @field_validator("game_id", "critical_id")
     @classmethod
@@ -649,6 +653,10 @@ class ActionTarget(ContractModel):
     def _valid_optional_uci(cls, value: str | None) -> str | None:
         return None if value is None else _validate_uci(value)
 
+    _valid_objective_skill_ids = field_validator("objective_skill_ids")(
+        _clean_unique_strings
+    )
+
 
 class SuggestedAction(ContractModel):
     kind: Literal[
@@ -660,6 +668,27 @@ class SuggestedAction(ContractModel):
     ]
     label: str = Field(min_length=1)
     target: ActionTarget
+
+
+class StartTrainingActionRequest(ContractModel):
+    expected_generation: int = Field(ge=0)
+    action: SuggestedAction
+
+    @model_validator(mode="after")
+    def _requires_start_training(self) -> "StartTrainingActionRequest":
+        if self.action.kind != "start_training":
+            raise ValueError("action must use kind=start_training")
+        return self
+
+
+class StartTrainingActionResult(ContractModel):
+    position_references: list[PositionReference] = Field(min_length=1, max_length=5)
+    objective_skill_ids: list[str] = Field(min_length=1, max_length=5)
+    source: Literal["agent_training_draft"]
+
+    _valid_objective_skill_ids = field_validator("objective_skill_ids")(
+        _clean_unique_strings
+    )
 
 
 class AgentResponse(ContractModel):
@@ -743,6 +772,7 @@ class SessionError(ContractModel):
         "stale_agent_context",
         "session_busy",
         "invalid_session_context",
+        "training_action_unavailable",
     ]
     message: str = Field(min_length=1)
     recoverable: bool
@@ -963,17 +993,63 @@ class GetPlayerProfileResult(ContractModel):
 class TrainingCandidate(ContractModel):
     reference: PositionReference
     skill_ids: list[str] = Field(min_length=1)
+    source_artifact: str = Field(default="analysis", min_length=1)
+    category: str | None = None
     phase: str | None = None
     difficulty: str | None = None
+    played_move: MoveReference | None = None
+    best_move: MoveReference | None = None
+    candidate_moves: list[MoveReference] = Field(default_factory=list, max_length=3)
     attempted: bool = False
+    last_outcome: str | None = None
+    last_attempted_at: str | None = None
+    attempt_count: int = Field(default=0, ge=0)
+    estimate_confidence: Literal[
+        "insufficient", "emerging", "established"
+    ] | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
 
     _valid_skill_ids = field_validator("skill_ids")(_clean_unique_strings)
+    _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_legacy_attempt_count(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "attempt_count" not in value:
+            value = dict(value)
+            value["attempt_count"] = 1 if value.get("attempted") else 0
+        return value
+
+    @model_validator(mode="after")
+    def _consistent_attempt_metadata(self) -> "TrainingCandidate":
+        if self.attempted != (self.attempt_count > 0):
+            raise ValueError("attempted must match attempt_count")
+        if self.attempt_count == 0 and (
+            self.last_outcome is not None or self.last_attempted_at is not None
+        ):
+            raise ValueError("attempt metadata requires an attempt")
+        if self.reference.fen is not None:
+            board = chess.Board(self.reference.fen)
+            for label, move in (
+                ("played_move", self.played_move),
+                ("best_move", self.best_move),
+            ):
+                if move is not None:
+                    _legal_move(board, move, label=label)
+            for index, move in enumerate(self.candidate_moves, start=1):
+                _legal_move(board, move, label=f"candidate move {index}")
+        return self
 
 
 class GetTrainingCandidatesInput(ContractModel):
     skill_ids: list[str] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
-    limit: int = Field(default=10, ge=1)
+    window: Literal["recent", "lifetime"] = "recent"
+    limit: int = Field(default=10, ge=1, le=10)
+    exclude_recently_practiced: bool = True
+    exclude_recently_solved: bool = True
+    exclude_current_game: bool = False
+    recent_practice_days: int = Field(default=7, ge=1, le=30)
 
     _valid_skill_ids = field_validator("skill_ids")(_clean_unique_strings)
     _valid_categories = field_validator("categories")(_clean_unique_strings)
@@ -985,12 +1061,15 @@ class GetTrainingCandidatesResult(ContractModel):
 
 class TrainingDraft(ContractModel):
     title: str = Field(min_length=1)
-    objective_skill_ids: list[str] = Field(min_length=1)
-    position_references: list[PositionReference] = Field(min_length=1)
+    objective_skill_ids: list[str] = Field(min_length=1, max_length=5)
+    position_references: list[PositionReference] = Field(min_length=1, max_length=5)
     rationale: str = Field(min_length=1)
-    recommended_count: int = Field(gt=0)
+    recommended_count: int = Field(gt=0, le=5)
+    source: Literal["agent_training_draft"] = "agent_training_draft"
+    evidence_refs: list[str] = Field(default_factory=list)
 
     _valid_skill_ids = field_validator("objective_skill_ids")(_clean_unique_strings)
+    _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
 
     @model_validator(mode="after")
     def _valid_recommended_count(self) -> "TrainingDraft":
@@ -1001,12 +1080,15 @@ class TrainingDraft(ContractModel):
 
 class CreateTrainingDraftInput(ContractModel):
     title: str = Field(min_length=1)
-    objective_skill_ids: list[str] = Field(min_length=1)
-    position_references: list[PositionReference] = Field(min_length=1)
+    objective_skill_ids: list[str] = Field(min_length=1, max_length=5)
+    position_references: list[PositionReference] = Field(min_length=1, max_length=5)
     rationale: str = Field(min_length=1)
-    recommended_count: int = Field(gt=0)
+    recommended_count: int = Field(gt=0, le=5)
+    source: Literal["agent_training_draft"] = "agent_training_draft"
+    evidence_refs: list[str] = Field(default_factory=list)
 
     _valid_skill_ids = field_validator("objective_skill_ids")(_clean_unique_strings)
+    _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
 
     @model_validator(mode="after")
     def _valid_recommended_count(self) -> "CreateTrainingDraftInput":

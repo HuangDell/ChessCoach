@@ -21,9 +21,12 @@ from server.core.agent.models import (
     AgentToolName,
     AnalyzeMoveInput,
     AnalyzePositionInput,
+    CreateTrainingDraftInput,
     GetPlayerProfileInput,
     GetReviewContextInput,
+    GetTrainingCandidatesInput,
     LookupOpeningInput,
+    PositionReference,
     ToolCallRecord,
     ToolError,
     ToolResult,
@@ -309,7 +312,13 @@ class OpenAIAgentsRuntime:
         except Exception:
             duration_ms = max(0, round((time.monotonic() - started) * 1000))
             error_code = (
-                "position_not_found" if name == "get_review_context" else "engine_unavailable"
+                "position_not_found"
+                if name == "get_review_context"
+                else "profile_unavailable"
+                if name == "get_player_profile"
+                else "training_unavailable"
+                if name in {"get_training_candidates", "create_training_draft"}
+                else "engine_unavailable"
             )
             context.budget.records.append(
                 ToolCallRecord(
@@ -326,6 +335,8 @@ class OpenAIAgentsRuntime:
                     message=(
                         "The saved review position is currently unavailable."
                         if name == "get_review_context"
+                        else "Personalized training is currently unavailable."
+                        if name in {"get_training_candidates", "create_training_draft"}
                         else "The requested chess analysis is currently unavailable."
                     ),
                     recoverable=True,
@@ -553,6 +564,108 @@ class OpenAIAgentsRuntime:
                         "Read up to five deterministic weakness or strength items with verified "
                         "canonical examples that may reference a game, critical position, position, "
                         "or puzzle. Use only when personalization is enabled and relevant."
+                    ),
+                    strict_mode=True,
+                )
+            )
+
+        if "get_training_candidates" in local.request.allowed_tools:
+            async def get_training_candidates(
+                skill_ids: list[str] | None = None,
+                categories: list[str] | None = None,
+                window: Literal["recent", "lifetime"] = "recent",
+                limit: int = 10,
+                exclude_recently_practiced: bool = True,
+                exclude_recently_solved: bool = True,
+                exclude_current_game: bool = False,
+                recent_practice_days: int = 7,
+            ) -> str:
+                """Retrieve verified, bounded own-game positions for personalized practice."""
+                try:
+                    payload = GetTrainingCandidatesInput(
+                        skill_ids=skill_ids or [],
+                        categories=categories or [],
+                        window=window,
+                        limit=limit,
+                        exclude_recently_practiced=exclude_recently_practiced,
+                        exclude_recently_solved=exclude_recently_solved,
+                        exclude_current_game=exclude_current_game,
+                        recent_practice_days=recent_practice_days,
+                    )
+                except ValidationError:
+                    return self._invalid_tool_call(
+                        local,
+                        "get_training_candidates",
+                        ToolError(
+                            code="training_unavailable",
+                            message="The training candidate filters are invalid.",
+                            recoverable=False,
+                        ),
+                    )
+                if not local.request.model_context.task.personalization_enabled:
+                    return self._invalid_tool_call(
+                        local,
+                        "get_training_candidates",
+                        ToolError(
+                            code="profile_unavailable",
+                            message="Personalized coaching is disabled.",
+                            recoverable=False,
+                        ),
+                    )
+                return await self._call_tool(local, "get_training_candidates", payload)
+
+            tools.append(
+                function_tool(
+                    get_training_candidates,
+                    name_override="get_training_candidates",
+                    description_override=(
+                        "Retrieve at most ten Engine-artifact positions backed by canonical skills. "
+                        "With no explicit focus, only established canonical weaknesses are used."
+                    ),
+                    strict_mode=True,
+                )
+            )
+
+        if "create_training_draft" in local.request.allowed_tools:
+            async def create_training_draft(
+                title: str,
+                objective_skill_ids: list[str],
+                position_references: list[PositionReference],
+                rationale: str,
+                recommended_count: int,
+                evidence_refs: list[str] | None = None,
+                source: Literal["agent_training_draft"] = "agent_training_draft",
+            ) -> str:
+                """Create a temporary draft from positions retrieved successfully in this run."""
+                try:
+                    payload = CreateTrainingDraftInput(
+                        title=title,
+                        objective_skill_ids=objective_skill_ids,
+                        position_references=position_references,
+                        rationale=rationale,
+                        recommended_count=recommended_count,
+                        evidence_refs=evidence_refs or [],
+                        source=source,
+                    )
+                except ValidationError:
+                    return self._invalid_tool_call(
+                        local,
+                        "create_training_draft",
+                        ToolError(
+                            code="training_unavailable",
+                            message="The temporary training draft is invalid or exceeds its limit.",
+                            recoverable=False,
+                        ),
+                    )
+                return await self._call_tool(local, "create_training_draft", payload)
+
+            tools.append(
+                function_tool(
+                    create_training_draft,
+                    name_override="create_training_draft",
+                    description_override=(
+                        "Create a temporary training draft of at most five positions. Every position "
+                        "and canonical objective must come from this run's successful retrieval."
                     ),
                     strict_mode=True,
                 )

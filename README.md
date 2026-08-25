@@ -110,6 +110,7 @@ POST /api/agent/sessions
 GET  /api/agent/sessions/{session_id}
 POST /api/agent/sessions/{session_id}/context
 POST /api/agent/sessions/{session_id}/messages
+POST /api/agent/sessions/{session_id}/actions/start-training
 DELETE /api/agent/sessions/{session_id}
 ```
 
@@ -183,6 +184,11 @@ Stockfish 复盘、历史和训练仍可正常工作。Agent checkpoint（包括
 summary）、SDK conversation 和脱敏 run summary 分别保存在
 `<DATA_DIR>/agent/sessions/`、`conversations.sqlite3` 和 `runs.jsonl`。Agent 不读取 CLI 登录态，
 也不会把 endpoint 或 key 返回浏览器。遗留 `/api/chat` 仅供尚未迁移的其他功能使用。
+
+开启个性化后，“接下来练什么”会从 canonical weakness 和已有 Stage 2 analysis 检索最多十个
+候选，并生成最多五题的临时训练草案。用户点击训练动作时，后端会按 session generation 和
+源 artifact 重新验证全部位置，再按草案顺序进入 Puzzles；草案不持久化，评分和长期 evidence
+更新继续复用现有 attempt、observation 和 estimate 流程。
 
 AI 教练同样不是 Web 启动前提；没有模型时，Stockfish 复盘、棋盘、历史和训练功能仍可
 工作。解释业务层通过统一 Provider 接口调用本地/远程 OpenAI-compatible API 或可选的

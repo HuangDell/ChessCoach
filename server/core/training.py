@@ -162,6 +162,14 @@ def list_training_positions(data_dir: str | None = None) -> list[dict]:
                         "played_san": played.get("san"),
                         "best_uci": best.get("uci"),
                         "best_san": best.get("san"),
+                        "candidate_moves": [
+                            {
+                                "uci": (candidate.get("move") or {}).get("uci"),
+                                "san": (candidate.get("move") or {}).get("san"),
+                            }
+                            for candidate in (position.get("candidates") or [])[:3]
+                            if isinstance(candidate, dict)
+                        ],
                         "classification": position.get("classification"),
                         "motifs": [
                             item

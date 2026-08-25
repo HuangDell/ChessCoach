@@ -184,6 +184,9 @@ def next_mistake_puzzle(
     category: str | None = None,
     game_id: str | None = None,
     critical_id: str | None = None,
+    review_side: str | None = None,
+    fen: str | None = None,
+    ply: int | None = None,
 ) -> Optional[dict]:
     """Pick the most instructive un-retired own-game mistake for the player's skill.
 
@@ -201,7 +204,24 @@ def next_mistake_puzzle(
         all_candidates = [c for c in all_candidates if c.get("game_id") == game_id]
     if critical_id:
         all_candidates = [c for c in all_candidates if c.get("critical_id") == critical_id]
-    exact = bool(game_id or critical_id)
+    if review_side:
+        all_candidates = [c for c in all_candidates if c.get("reviewed_side") == review_side]
+    if fen:
+        try:
+            expected_fen = chess.Board(fen).fen()
+        except ValueError:
+            return None
+        matching_fen: list[dict] = []
+        for candidate in all_candidates:
+            try:
+                if chess.Board(str(candidate.get("fen") or "")).fen() == expected_fen:
+                    matching_fen.append(candidate)
+            except ValueError:
+                continue
+        all_candidates = matching_fen
+    if ply is not None:
+        all_candidates = [c for c in all_candidates if c.get("ply") == ply]
+    exact = bool(game_id or critical_id or review_side or fen or ply is not None)
     candidates = _dedup(
         [c for c in all_candidates if exact or not _is_retired(state, c["key"])]
     )
