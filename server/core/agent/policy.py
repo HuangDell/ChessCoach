@@ -11,10 +11,13 @@ from server.core.agent.models import (
     AnalyzeMoveResult,
     AnalyzePositionResult,
     AgentResponse,
+    AgentRunRequest,
+    AgentRunResult,
     AgentToolName,
     ChessReference,
     GetPlayerProfileResult,
     GetReviewContextResult,
+    GetTrainingCandidatesResult,
     ModelVisibleContext,
     PositionReference,
     SuggestedAction,
@@ -23,10 +26,12 @@ from server.core.agent.models import (
 )
 
 
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 _MOVE_QUESTION = re.compile(
-    r"(?:\b[a-h][1-8][a-h][1-8][qrbn]?\b|why\s+(?:is|was|not|can(?:not|'t))|what\s+if|instead|"
-    r"为什么不能|为何不能|如果|改走)",
+    r"(?:\b[a-h][1-8][a-h][1-8][qrbn]?\b|why\s+(?:is|was|not|can(?:not|'t))|"
+    r"\b(?:can|could|may)\s+i\s+play\b|\bis\s+\S+\s+legal\b|what\s+if|"
+    r"what\s+changes\s+after|\bif\b[^?\n]{0,80}\b(?:play|played|changes?|captures?)\b|"
+    r"\brecheck\b|instead|为什么不能|为何不能|如果|改走)",
     re.IGNORECASE,
 )
 _POSITION_QUESTION = re.compile(
@@ -37,7 +42,7 @@ _OPENING_QUESTION = re.compile(
     r"(?:\bopening\b|\beco\b|debut|开局|开局名称|开局计划)", re.IGNORECASE
 )
 _PROFILE_QUESTION = re.compile(
-    r"(?:profile|weakness|strength|recurr|habit|personal|弱点|强项|反复|经常|个人)",
+    r"(?:profile|weakness|strength|recurr|repeat|habit|personal|弱点|强项|反复|经常|个人)",
     re.IGNORECASE,
 )
 _PRIORITY_QUESTION = re.compile(
@@ -49,13 +54,21 @@ _TRAINING_PLANNING_QUESTION = re.compile(
     r"(?:what\s+should\s+i\s+(?:train|practice)|what\s+to\s+(?:train|practice)|"
     r"train(?:ing)?\s+plan|practice\s+plan|next\s+(?:training|practice)|"
     r"(?:build|create|make|plan)\b[^?.!\n]{0,60}\b(?:training|practice)\s+"
-    r"(?:plan|session|draft|set)|"
+    r"(?:plan|session|draft|set)|(?:build|create|make|plan)\b[^?.!\n]{0,80}\bsession\b|"
     r"练什么|训练什么|怎么练|训练计划|练习计划|接下来练|下一步练)",
     re.IGNORECASE,
 )
 _FOLLOW_UP_REFERENCE = re.compile(
     r"(?:\bhere\b|\bthere\b|that\s+(?:move|position|line)|this\s+(?:move|position)|"
     r"这里|这儿|那里|那儿|那一步|这个局面|这个变化|这里呢|那里呢)",
+    re.IGNORECASE,
+)
+_REVIEW_CONTEXT_QUESTION = re.compile(
+    r"(?:\breview\b|\bsaved\b|why\s+was\s+my\s+move|复盘|已保存)", re.IGNORECASE
+)
+_OPEN_ENDED_TRAINING_QUESTION = re.compile(
+    r"(?:what\s+should\s+i\s+(?:train|practice)|what\s+to\s+(?:train|practice)|"
+    r"next\s+(?:training|practice)|接下来练|下一步练|练什么|训练什么)",
     re.IGNORECASE,
 )
 
@@ -77,28 +90,90 @@ def allowed_tools_for(message: str, context: ModelVisibleContext) -> list[AgentT
 
     allowed: list[AgentToolName] = []
     planning = is_training_planning_request(message)
-    if (context.position is not None and context.engine_facts is not None) or (
-        planning and context.task.personalization_enabled
+    position = context.position
+    facts = context.engine_facts
+    reference = position.reference if position is not None else None
+    if (
+        facts is None
+        and reference is not None
+        and all((reference.game_id, reference.review_side, reference.critical_id))
+        and _REVIEW_CONTEXT_QUESTION.search(message)
     ):
         allowed.append("get_review_context")
-    if context.position is not None and _MOVE_QUESTION.search(message):
+    move_question = bool(_MOVE_QUESTION.search(message)) or bool(
+        re.search(r"\bcompare\b", message, re.IGNORECASE)
+        and re.search(r"(?:,|\band\b|\bversus\b|\bvs\.?\b)", message, re.IGNORECASE)
+    )
+    covered_review_question = bool(
+        facts is not None
+        and re.search(r"\bwhy\s+was\s+my\s+move\b", message, re.IGNORECASE)
+    )
+    if position is not None and move_question and not covered_review_question:
         allowed.append("analyze_move")
     if (
-        context.position is not None
+        position is not None
         and _POSITION_QUESTION.search(message)
-        and context.engine_facts is None
+        and facts is None
+        and not move_question
     ):
         allowed.append("analyze_position")
-    if context.position is not None and _OPENING_QUESTION.search(message):
+    if position is not None and _OPENING_QUESTION.search(message):
         allowed.append("lookup_opening")
     if (
         context.task.personalization_enabled
-        and (_PROFILE_QUESTION.search(message) or _PRIORITY_QUESTION.search(message) or planning)
+        and (
+            _PROFILE_QUESTION.search(message)
+            or _PRIORITY_QUESTION.search(message)
+            or (planning and _OPEN_ENDED_TRAINING_QUESTION.search(message))
+        )
     ):
         allowed.append("get_player_profile")
     if context.task.personalization_enabled and planning:
         allowed.extend(["get_training_candidates", "create_training_draft"])
     return allowed
+
+
+def validated_tool_references(
+    successful_tool_results: Sequence[object],
+) -> list[ChessReference]:
+    """Collect the owned references exposed by successful retrieval results."""
+
+    references: list[ChessReference] = []
+    identities: set[str] = set()
+    for data in successful_tool_results:
+        candidates: list[ChessReference] = []
+        if isinstance(data, GetPlayerProfileResult):
+            for estimate in data.relevant_estimates:
+                candidates.extend(
+                    [
+                        ChessReference(kind="skill", skill_id=estimate.skill_id),
+                        *estimate.examples,
+                    ]
+                )
+        elif isinstance(data, GetTrainingCandidatesResult):
+            for candidate in data.candidates:
+                candidates.extend(
+                    ChessReference(kind="skill", skill_id=skill_id)
+                    for skill_id in candidate.skill_ids
+                )
+                reference = candidate.reference
+                candidates.append(
+                    ChessReference(
+                        kind="critical_position",
+                        game_id=reference.game_id,
+                        review_side=reference.review_side,
+                        critical_id=reference.critical_id,
+                        ply=reference.ply,
+                        fen=reference.fen,
+                    )
+                )
+        for candidate in candidates:
+            identity = candidate.model_dump_json(exclude_none=True)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            references.append(candidate)
+    return references
 
 
 def build_model_input(context: ModelVisibleContext) -> str:
@@ -123,10 +198,14 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "recurring weakness or strength only from relevant_memory or after get_player_profile "
         "returns concrete evidence. "
         "When personalization_enabled is false, do not request or imply profile evidence.\n"
-        "- A skill reference or personalization_claims always means retrieved evidence about this "
-        "specific user. Never emit either for a generic chess concept, even when personalization "
-        "is enabled. If no profile evidence is present in context or a successful profile tool "
-        "result, leave personalization_claims empty and include no skill reference.\n"
+        "- personalization_claims always means retrieved profile/memory evidence about this user. "
+        "Never emit it for a generic chess concept. If no profile evidence is present in context "
+        "or a successful profile tool result, leave every personalization_claims field null. A "
+        "skill reference additionally may identify a retrieved training objective, but never emit "
+        "one for an unsupported generic concept.\n"
+        "- Training candidates/drafts may support objective skill references, but their count, "
+        "source games, or repeated skill_ids never prove a user weakness/status/distinct_games. "
+        "Without profile/memory evidence, keep every personalization_claims field null.\n"
         "- Mirror every material position, move, classification, score-POV, and personalization "
         "statement from the answer in the structured grounding fields. Include each exact position "
         "reference and evidence_ref actually used; never include an unused or invented one. Mark "
@@ -134,6 +213,8 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "materially unresolved. Routine caveats, or a supported conclusion that profile evidence "
         "is insufficient to call a pattern recurring, use uncertainty false. When supplied facts "
         "directly answer the request, completion is full even if they contain no score or PV.\n"
+        "- completion and uncertainty must agree: every partial response sets "
+        "acknowledges_uncertainty=true, and every full response sets it false.\n"
         "- Outcome mapping is exact: no failure => full/none/no error; missing position => "
         "partial/missing_context/no error; handled illegal_move => full/tool_error_handled/"
         "illegal_move; budget exhaustion => partial/tool_budget_exhausted/tool_budget_exceeded; "
@@ -141,7 +222,8 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "tool error must remain reflected in the final outcome even when a later fallback succeeds. "
         "After a recoverable failure, use any explicit fallback requested by the user.\n"
         "- A legality question about a concrete move always requires analyze_move, including when "
-        "the move appears obviously illegal from the FEN; do not self-certify legality.\n"
+        "the move appears obviously illegal from the FEN; do not self-certify legality. For an "
+        "illegal move, set move_san null and mirror only move_uci plus legal=false.\n"
         "- If the answer discusses the current board, include its exact position reference. Copy "
         "all evidence_refs actually used from Engine facts or successful tools. On a failed profile "
         "tool, do not emit profile claims or skill references. Canonical focus examples: fork => "
@@ -152,8 +234,10 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "- For training planning, retrieve candidates before creating one draft. Draft positions "
         "must come from that retrieval, objectives must use their canonical skill_ids, and the "
         "start_training action must copy the successful draft with source agent_training_draft.\n"
-        "- Suggested actions are limited to open_position, compare_move, start_retry, and a "
-        "validated start_training draft.\n\n"
+        "- Suggested actions are optional and limited to open_position, compare_move, start_retry, "
+        "and a validated start_training draft. Use only the target fields in that action's JSON "
+        "schema: compare_move has move_uci and optional fen; open_position/start_retry use only "
+        "position identity fields; start_training copies only positions, objectives, and source.\n\n"
         "MODEL_VISIBLE_CONTEXT_JSON:\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
@@ -164,10 +248,13 @@ class AgentResponseValidationError(ValueError):
 
 
 def _matches_reference(
-    reference: ChessReference,
+    reference: object,
     context: ModelVisibleContext,
     validated_tool_references: Sequence[ChessReference],
 ) -> bool:
+    reference = ChessReference.model_validate(
+        reference.model_dump(mode="python", exclude_none=True)
+    )
     position = context.position
     facts = context.engine_facts
     game_id = None
@@ -193,13 +280,30 @@ def _matches_reference(
         ) or any(
             reference == allowed for allowed in validated_tool_references
         )
+    def same_owned_identity(allowed: ChessReference) -> bool:
+        if reference.kind == "skill" or allowed.kind == "skill":
+            return reference.kind == allowed.kind and reference.skill_id == allowed.skill_id
+        if reference.kind == "game" or allowed.kind == "game":
+            return reference.kind == allowed.kind and reference.game_id == allowed.game_id
+        if reference.puzzle_id is not None or allowed.puzzle_id is not None:
+            return reference.puzzle_id is not None and reference.puzzle_id == allowed.puzzle_id
+        if reference.fen is not None and allowed.fen is not None:
+            return reference.fen == allowed.fen
+        return bool(
+            reference.game_id is not None
+            and reference.game_id == allowed.game_id
+            and reference.critical_id is not None
+            and reference.critical_id == allowed.critical_id
+            and reference.review_side in (None, allowed.review_side)
+        )
+
     if any(
-        reference == example
+        same_owned_identity(example)
         for item in context.relevant_memory
         for example in item.examples
     ):
         return True
-    if any(reference == allowed for allowed in validated_tool_references):
+    if any(same_owned_identity(allowed) for allowed in validated_tool_references):
         return True
     priorities = context.review_priorities
     if priorities is not None:
@@ -264,6 +368,10 @@ def _validate_grounding_outcome(
         raise AgentResponseValidationError(
             "Agent response degradation does not match this run's tool results."
         )
+    if grounding.acknowledges_uncertainty != (grounding.completion == "partial"):
+        raise AgentResponseValidationError(
+            "Agent response uncertainty does not match its completion."
+        )
 
 
 def _validate_grounding_claims(
@@ -289,16 +397,17 @@ def _validate_grounding_claims(
                 "Agent move claim legality does not match its supplied FEN."
             )
 
-    if claims.move_uci is not None and claims.legal is not None:
-        if not any(
-            item.move_uci == claims.move_uci and item.legal == claims.legal
-            for item in grounding.move_claims
-        ):
-            raise AgentResponseValidationError(
-                "Agent move legality claim requires a matching move_claim."
-            )
-
     board = chess.Board(position.fen) if position is not None else None
+    if claims.move_uci is not None and claims.legal is not None:
+        if board is None:
+            raise AgentResponseValidationError(
+                "Agent move legality claim requires a current position."
+            )
+        actual_legal = chess.Move.from_uci(claims.move_uci) in board.legal_moves
+        if claims.legal != actual_legal:
+            raise AgentResponseValidationError(
+                "Agent move legality claim does not match the current FEN."
+            )
     if claims.side_to_move is not None:
         if board is None:
             raise AgentResponseValidationError("side_to_move requires a current position.")
@@ -395,6 +504,7 @@ def _validate_action(
     action: SuggestedAction,
     context: ModelVisibleContext,
     successful_training_drafts: Sequence[TrainingDraft],
+    validated_tool_references: Sequence[ChessReference],
 ) -> None:
     if action.kind == "start_training":
         target = action.target.model_dump(
@@ -441,6 +551,25 @@ def _validate_action(
             raise AgentResponseValidationError("compare_move requires a legal UCI move.")
         return
 
+    if action.kind == "open_position":
+        for reference in validated_tool_references:
+            if reference.kind == "skill":
+                continue
+            expected = {
+                key: value
+                for key, value in reference.model_dump(
+                    mode="python", exclude_none=True
+                ).items()
+                if key in {"game_id", "review_side", "critical_id", "ply", "fen"}
+            }
+            exact = target.get("fen") == expected.get("fen") or all(
+                target.get(key) for key in ("game_id", "review_side", "critical_id")
+            )
+            if exact and target and all(
+                expected.get(key) == value for key, value in target.items()
+            ):
+                return
+
     priorities = context.review_priorities
     if action.kind in {"open_position", "start_retry"} and priorities is not None:
         for candidate in priorities.candidates:
@@ -462,10 +591,18 @@ def _validate_action(
     if facts is None:
         if action.kind == "start_retry":
             raise AgentResponseValidationError("start_retry requires an active critical position.")
-        if position is None or not _target_subset(target, {"fen", "ply"}):
+        if position is None or not _target_subset(
+            target, {"game_id", "review_side", "critical_id", "ply", "fen"}
+        ):
             raise AgentResponseValidationError("open_position has an invalid target.")
-        if target.get("fen") != position.fen:
-            raise AgentResponseValidationError("open_position targets a different FEN.")
+        expected = position.reference.model_dump(mode="python", exclude_none=True)
+        if any(expected.get(key) != value for key, value in target.items()):
+            raise AgentResponseValidationError("open_position targets a different position.")
+        has_exact_position = target.get("fen") == position.fen or all(
+            target.get(key) for key in ("game_id", "review_side", "critical_id")
+        )
+        if not has_exact_position:
+            raise AgentResponseValidationError("open_position requires an exact position target.")
         return
 
     allowed = {"game_id", "review_side", "critical_id", "ply", "fen"}
@@ -509,7 +646,12 @@ def validate_agent_response(
         successful_tool_results=successful_tool_results,
     )
     for action in response.suggested_actions:
-        _validate_action(action, context, successful_training_drafts)
+        _validate_action(
+            action,
+            context,
+            successful_training_drafts,
+            validated_tool_references,
+        )
     priorities = context.review_priorities
     if priorities is not None:
         shortlist = {
@@ -521,12 +663,16 @@ def validate_agent_response(
             for candidate in priorities.candidates
         }
         selected = {
-            (reference.game_id, reference.review_side, reference.critical_id)
+            (
+                getattr(reference, "game_id", None),
+                getattr(reference, "review_side", None),
+                getattr(reference, "critical_id", None),
+            )
             for reference in response.references
             if (
-                reference.game_id,
-                reference.review_side,
-                reference.critical_id,
+                getattr(reference, "game_id", None),
+                getattr(reference, "review_side", None),
+                getattr(reference, "critical_id", None),
             ) in shortlist
         }
         selected.update(
@@ -536,7 +682,8 @@ def validate_agent_response(
                 action.target.critical_id,
             )
             for action in response.suggested_actions
-            if (
+            if action.kind in {"open_position", "start_retry"}
+            and (
                 action.target.game_id,
                 action.target.review_side,
                 action.target.critical_id,
@@ -556,3 +703,30 @@ def validate_agent_response(
         if not selected.intersection(largest):
             raise AgentResponseValidationError("Agent omitted the deterministic largest error.")
     return response
+
+
+def validate_agent_run_result(
+    result: AgentRunResult,
+    request: AgentRunRequest,
+    *,
+    successful_tool_results: Sequence[object] = (),
+) -> AgentRunResult:
+    """Apply the complete production acceptance contract to one runtime result."""
+
+    if len(result.tool_calls) > request.max_total_tool_calls:
+        raise AgentResponseValidationError("Agent runtime exceeded its tool budget.")
+    if sum(call.engine_call_count for call in result.tool_calls) > request.max_engine_tool_calls:
+        raise AgentResponseValidationError("Agent runtime exceeded its Engine tool budget.")
+    if any(call.name not in request.allowed_tools for call in result.tool_calls):
+        raise AgentResponseValidationError("Agent runtime called a tool outside this run.")
+    validate_agent_response(
+        result.response,
+        request.model_context,
+        result.tool_calls,
+        validated_tool_references=validated_tool_references(successful_tool_results),
+        successful_training_drafts=[
+            value for value in successful_tool_results if isinstance(value, TrainingDraft)
+        ],
+        successful_tool_results=successful_tool_results,
+    )
+    return result

@@ -41,7 +41,7 @@ from server.core.agent.models import (
     SessionError,
     SkillDefinition,
     SkillEstimate,
-    SuggestedAction,
+    CompareMoveAction,
     TaskContext,
     ToolCallRecord,
     ToolError,
@@ -572,7 +572,7 @@ class SessionAndApiContractTests(unittest.TestCase):
                 references=[ChessReference(kind="position", fen=START_FEN)],
                 evidence_refs=["analysis:game-1:ply-33"],
                 suggested_actions=[
-                    SuggestedAction(
+                    CompareMoveAction(
                         kind="compare_move",
                         label="Compare Nc6",
                         target={"move_uci": "b8c6"},
@@ -603,6 +603,60 @@ class SessionAndApiContractTests(unittest.TestCase):
                     visit(child)
 
         visit(schema)
+
+    def test_suggested_action_schema_rejects_cross_kind_target_fields(self) -> None:
+        with self.assertRaises(ValidationError):
+            AgentResponse.model_validate(
+                {
+                    "text": "Compare e4.",
+                    "suggested_actions": [
+                        {
+                            "kind": "compare_move",
+                            "label": "Compare e4",
+                            "target": {"game_id": "game-1", "move_uci": "e2e4"},
+                        }
+                    ],
+                }
+            )
+
+        schema = AgentResponse.model_json_schema()
+        action_items = schema["properties"]["suggested_actions"]["items"]
+        self.assertEqual(4, len(action_items["anyOf"]))
+        self.assertEqual(
+            {"fen", "move_uci"},
+            set(schema["$defs"]["CompareMoveActionTarget"]["properties"]),
+        )
+        self.assertEqual(
+            {"position_references", "objective_skill_ids", "source"},
+            set(schema["$defs"]["TrainingActionTarget"]["properties"]),
+        )
+
+    def test_agent_reference_schema_is_narrowed_by_kind(self) -> None:
+        schema = AgentResponse.model_json_schema()
+        reference_items = schema["properties"]["references"]["items"]
+
+        self.assertEqual(5, len(reference_items["anyOf"]))
+        self.assertEqual(
+            {"kind", "game_id", "review_side", "critical_id", "ply", "fen"},
+            set(schema["$defs"]["AgentCriticalPositionReference"]["properties"]),
+        )
+        self.assertEqual(
+            {"kind", "skill_id"},
+            set(schema["$defs"]["AgentSkillReference"]["properties"]),
+        )
+        with self.assertRaises(ValidationError):
+            AgentResponse.model_validate(
+                {
+                    "text": "Invalid reference.",
+                    "references": [
+                        {
+                            "kind": "critical_position",
+                            "game_id": "game-1",
+                            "review_side": "white",
+                        }
+                    ],
+                }
+            )
 
 
 class DocumentedDtoContractTests(unittest.TestCase):

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 COMPATIBILITY_SCHEMA_VERSION = 1
 PORTFOLIO_DATASET_ID = "agent-portfolio-v2"
-PORTFOLIO_SCORER_VERSION = 3
+PORTFOLIO_SCORER_VERSION = 4
 
 
 def endpoint_fingerprint(base_url: str) -> str:

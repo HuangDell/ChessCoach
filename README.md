@@ -71,9 +71,10 @@ CLI。模型失败不会修改 `analysis.json`，也不会影响 Engine Review�
 ## Agent 配置
 
 Agent 使用后端 Responses API、一个 Chess Coach Agent、typed function tools、structured output、
-SQLite conversation session 和非流式 bounded runs。response schema v2 额外要求模型把正文中的关键
+SQLite conversation session 和非流式 bounded runs。response schema v3 要求模型把正文中的关键
 棋类事实、个性化声明、合法性声明和降级状态镜像到 `grounding`；后端再用当前 FEN、Engine facts
-和本次成功工具结果确定性校验，未经验证的模型文本不会作为成功响应提交。
+和本次成功工具结果确定性校验。`suggested_actions` 直接使用按 action kind 区分的窄 JSON schema，
+例如 `compare_move` 只能返回 `move_uci` 和可选 `fen`；未经验证的模型输出不会作为成功响应提交。
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
@@ -89,7 +90,8 @@ SQLite conversation session 和非流式 bounded runs。response schema v2 额�
 | `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
 
 官方 OpenAI 路径不需要本地 compatibility certificate。自定义 endpoint 必须先使用相同 runtime、
-fixture tools、dataset 和 scorer 完整通过 portfolio；证书绑定 endpoint SHA-256 指纹、模型、SDK、
+生产工具路由、生产预算、生产响应验收、fixture tools、dataset 和 scorer 完整通过 live portfolio；
+证书绑定 endpoint SHA-256 指纹、模型、SDK、
 policy、response schema、dataset 和 scorer 版本。缺失、损坏或不匹配时 capability 返回
 `agent_endpoint_incompatible`，不会回退到 Chat Completions 或自建 tool loop。
 
@@ -154,6 +156,10 @@ Phase 0 的 26 个 case、ID 和 v1 baseline 保持不变；`agent-portfolio-v2`
 reference/action、recent improvement、training diversity/stale source、storage、stale/cancel、
 malformed output 和 custom incompatibility cases。
 
+live endpoint 报告只把实际发送给模型的 26 个 baseline case 计入 live 质量和延迟指标，并额外
+要求所有返回通过生产响应验收。11 个 hardening fake case 仍用于离线确定性回归，但在 live 报告中
+明确标为 static reference，不混入 endpoint 指标，也不声称已由 endpoint 执行。
+
 默认离线验证：
 
 ```bash
@@ -165,6 +171,8 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 ```
 
 真实 OpenAI/custom eval 是显式网络操作，不属于默认测试，也不把 credential 作为开发前提。当前
-提交包含 deterministic v2 report；live OpenAI/custom reports 需提供 credential 后生成。详细命令、
-降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见 [ADR](docs/adr/)，Agent 需求
+提交包含 deterministic v2 report；本机 custom endpoint 已通过 policy v3 / response schema v3 /
+scorer v4 的新门禁并在本地数据目录签发证书，去敏报告不提交。官方 OpenAI report 仍需对应
+credential 显式生成。详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
+[ADR](docs/adr/)，Agent 需求
 与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。

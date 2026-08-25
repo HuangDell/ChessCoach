@@ -177,6 +177,7 @@ def _evaluate_dataset(
                 ),
                 "matched_tools": [call["name"] for call in run["tool_calls"]],
                 "tool_attempt_summaries": run.get("tool_attempt_summaries", []),
+                "production_validation_error": run.get("production_validation_error"),
             }
         )
     return results
@@ -202,6 +203,7 @@ def diagnose_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> list[
             "attempted_tools": item["attempted_tools"],
             "matched_tools": item["matched_tools"],
             "tool_attempt_summaries": item["tool_attempt_summaries"],
+            "production_validation_error": item["production_validation_error"],
         }
         for item in _evaluate_dataset(dataset, observed)
     ]

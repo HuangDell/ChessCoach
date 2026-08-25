@@ -34,15 +34,12 @@ from server.core.agent.models import (
     AgentSessionState,
     AgentSessionSummary,
     ChessReference,
-    GetPlayerProfileResult,
-    GetTrainingCandidatesResult,
     MemoryQuery,
     PositionContext,
     PositionReference,
     SessionError,
     StartTrainingActionRequest,
     StartTrainingActionResult,
-    TrainingDraft,
 )
 from server.core.agent.policy import (
     AgentResponseValidationError,
@@ -50,7 +47,8 @@ from server.core.agent.policy import (
     is_follow_up_reference_request,
     is_review_priority_request,
     is_training_planning_request,
-    validate_agent_response,
+    validate_agent_run_result,
+    validated_tool_references,
     POLICY_VERSION,
 )
 from server.core.agent.prioritization import PrioritizationError, build_review_prioritization
@@ -200,55 +198,7 @@ def _item_position_references(items: list[Any]) -> list[PositionReference]:
 
 def _successful_tool_references(tools: AgentTools) -> list[ChessReference]:
     """Expose only typed references returned by successful retrieval tools this run."""
-
-    references: list[ChessReference] = []
-    identities: set[str] = set()
-    for execution in getattr(tools, "executions", []):
-        result = getattr(execution, "result", None)
-        data = getattr(result, "data", None) if getattr(result, "ok", False) else None
-        candidates: list[ChessReference] = []
-        if isinstance(data, GetPlayerProfileResult):
-            for estimate in data.relevant_estimates:
-                candidates.extend(
-                    [
-                        ChessReference(kind="skill", skill_id=estimate.skill_id),
-                        *estimate.examples,
-                    ]
-                )
-        elif isinstance(data, GetTrainingCandidatesResult):
-            for candidate in data.candidates:
-                candidates.extend(
-                    ChessReference(kind="skill", skill_id=skill_id)
-                    for skill_id in candidate.skill_ids
-                )
-                reference = candidate.reference
-                candidates.append(
-                    ChessReference(
-                        kind="critical_position",
-                        game_id=reference.game_id,
-                        review_side=reference.review_side,
-                        critical_id=reference.critical_id,
-                        ply=reference.ply,
-                        fen=reference.fen,
-                    )
-                )
-        for reference in candidates:
-            identity = reference.model_dump_json(exclude_none=True)
-            if identity in identities:
-                continue
-            identities.add(identity)
-            references.append(reference)
-    return references
-
-
-def _successful_training_drafts(tools: AgentTools) -> list[TrainingDraft]:
-    drafts: list[TrainingDraft] = []
-    for execution in getattr(tools, "executions", []):
-        result = getattr(execution, "result", None)
-        data = getattr(result, "data", None) if getattr(result, "ok", False) else None
-        if isinstance(data, TrainingDraft):
-            drafts.append(data)
-    return drafts
+    return validated_tool_references(_successful_tool_results(tools))
 
 
 def _successful_tool_results(tools: AgentTools) -> list[object]:
@@ -267,7 +217,10 @@ def _successful_profile_references(tools: AgentTools) -> list[ChessReference]:
     return _successful_tool_references(tools)
 
 
-def _position_reference_from_chess(reference: ChessReference) -> PositionReference | None:
+def _position_reference_from_chess(reference: object) -> PositionReference | None:
+    reference = ChessReference.model_validate(
+        reference.model_dump(mode="python", exclude_none=True)
+    )
     if reference.kind == "skill":
         return None
     try:
@@ -730,16 +683,9 @@ class ChessAgentService:
             try:
                 async with asyncio.timeout(self.timeout_seconds):
                     result = await self.runtime.run(run_request)
-                if len(result.tool_calls) > self.max_total_tool_calls:
-                    raise AgentResponseValidationError("Agent runtime exceeded its tool budget.")
-                if any(call.name not in run_request.allowed_tools for call in result.tool_calls):
-                    raise AgentResponseValidationError("Agent runtime called a tool outside this run.")
-                validate_agent_response(
-                    result.response,
-                    model_context,
-                    result.tool_calls,
-                    validated_tool_references=_successful_tool_references(tools),
-                    successful_training_drafts=_successful_training_drafts(tools),
+                validate_agent_run_result(
+                    result,
+                    run_request,
                     successful_tool_results=_successful_tool_results(tools),
                 )
                 if not guarded.staged_items:

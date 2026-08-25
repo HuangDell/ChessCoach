@@ -15,7 +15,7 @@ from server.core.agent.models import (
     ModelVisibleContext,
     PositionContext,
     SkillEstimate,
-    SuggestedAction,
+    OpenPositionAction,
     TaskContext,
 )
 from server.core.agent.policy import AgentResponseValidationError, validate_agent_response
@@ -554,7 +554,7 @@ class ReviewPrioritizationTests(unittest.TestCase):
                     text="Open the omitted position.",
                     references=[largest],
                     suggested_actions=[
-                        SuggestedAction(
+                        OpenPositionAction(
                             kind="open_position",
                             label="Open",
                             target={

@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import unittest
 
+from server import config
 from server.core.agent.models import (
+    AGENT_TOOL_PERMISSIONS,
     AgentResponse,
     AgentRunResult,
     AnalyzePositionInput,
@@ -13,13 +15,17 @@ from server.core.agent.models import (
     CreateTrainingDraftInput,
     GetPlayerProfileInput,
     GetTrainingCandidatesInput,
+    StartTrainingAction,
+    ToolCallRecord,
 )
+from server.core.agent.policy import allowed_tools_for
 from tests.evals.evaluator import diagnose_dataset, score_dataset
-from tests.evals.portfolio_v2 import score_portfolio
 from tests.evals.run_portfolio_live import (
     _FixtureTools,
     _all_quality_gates,
+    _build_live_report,
     _context,
+    _observed_response,
     _run_cases,
 )
 
@@ -111,8 +117,10 @@ class _PerfectRuntime:
         self.runs = {item["case_id"]: item for item in observed["runs"]}
         self.tool_instances = tool_instances
         self.sessions = sessions
+        self.requests = []
 
     async def run(self, request) -> AgentRunResult:
+        self.requests.append(request)
         index = int(request.session_id.rsplit("-", 1)[1])
         case = self.dataset["cases"][index]
         observed = self.runs[case["id"]]
@@ -122,9 +130,37 @@ class _PerfectRuntime:
         await self.sessions.get_session(request.session_id).add_items(
             [{"role": "assistant", "content": "fixture"}]
         )
+        tool_calls = []
+        for call in observed["tool_calls"]:
+            fixture = self.dataset["fixtures"]["tool_results"][call["result_fixture"]]
+            fixture_result = fixture["result"]
+            ok = bool(fixture_result["ok"])
+            tool_calls.append(
+                ToolCallRecord(
+                    name=call["name"],
+                    permission=AGENT_TOOL_PERMISSIONS[call["name"]],
+                    status="ok" if ok else "error",
+                    duration_ms=1,
+                    engine_call_count=int(bool(fixture["uses_engine"])),
+                    evidence_refs=fixture_result.get("evidence_refs", []),
+                    error_code=(
+                        None if ok else fixture_result.get("error", {}).get("code")
+                    ),
+                )
+            )
+        if observed["response"].get("error_code") == "tool_budget_exceeded":
+            tool_calls.append(
+                ToolCallRecord(
+                    name="analyze_move",
+                    permission="compute",
+                    status="budget_exceeded",
+                    duration_ms=0,
+                    error_code="tool_budget_exceeded",
+                )
+            )
         return AgentRunResult(
             response=_response(self.dataset, observed),
-            tool_calls=[],
+            tool_calls=tool_calls,
         )
 
     def take_telemetry(self, _run_id: str) -> None:
@@ -223,6 +259,49 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("b1c3", context.engine_facts.best_move.uci)
         self.assertEqual("white", context.engine_facts.facts["score_pov"])
 
+    def test_production_policy_exposes_every_required_baseline_tool(self) -> None:
+        dataset = _load("agent_baseline_v1.json")
+        for case in dataset["cases"]:
+            context = _context(case, dataset)
+            allowed = set(allowed_tools_for(case["input"]["message"], context))
+            required = {
+                call["name"] for call in case["expected"]["tools"]["required_calls"]
+            }
+            with self.subTest(case=case["id"]):
+                self.assertTrue(required.issubset(allowed))
+                self.assertEqual(case["input"]["message"], context.task.user_goal)
+
+    def test_training_action_positions_count_as_structured_grounding(self) -> None:
+        dataset = _load("agent_baseline_v1.json")
+        positions = dataset["fixtures"]["positions"]
+        references = [
+            positions[name]["reference"]
+            for name in ("qg_before_ply_7", "italian_before_ply_9")
+        ]
+        response = AgentResponse(
+            text="Start the two-position session.",
+            suggested_actions=[
+                StartTrainingAction(
+                    kind="start_training",
+                    label="Start training",
+                    target={
+                        "position_references": references,
+                        "objective_skill_ids": [
+                            "calculation.opponent_forcing_moves"
+                        ],
+                        "source": "agent_training_draft",
+                    },
+                )
+            ],
+        )
+
+        observed = _observed_response(response, positions)
+
+        self.assertEqual(
+            {"qg_before_ply_7", "italian_before_ply_9"},
+            set(observed["position_fixtures"]),
+        )
+
     async def test_conforming_live_observations_can_pass_every_quality_gate(self) -> None:
         dataset = _load("agent_baseline_v1.json")
         observed = _load("observed_fake_runs_v1.json")
@@ -236,12 +315,16 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
             runtime, sessions, dataset, tools  # type: ignore[arg-type]
         )
         baseline = score_dataset(dataset, live_observed)
-        report = score_portfolio(
-            portfolio,
-            dataset,
-            live_observed,
-            hardening,
-            report_metadata={},
+        report = _build_live_report(
+            source="custom",
+            model="fixture-model",
+            endpoint_type="custom_responses",
+            sdk_version="fixture-sdk",
+            generated_at="2026-08-25T00:00:00Z",
+            dataset=dataset,
+            portfolio=portfolio,
+            baseline_observed=live_observed,
+            static_hardening_observed=hardening,
         )
 
         self.assertTrue(all(compatibility.values()))
@@ -249,6 +332,23 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1.0, baseline["metrics"]["task_completion_rate"]["value"])
         self.assertGreater(baseline["metrics"]["illegal_move_claim_rate"]["claims"], 0)
         self.assertTrue(_all_quality_gates(report))
+        self.assertEqual(26, report["case_count"])
+        self.assertEqual(0, report["hardening_case_count"])
+        self.assertEqual(11, report["static_hardening_reference_case_count"])
+        self.assertFalse(report["static_hardening_reference"]["executed_against_endpoint"])
+        self.assertFalse(report["static_hardening_reference"]["included_in_live_metrics"])
+        self.assertTrue(
+            all(
+                request.max_total_tool_calls == config.AGENT_MAX_TOOL_CALLS
+                for request in runtime.requests
+            )
+        )
+        self.assertTrue(
+            all(
+                request.max_engine_tool_calls == config.AGENT_MAX_ENGINE_CALLS
+                for request in runtime.requests
+            )
+        )
         self.assertTrue(
             all(item["grounded"] is not False for item in diagnose_dataset(dataset, live_observed))
         )

@@ -8,7 +8,7 @@ from typing import Any
 from tests.evals.evaluator import score_dataset
 
 
-SCORER_VERSION = 3
+SCORER_VERSION = 4
 
 
 def _rate(numerator: int, denominator: int) -> float:

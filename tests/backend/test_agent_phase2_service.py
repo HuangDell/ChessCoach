@@ -20,7 +20,7 @@ from server.core.agent.models import (
     ChessReference,
     PositionReference,
     SkillEstimate,
-    SuggestedAction,
+    StartRetryAction,
 )
 from server.core.agent.service import ChessAgentService
 from server.core.agent.sessions import (
@@ -64,7 +64,7 @@ def critical_response() -> AgentResponse:
         ],
         evidence_refs=[f"review:{GAME_ID}:white:{CRITICAL_ID}"],
         suggested_actions=[
-            SuggestedAction(
+            StartRetryAction(
                 kind="start_retry",
                 label="Retry this position",
                 target={

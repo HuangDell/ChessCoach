@@ -9,9 +9,16 @@ from types import SimpleNamespace
 import time
 from typing import Any
 
+from server import config
 from server.core.agent.models import (
     AgentRunRequest,
+    AnalyzeMoveResult,
+    AnalyzePositionResult,
     EngineFactsContext,
+    GetPlayerProfileResult,
+    GetReviewContextResult,
+    GetTrainingCandidatesResult,
+    LookupOpeningResult,
     ModelVisibleContext,
     MoveReference,
     PositionContext,
@@ -19,8 +26,14 @@ from server.core.agent.models import (
     TaskContext,
     ToolError,
     ToolResult,
+    TrainingDraft,
 )
-from server.core.agent.policy import POLICY_VERSION
+from server.core.agent.policy import (
+    AgentResponseValidationError,
+    POLICY_VERSION,
+    allowed_tools_for,
+    validate_agent_run_result,
+)
 from server.core.agent.runtime import AgentRuntimeFailure
 from server.core.agent.runtime_openai import (
     AGENTS_SDK_VERSION,
@@ -30,11 +43,20 @@ from server.core.agent.runtime_openai import (
 from server.core.storage.agent_compatibility import AgentCompatibilityStore, endpoint_fingerprint
 from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
 from server.core.learning.taxonomy import resolve_skill_id
-from tests.evals.evaluator import diagnose_dataset
-from tests.evals.portfolio_v2 import score_portfolio
+from tests.evals.evaluator import diagnose_dataset, score_dataset
+from tests.evals.portfolio_v2 import SCORER_VERSION
 
 
 ROOT = Path(__file__).resolve().parent
+_TOOL_RESULT_TYPES: dict[str, type[Any]] = {
+    "get_review_context": GetReviewContextResult,
+    "analyze_position": AnalyzePositionResult,
+    "analyze_move": AnalyzeMoveResult,
+    "lookup_opening": LookupOpeningResult,
+    "get_player_profile": GetPlayerProfileResult,
+    "get_training_candidates": GetTrainingCandidatesResult,
+    "create_training_draft": TrainingDraft,
+}
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -136,6 +158,23 @@ class _FixtureTools:
         matched = self._match(name, payload)
         return int(bool(matched and matched[1]["uses_engine"]))
 
+    @staticmethod
+    def _typed_result(fixture: dict[str, Any]) -> ToolResult[Any]:
+        result_type = _TOOL_RESULT_TYPES[fixture["tool"]]
+        return ToolResult[result_type].model_validate(fixture["result"])
+
+    def successful_tool_results(self) -> list[object]:
+        results: list[object] = []
+        for execution in self.executions:
+            fixture_id = execution.get("result_fixture")
+            fixture = self.fixtures.get(fixture_id)
+            if fixture is None:
+                continue
+            result = self._typed_result(fixture)
+            if result.ok and result.data is not None:
+                results.append(result.data)
+        return results
+
     async def execute(self, name: str, payload: Any) -> Any:
         self.attempted_names.append(name)
         actual = payload.model_dump(mode="json", exclude_none=True)
@@ -202,7 +241,7 @@ class _FixtureTools:
         )
         self.executions.append({**comparable, "duration_ms": 1})
         return SimpleNamespace(
-            result=ToolResult[Any].model_validate(fixture["result"]),
+            result=self._typed_result(fixture),
             cache_hit=bool(fixture.get("cache_hit", False)),
             engine_calls=int(bool(fixture["uses_engine"])),
         )
@@ -266,7 +305,7 @@ def _context(case: dict[str, Any], dataset: dict[str, Any]) -> ModelVisibleConte
     return ModelVisibleContext(
         task=TaskContext(
             activity=case["input"]["activity"],
-            user_goal=case["task"],
+            user_goal=case["input"]["message"],
             review_side=(position.reference.review_side if position else None),
             personalization_enabled=bool(case["input"].get("profile_enabled")),
         ),
@@ -284,10 +323,10 @@ def _position_names(response: Any, positions: dict[str, Any]) -> list[str]:
     for reference in response.references:
         for name, fixture in positions.items():
             owned = fixture["reference"]
-            if reference.fen == fixture["fen"] or (
-                reference.game_id == owned.get("game_id")
-                and reference.critical_id == owned.get("critical_id")
-                and reference.game_id is not None
+            if getattr(reference, "fen", None) == fixture["fen"] or (
+                getattr(reference, "game_id", None) == owned.get("game_id")
+                and getattr(reference, "critical_id", None) == owned.get("critical_id")
+                and getattr(reference, "game_id", None) is not None
             ):
                 if name not in found:
                     found.append(name)
@@ -322,9 +361,15 @@ def _observed_response(response: Any, positions: dict[str, Any]) -> dict[str, An
     personalization_claims = grounding.personalization_claims.model_dump(
         mode="json", exclude_none=True
     )
+    position_fixtures = _position_names(response, positions)
+    for action in response.suggested_actions:
+        for reference in getattr(action.target, "position_references", []):
+            position_name = _position_name(reference, positions)
+            if position_name is not None and position_name not in position_fixtures:
+                position_fixtures.append(position_name)
     return {
         "evidence_refs": response.evidence_refs,
-        "position_fixtures": _position_names(response, positions),
+        "position_fixtures": position_fixtures,
         "acknowledges_uncertainty": grounding.acknowledges_uncertainty,
         "claims": grounding.claims.model_dump(mode="json", exclude_none=True),
         "claim_tags": [],
@@ -367,6 +412,8 @@ async def _run_cases(
     sqlite_recent_items_successes = 0
     any_expected_function_tool = False
     function_tool_executed = False
+    production_validation_successes = 0
+    production_validation_applicable = 0
     positions = dataset["fixtures"]["positions"]
     for index, case in enumerate(dataset["cases"]):
         session_id = f"live-eval-{index:03d}"
@@ -381,16 +428,17 @@ async def _run_cases(
         if seeded_items:
             await session.add_items(seeded_items)
         initial_item_count = len(await session.get_items(limit=12))
+        model_context = _context(case, dataset)
         request = AgentRunRequest(
             session_id=session_id,
             expected_generation=0,
             message=case["input"]["message"],
-            model_context=_context(case, dataset),
-            allowed_tools=case["expected"]["tools"]["allowed"],
-            max_turns=4,
-            max_total_tool_calls=case["expected"]["tools"]["max_total"],
-            max_engine_tool_calls=case["expected"]["tools"]["max_engine"],
-            timeout_seconds=120,
+            model_context=model_context,
+            allowed_tools=allowed_tools_for(case["input"]["message"], model_context),
+            max_turns=config.AGENT_MAX_TURNS,
+            max_total_tool_calls=config.AGENT_MAX_TOOL_CALLS,
+            max_engine_tool_calls=config.AGENT_MAX_ENGINE_CALLS,
+            timeout_seconds=config.AGENT_TIMEOUT,
         )
         expected_function = bool(case["expected"]["tools"]["required_calls"])
         any_expected_function_tool = any_expected_function_tool or expected_function
@@ -409,13 +457,20 @@ async def _run_cases(
                 )
                 continue
             result = await runtime.run(request)
-            response = result.response
             structured_successes += 1
             if len(await session.get_items(limit=12)) > initial_item_count:
                 sqlite_recent_items_successes += 1
             function_tool_executed = function_tool_executed or bool(
                 tools.attempted_names or tools.executions
             )
+            production_validation_applicable += 1
+            validate_agent_run_result(
+                result,
+                request,
+                successful_tool_results=tools.successful_tool_results(),
+            )
+            production_validation_successes += 1
+            response = result.response
             runs.append(
                 {
                     "case_id": case["id"],
@@ -426,15 +481,22 @@ async def _run_cases(
                     "latency_ms": max(1, round((time.monotonic() - started) * 1000)),
                 }
             )
-        except AgentRuntimeFailure as exc:
-            structured_output = structured_output and exc.error.code != "invalid_agent_response"
+        except (AgentRuntimeFailure, AgentResponseValidationError) as exc:
+            error_code = (
+                exc.error.code if isinstance(exc, AgentRuntimeFailure) else "invalid_agent_response"
+            )
+            if isinstance(exc, AgentRuntimeFailure):
+                structured_output = structured_output and error_code != "invalid_agent_response"
             runs.append(
                 {
                     "case_id": case["id"],
                     "tool_calls": tools.executions,
                     "tool_attempt_names": list(tools.attempted_names),
                     "tool_attempt_summaries": list(tools.attempt_summaries),
-                    "response": _runtime_error_response(exc.error.code),
+                    "production_validation_error": (
+                        str(exc) if isinstance(exc, AgentResponseValidationError) else None
+                    ),
+                    "response": _runtime_error_response(error_code),
                     "latency_ms": max(1, round((time.monotonic() - started) * 1000)),
                 }
             )
@@ -448,6 +510,10 @@ async def _run_cases(
             "dataset_id": dataset["dataset_id"],
             "source": "live",
             "runs": runs,
+            "production_response_validation": {
+                "passed": production_validation_successes,
+                "applicable": production_validation_applicable,
+            },
         },
         {
             "responses_structured_output": structured_output and structured_successes > 0,
@@ -455,6 +521,10 @@ async def _run_cases(
             "responses_sqlite_recent_items": (
                 structured_successes > 0
                 and sqlite_recent_items_successes == structured_successes
+            ),
+            "production_response_validation": (
+                production_validation_applicable > 0
+                and production_validation_successes == production_validation_applicable
             ),
         },
     )
@@ -468,10 +538,71 @@ def _all_quality_gates(report: dict[str, Any]) -> bool:
         and metrics["correct_tool_selection_rate"]["value"] == 1
         and metrics["unnecessary_engine_call_rate"]["value"] == 0
         and metrics["false_personalization_rate"]["value"] == 0
-        and metrics["valid_reference_action_rate"]["value"] == 1
+        and metrics["production_response_acceptance_rate"]["value"] == 1
         and metrics["task_completion_rate"]["value"] == 1
-        and metrics["degradation_correctness_rate"]["value"] == 1
     )
+
+
+def _build_live_report(
+    *,
+    source: str,
+    model: str,
+    endpoint_type: str,
+    sdk_version: str,
+    generated_at: str,
+    dataset: dict[str, Any],
+    portfolio: dict[str, Any],
+    baseline_observed: dict[str, Any],
+    static_hardening_observed: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_score = score_dataset(dataset, baseline_observed)
+    metrics = dict(baseline_score["metrics"])
+    acceptance = baseline_observed["production_response_validation"]
+    acceptance_value = (
+        round(acceptance["passed"] / acceptance["applicable"], 6)
+        if acceptance["applicable"]
+        else 0.0
+    )
+    metrics["production_response_acceptance_rate"] = {
+        "value": acceptance_value,
+        **acceptance,
+    }
+    metrics["engine_calls_per_run"] = {
+        "value": round(
+            metrics["unnecessary_engine_call_rate"]["engine_calls"]
+            / len(dataset["cases"]),
+            6,
+        ),
+        "engine_calls": metrics["unnecessary_engine_call_rate"]["engine_calls"],
+        "runs": len(dataset["cases"]),
+    }
+    return {
+        "schema_version": 3,
+        "dataset_id": portfolio["dataset_id"],
+        "base_dataset_id": dataset["dataset_id"],
+        "observed_runs_id": baseline_observed["observed_runs_id"],
+        "scorer_version": SCORER_VERSION,
+        "source": source,
+        "case_count": len(dataset["cases"]),
+        "base_case_count": len(dataset["cases"]),
+        "hardening_case_count": 0,
+        "live_model_case_count": len(dataset["cases"]),
+        "static_hardening_reference_case_count": len(portfolio["cases"]),
+        "static_hardening_reference": {
+            "observed_runs_id": static_hardening_observed["observed_runs_id"],
+            "source": static_hardening_observed["source"],
+            "executed_against_endpoint": False,
+            "included_in_live_metrics": False,
+        },
+        "model": model,
+        "endpoint_type": endpoint_type,
+        "sdk_version": sdk_version,
+        "policy_version": POLICY_VERSION,
+        "response_schema_version": RESPONSE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "metrics": metrics,
+        "live_case_diagnostics": diagnose_dataset(dataset, baseline_observed),
+    }
 
 
 async def _run(
@@ -479,7 +610,7 @@ async def _run(
 ) -> tuple[dict[str, Any], dict[str, bool]]:
     dataset = _load("agent_baseline_v1.json")
     portfolio = _load("agent_portfolio_v2.json")
-    hardening_observed = _load("observed_fake_runs_v2.json")
+    static_hardening_observed = _load("observed_fake_runs_v2.json")
     sessions = SQLiteConversationSessionFactory(data_dir)
     tool_instances: dict[str, _FixtureTools] = {}
     runtime = OpenAIAgentsRuntime(
@@ -492,27 +623,17 @@ async def _run(
     )
     try:
         baseline_observed, gates = await _run_cases(runtime, sessions, dataset, tool_instances)
-        hardening_observed["source"] = source
-        hardening_observed["observed_runs_id"] = (
-            f"agent-portfolio-v2-{source}-with-deterministic-hardening"
+        report = _build_live_report(
+            source=source,
+            model=model,
+            endpoint_type=runtime.availability.endpoint_type,
+            sdk_version=runtime.sdk_version,
+            generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            dataset=dataset,
+            portfolio=portfolio,
+            baseline_observed=baseline_observed,
+            static_hardening_observed=static_hardening_observed,
         )
-        report = score_portfolio(
-            portfolio,
-            dataset,
-            baseline_observed,
-            hardening_observed,
-            report_metadata={
-                "model": model,
-                "endpoint_type": runtime.availability.endpoint_type,
-                "sdk_version": runtime.sdk_version,
-                "policy_version": POLICY_VERSION,
-                "response_schema_version": RESPONSE_SCHEMA_VERSION,
-                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "live_model_case_count": len(dataset["cases"]),
-                "deterministic_hardening_case_count": len(portfolio["cases"]),
-            },
-        )
-        report["live_case_diagnostics"] = diagnose_dataset(dataset, baseline_observed)
         gates["portfolio_quality"] = _all_quality_gates(report)
         report["compatibility_gates"] = gates
         report["all_passed"] = all(gates.values())

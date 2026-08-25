@@ -78,9 +78,11 @@ CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
 ```
 
 A custom certificate is written only when the Responses structured-output, function-tool, SQLite
-recent-items, and portfolio quality gates all pass. Reports record an endpoint fingerprint rather
-than the raw custom URL. Changing the URL, model, SDK, policy, response schema, dataset, or scorer
-invalidates the certificate immediately.
+recent-items, production response validation, and live portfolio quality gates all pass. The live
+runner derives allowed tools and budgets from the same production policy/configuration; dataset
+expectations are used only by the scorer. Reports record an endpoint fingerprint rather than the
+raw custom URL. Changing the URL, model, SDK, policy, response schema, dataset, or scorer invalidates
+the certificate immediately.
 
 Live reports include `live_case_diagnostics` with only case IDs and boolean grounding/tool/outcome
 checks. For `grounded_response_rate`, every non-error case is applicable and passes only if its
@@ -88,3 +90,8 @@ required evidence, position, uncertainty, required claims, and forbidden claims 
 diagnostics deliberately omit prompts, answer text, credentials, and raw endpoint data.
 Tool-attempt summaries are limited to tool names, canonical skill IDs, unresolved-focus counts,
 bounded position counts, and analysis purpose; raw tool arguments are not retained.
+
+Only the 26 cases actually sent through the SDK are included in live endpoint rates and latency.
+The 11 deterministic hardening fixtures remain visible as a `static_hardening_reference`, with
+`executed_against_endpoint=false` and `included_in_live_metrics=false`; they are covered by the
+offline portfolio and backend regression suite instead of being relabeled as live observations.

@@ -16,7 +16,8 @@ from server.core.agent.models import (
     AgentSessionContextRequest,
     AgentSessionCreateRequest,
     ChessReference,
-    SuggestedAction,
+    StartRetryAction,
+    StartTrainingAction,
     ToolCallRecord,
 )
 from server.core.agent.service import AgentServiceFailure, ChessAgentService
@@ -58,7 +59,7 @@ def valid_response() -> AgentResponse:
         ],
         evidence_refs=[f"review:{GAME_ID}:white:{CRITICAL_ID}"],
         suggested_actions=[
-            SuggestedAction(
+            StartRetryAction(
                 kind="start_retry",
                 label="Retry this position",
                 target={
@@ -148,7 +149,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, run_request.max_engine_tool_calls)
         self.assertEqual(9, run_request.timeout_seconds)
         self.assertEqual(
-            ["get_review_context", "analyze_move"],
+            ["analyze_move"],
             run_request.allowed_tools,
         )
         self.assertEqual(TACTICAL_FEN, run_request.model_context.position.fen)
@@ -240,10 +241,20 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             "action": AgentResponse(
                 text="Unsupported action.",
                 suggested_actions=[
-                    SuggestedAction(
+                    StartTrainingAction(
                         kind="start_training",
                         label="Start training",
-                        target={"game_id": GAME_ID},
+                        target={
+                            "position_references": [
+                                {
+                                    "game_id": GAME_ID,
+                                    "review_side": "white",
+                                    "critical_id": CRITICAL_ID,
+                                }
+                            ],
+                            "objective_skill_ids": ["tactics.fork_detection"],
+                            "source": "agent_training_draft",
+                        },
                     )
                 ],
             ),

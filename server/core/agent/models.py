@@ -307,6 +307,101 @@ class ChessReference(ContractModel):
         return self
 
 
+class AgentPositionReference(ContractModel):
+    kind: Literal["position"]
+    game_id: str | None = None
+    review_side: ReviewSide | None = None
+    critical_id: str | None = None
+    ply: int | None = Field(default=None, ge=0)
+    fen: str | None = None
+
+    @field_validator("game_id", "critical_id")
+    @classmethod
+    def _clean_optional_identifier(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="reference identifier")
+
+    @field_validator("fen")
+    @classmethod
+    def _valid_optional_fen(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_fen(value)
+
+    @model_validator(mode="after")
+    def _has_position_identity(self) -> "AgentPositionReference":
+        if self.game_id is None and self.fen is None:
+            raise ValueError("position reference requires game_id or fen")
+        if self.review_side is not None and self.game_id is None:
+            raise ValueError("review_side requires game_id")
+        if self.critical_id is not None and self.game_id is None:
+            raise ValueError("critical_id requires game_id")
+        return self
+
+
+class AgentCriticalPositionReference(ContractModel):
+    kind: Literal["critical_position"]
+    game_id: str = Field(min_length=1)
+    review_side: ReviewSide
+    critical_id: str = Field(min_length=1)
+    ply: int | None = Field(default=None, ge=0)
+    fen: str | None = None
+
+    @field_validator("fen")
+    @classmethod
+    def _valid_optional_fen(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_fen(value)
+
+
+class AgentGameReference(ContractModel):
+    kind: Literal["game"]
+    game_id: str = Field(min_length=1)
+    review_side: ReviewSide | None = None
+
+
+class AgentPuzzleReference(ContractModel):
+    kind: Literal["puzzle"]
+    puzzle_id: str = Field(min_length=1)
+    game_id: str | None = None
+    review_side: ReviewSide | None = None
+    critical_id: str | None = None
+    ply: int | None = Field(default=None, ge=0)
+    fen: str | None = None
+
+    @field_validator("game_id", "critical_id")
+    @classmethod
+    def _clean_optional_identifier(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="reference identifier")
+
+    @field_validator("fen")
+    @classmethod
+    def _valid_optional_fen(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_fen(value)
+
+    @model_validator(mode="after")
+    def _consistent_game_identity(self) -> "AgentPuzzleReference":
+        if self.game_id is None and any(
+            value is not None for value in (self.review_side, self.critical_id)
+        ):
+            raise ValueError("game-backed puzzle fields require game_id")
+        if self.game_id is not None and (
+            self.review_side is None or self.critical_id is None
+        ):
+            raise ValueError("game-backed puzzle requires review_side and critical_id")
+        return self
+
+
+class AgentSkillReference(ContractModel):
+    kind: Literal["skill"]
+    skill_id: str = Field(min_length=1)
+
+
+AgentReference = (
+    AgentPositionReference
+    | AgentCriticalPositionReference
+    | AgentGameReference
+    | AgentPuzzleReference
+    | AgentSkillReference
+)
+
+
 class LearningMemoryItem(ContractModel):
     skill_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
@@ -626,18 +721,14 @@ class ModelVisibleContext(ContractModel):
     _valid_evidence_refs = field_validator("allowed_evidence_refs")(_clean_unique_strings)
 
 
-class ActionTarget(ContractModel):
-    """Closed structured-output target shared by grounded Agent actions."""
+class PositionActionTarget(ContractModel):
+    """Target for opening or retrying one owned review position."""
 
     game_id: str | None = None
     review_side: ReviewSide | None = None
     critical_id: str | None = None
     ply: int | None = Field(default=None, ge=0)
     fen: str | None = None
-    move_uci: str | None = None
-    position_references: list[PositionReference] = Field(default_factory=list, max_length=5)
-    objective_skill_ids: list[str] = Field(default_factory=list, max_length=5)
-    source: Literal["agent_training_draft"] | None = None
 
     @field_validator("game_id", "critical_id")
     @classmethod
@@ -649,37 +740,65 @@ class ActionTarget(ContractModel):
     def _valid_optional_fen(cls, value: str | None) -> str | None:
         return None if value is None else _validate_fen(value)
 
-    @field_validator("move_uci")
+
+class CompareMoveActionTarget(ContractModel):
+    """Minimal target for comparing one legal move from the current board."""
+
+    fen: str | None = None
+    move_uci: str
+
+    @field_validator("fen")
     @classmethod
-    def _valid_optional_uci(cls, value: str | None) -> str | None:
-        return None if value is None else _validate_uci(value)
+    def _valid_optional_fen(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_fen(value)
+
+    _valid_move_uci = field_validator("move_uci")(_validate_uci)
+
+
+class TrainingActionTarget(ContractModel):
+    """Target copied from a successful training draft in the current run."""
+
+    position_references: list[PositionReference] = Field(min_length=1, max_length=5)
+    objective_skill_ids: list[str] = Field(min_length=1, max_length=5)
+    source: Literal["agent_training_draft"]
 
     _valid_objective_skill_ids = field_validator("objective_skill_ids")(
         _clean_unique_strings
     )
 
 
-class SuggestedAction(ContractModel):
-    kind: Literal[
-        "open_position",
-        "compare_move",
-        "start_retry",
-        "start_training",
-        "review_weakness",
-    ]
+class SuggestedActionBase(ContractModel):
     label: str = Field(min_length=1)
-    target: ActionTarget
+
+
+class OpenPositionAction(SuggestedActionBase):
+    kind: Literal["open_position"]
+    target: PositionActionTarget
+
+
+class CompareMoveAction(SuggestedActionBase):
+    kind: Literal["compare_move"]
+    target: CompareMoveActionTarget
+
+
+class StartRetryAction(SuggestedActionBase):
+    kind: Literal["start_retry"]
+    target: PositionActionTarget
+
+
+class StartTrainingAction(SuggestedActionBase):
+    kind: Literal["start_training"]
+    target: TrainingActionTarget
+
+
+SuggestedAction = (
+    OpenPositionAction | CompareMoveAction | StartRetryAction | StartTrainingAction
+)
 
 
 class StartTrainingActionRequest(ContractModel):
     expected_generation: int = Field(ge=0)
-    action: SuggestedAction
-
-    @model_validator(mode="after")
-    def _requires_start_training(self) -> "StartTrainingActionRequest":
-        if self.action.kind != "start_training":
-            raise ValueError("action must use kind=start_training")
-        return self
+    action: StartTrainingAction
 
 
 class StartTrainingActionResult(ContractModel):
@@ -697,7 +816,10 @@ class AgentFactualClaims(ContractModel):
 
     side_to_move: ReviewSide | None = None
     move_uci: str | None = None
-    move_san: str | None = None
+    move_san: str | None = Field(
+        default=None,
+        description="SAN for a verified legal move only; null when legal is false.",
+    )
     resolved_move_uci: str | None = None
     legal: bool | None = None
     classification: str | None = None
@@ -739,7 +861,9 @@ class AgentPersonalizationClaims(ContractModel):
 class AgentMoveClaim(ContractModel):
     """A legality assertion that the policy checks against its canonical FEN."""
 
-    position: PositionReference
+    position: PositionReference = Field(
+        description="Exact position before move_uci, normally the current FEN or tool fen_before."
+    )
     move_uci: str
     legal: bool
 
@@ -758,18 +882,25 @@ class AgentResponseGrounding(ContractModel):
     acknowledges_uncertainty: bool = Field(
         default=False,
         description=(
-            "True only when missing context, tool failure, or tool budget leaves the final "
-            "answer materially unresolved; routine caveats do not count."
+            "True exactly when the final completion is partial because missing context, a tool "
+            "failure, or tool budget leaves the request materially unresolved."
         ),
     )
     claims: AgentFactualClaims = Field(default_factory=AgentFactualClaims)
     personalization_claims: AgentPersonalizationClaims = Field(
-        default_factory=AgentPersonalizationClaims
+        default_factory=AgentPersonalizationClaims,
+        description=(
+            "User-specific status from relevant profile/memory or get_player_profile only; "
+            "training candidates and drafts do not support these claims."
+        ),
     )
     move_claims: list[AgentMoveClaim] = Field(default_factory=list, max_length=5)
     completion: Literal["full", "partial"] = Field(
         default="full",
-        description="Full when available facts answer the request; partial only after degradation.",
+        description=(
+            "Full when available facts answer the request; partial only after degradation and "
+            "always paired with acknowledges_uncertainty=true."
+        ),
     )
     degradation: Literal[
         "none",
@@ -783,12 +914,24 @@ class AgentResponseGrounding(ContractModel):
 
 class AgentResponse(ContractModel):
     text: str = Field(min_length=1)
-    references: list[ChessReference] = Field(default_factory=list)
+    references: list[AgentReference] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     suggested_actions: list[SuggestedAction] = Field(default_factory=list)
     grounding: AgentResponseGrounding = Field(default_factory=AgentResponseGrounding)
 
     _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
+
+    @field_validator("references", mode="before")
+    @classmethod
+    def _accept_domain_references(cls, values: Any) -> Any:
+        if not isinstance(values, list):
+            return values
+        return [
+            value.model_dump(mode="python", exclude_none=True)
+            if isinstance(value, ChessReference)
+            else value
+            for value in values
+        ]
 
 
 class ToolPositionReference(ContractModel):
