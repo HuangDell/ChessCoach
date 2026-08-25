@@ -6,8 +6,14 @@ import shutil
 import subprocess
 import sys
 
+from dotenv import load_dotenv
+
 # Repo root (this file is <repo>/server/config.py), used for repo-relative defaults.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Load local development configuration before resolving any import-time constants. Values exported
+# by the shell or launcher remain authoritative over entries in the repo-root .env file.
+load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=False)
 
 # Public alias for the project root — the install dir the update-checker reasons about (presence of
 # a `.git` here decides the update channel; see server.core.updates).

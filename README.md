@@ -17,6 +17,9 @@ uv sync
 CHESS_WEB_OPEN=0 uv run python -m server.web.runner
 ```
 
+启动时会自动读取项目根目录的 `.env`。可从 `.env.example` 开始配置；Shell 或启动器中已经设置的
+环境变量优先于 `.env` 中的同名值。
+
 需要 Agent 时安装锁定的 `openai-agents==0.22.0` extra：
 
 ```bash
