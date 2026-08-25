@@ -1,10 +1,4 @@
-"""Single-position engine analysis, shared by the MCP `get_engine_line` tool and the
-web `/api/evaluate` route.
-
-Keeping this in `core` (rather than inline in `mcp_server`) is what guarantees the
-terminal and the web board never disagree: both call `engine_line` with the same args
-and get the same dict back.
-"""
+"""Single-position Engine analysis shared by Web and Core callers."""
 from __future__ import annotations
 
 import hashlib

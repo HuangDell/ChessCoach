@@ -19,7 +19,8 @@ from server.core.agent.models import (
     SuggestedAction,
     ToolCallRecord,
 )
-from server.core.agent.service import AgentRunAuditLog, AgentServiceFailure, ChessAgentService
+from server.core.agent.service import AgentServiceFailure, ChessAgentService
+from server.core.storage.agent_runs import AgentRunStore
 from server.core.agent.sessions import (
     ChessSessionCheckpointStore,
     InMemoryConversationSessionFactory,
@@ -94,12 +95,12 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.conversations = InMemoryConversationSessionFactory()
         self.runtime = CallbackRuntime()
-        self.audit = AgentRunAuditLog(self._temporary.name)
+        self.runs = AgentRunStore(self._temporary.name)
         self.service = ChessAgentService(
             checkpoint_store=self.store,
             runtime=self.runtime,
             conversation_factory=self.conversations,
-            audit_log=self.audit,
+            run_store=self.runs,
             max_turns=3,
             max_total_tool_calls=2,
             max_engine_tool_calls=1,
@@ -154,7 +155,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, run_request.model_context.position.reference.ply)
         self.assertLessEqual(len(run_request.model_context.engine_facts.candidates), 3)
 
-        records = self.audit.path.read_text(encoding="utf-8").splitlines()
+        records = self.runs.path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(1, len(records))
         audit = json.loads(records[0])
         self.assertEqual("success", audit["status"])
@@ -189,7 +190,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("stale_agent_context", raised.exception.error.code)
         self.assertEqual(1, self.store.get(self.session.session_id).generation)
         self.assertEqual([], await self.conversation_items())
-        self.assertFalse(self.audit.path.exists())
+        self.assertEqual("stale", self.runs.read()[0].status)
 
     async def test_busy_run_and_cancellation_never_commit_partial_items(self) -> None:
         entered = asyncio.Event()
@@ -224,7 +225,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await first
         self.assertEqual([], await self.conversation_items())
-        self.assertFalse(self.audit.path.exists())
+        self.assertEqual("cancelled", self.runs.read()[0].status)
 
     async def test_ungrounded_evidence_reference_and_action_are_rejected_without_commit(self) -> None:
         invalid_responses = {
@@ -265,7 +266,8 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("invalid_agent_response", raised.exception.error.code)
                 self.assertEqual([], await self.conversation_items())
 
-        self.assertFalse(self.audit.path.exists())
+        self.assertEqual(3, len(self.runs.read()))
+        self.assertTrue(all(record.status == "invalid_output" for record in self.runs.read()))
 
     async def test_tool_budget_overrun_discards_conversation(self) -> None:
         call = ToolCallRecord(
@@ -291,7 +293,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("invalid_agent_response", raised.exception.error.code)
         self.assertEqual([], await self.conversation_items())
-        self.assertFalse(self.audit.path.exists())
+        self.assertEqual("invalid_output", self.runs.read()[0].status)
 
     async def test_wall_clock_timeout_is_typed_and_discards_conversation(self) -> None:
         self.service.timeout_seconds = 1
@@ -313,28 +315,34 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("agent_timeout", raised.exception.error.code)
         self.assertEqual([], await self.conversation_items())
-        self.assertFalse(self.audit.path.exists())
+        record = self.runs.read()[0]
+        self.assertEqual("timeout", record.status)
+        self.assertEqual("agent_timeout", record.error_code)
 
-    async def test_audit_failure_rolls_back_conversation(self) -> None:
-        class FailingAudit:
-            def append_success(self, **_kwargs) -> None:
+    async def test_run_log_failure_does_not_roll_back_conversation(self) -> None:
+        class FailingRunStore:
+            def append(self, _record) -> None:
                 raise OSError("disk full")
 
-        self.service.audit_log = FailingAudit()
+        self.service.run_store = FailingRunStore()  # type: ignore[assignment]
 
         async def run(request: AgentRunRequest) -> AgentRunResult:
             await self.service.session_for_runtime(request.session_id).add_items(
-                [{"role": "assistant", "content": "must roll back"}]
+                [{"role": "assistant", "content": "must remain committed"}]
             )
             return result_for()
 
         self.runtime.handler = run
-        with self.assertRaises(OSError):
-            await self.service.send_message(
-                self.session.session_id,
-                AgentMessageRequest(message="Explain this.", expected_generation=0),
-            )
-        self.assertEqual([], await self.conversation_items())
+        response = await self.service.send_message(
+            self.session.session_id,
+            AgentMessageRequest(message="Explain this.", expected_generation=0),
+        )
+        self.assertEqual(valid_response(), response.response)
+        self.assertEqual(
+            [{"role": "assistant", "content": "must remain committed"}],
+            await self.conversation_items(),
+        )
+        self.assertEqual("agent_run_log_write_failed", self.service._last_run_log_error)
 
     async def test_delete_is_busy_while_message_run_is_active(self) -> None:
         entered = asyncio.Event()

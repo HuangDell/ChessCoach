@@ -3,7 +3,7 @@ import { puzzleApi } from "../api/puzzles.js";
 import { createLatestRequestScope, sleep } from "../core/async.js";
 import { escapeHtml } from "../core/dom.js";
 import { errorMessage } from "../core/errors.js";
-import { categoryLabel, renderMarkdown } from "../core/format.js";
+import { categoryLabel } from "../core/format.js";
 import { storageGet, storageSet } from "../core/storage.js";
 import { historyRows } from "../games/helpers.js";
 import { motifThemes } from "./helpers.js";
@@ -16,7 +16,6 @@ export function createPuzzleTrainer({
   $,
   board,
   boardView,
-  chat,
   getConfig,
   isActive,
   isStormShown,
@@ -77,7 +76,6 @@ export function createPuzzleTrainer({
     cancelAutoAdvance();
     progress.cancel();
     solution.clear();
-    chat.reset();
     data = null;
     trainingDraft = null;
     busy = false;
@@ -122,7 +120,6 @@ export function createPuzzleTrainer({
     hinted = !!current.hinted;
     missRating = null;
     busy = false;
-    chat.reset();
     boardView.setShapes([]);
     boardView.setLastMove(null);
     solveColor = current.side_to_move || "white";
@@ -141,7 +138,6 @@ export function createPuzzleTrainer({
     else clearPrevious();
     cancelAutoAdvance();
     solution.clear();
-    chat.reset();
     const currentGeneration = ++generation;
     request = requests.begin();
     busy = true;
@@ -248,11 +244,8 @@ export function createPuzzleTrainer({
 
   function resetCards(puzzle) {
     $("pz-result").hidden = true;
-    $("pz-explain-out").hidden = true;
-    $("pz-explain-out").innerHTML = "";
     $("pz-prompt").hidden = false;
     $("pz-ghosts").hidden = false;
-    $("pz-explain").disabled = false;
     $("pz-prompt-line").textContent = `${solveColor === "white" ? "White" : "Black"} to move`;
     const mine = puzzle.source === "your_games";
     $("pz-prompt-sub").textContent = mine
@@ -404,7 +397,6 @@ export function createPuzzleTrainer({
     $("pz-next").textContent = trainingDraft && (
       trainingDraft.index === trainingDraft.positionReferences.length - 1
     ) ? "Complete training" : "Next puzzle →";
-    $("pz-explain").hidden = !(getConfig() && getConfig().has_llm);
     progress.loadCard();
     if (!mine) solution.start({ id: data.id, solved, animate: false });
     else solution.clear();
@@ -464,39 +456,6 @@ export function createPuzzleTrainer({
       }
     }
     finish("failed", null, null, data.source === "your_games" ? response : null);
-  }
-
-  async function explain() {
-    if (!data) return;
-    cancelAutoAdvance();
-    const button = $("pz-explain");
-    const output = $("pz-explain-out");
-    const currentGeneration = generation;
-    button.disabled = true;
-    output.hidden = false;
-    output.innerHTML = '<p class="muted">Snowie is sniffing around (thinking)</p>';
-    try {
-      const response = await puzzleApi.explain({
-        id: data.id,
-        outcome: data._outcome,
-        your_move: data._yourMove,
-      }, { signal: request && request.signal });
-      if (currentGeneration !== generation) return;
-      if (response.error) output.innerHTML = renderMarkdown(response.error);
-      else {
-        output.innerHTML = renderMarkdown(response.answer || "");
-        chat.setContext(
-          response.session_id,
-          response.chat_fen || data.solve_fen || data.fen || null
-        );
-      }
-    } catch (_) {
-      if (currentGeneration === generation) {
-        output.innerHTML = '<p class="muted">Explanation failed — try again.</p>';
-      }
-    } finally {
-      if (currentGeneration === generation) button.disabled = false;
-    }
   }
 
   async function hint() {
@@ -593,17 +552,10 @@ export function createPuzzleTrainer({
       missRating,
       fen: chess.fen(),
       lastMove: boardView.lastMove,
-      chat: chat.snapshot(),
       verdictText: $("pz-verdict").textContent,
       verdictClass: $("pz-verdict").className,
       themeHtml: $("pz-theme").innerHTML,
       replayHidden: $("pz-replay").hidden,
-      explainHidden: $("pz-explain").hidden,
-      explainDisabled: $("pz-explain").disabled,
-      explainHtml: $("pz-explain-out").innerHTML,
-      explainOutHidden: $("pz-explain-out").hidden,
-      chatHtml: $("pz-chat-messages").innerHTML,
-      chatHidden: $("pz-chat").hidden,
     };
     updatePreviousButton();
   }
@@ -628,7 +580,6 @@ export function createPuzzleTrainer({
     boardView.setShapes(snapshot.shapes);
     boardView.setLastMove(snapshot.lastMove);
     chess.load(snapshot.fen);
-    chat.restore(snapshot.chat);
     $("pz-prompt").hidden = true;
     $("pz-ghosts").hidden = true;
     $("pz-result").hidden = false;
@@ -642,14 +593,8 @@ export function createPuzzleTrainer({
         replayMistake(data);
       };
     }
-    $("pz-explain").hidden = snapshot.explainHidden;
-    $("pz-explain").disabled = snapshot.explainDisabled;
-    $("pz-explain-out").hidden = snapshot.explainOutHidden;
-    $("pz-explain-out").innerHTML = snapshot.explainHtml;
-    $("pz-chat").hidden = snapshot.chatHidden;
-    $("pz-chat-messages").innerHTML = snapshot.chatHtml;
     boardView.render(false);
-    status("Reviewing your previous puzzle — press Explain or ask below, then Next to continue.");
+    status("Reviewing your previous puzzle. Press Next to continue.");
     updatePreviousButton();
   }
 
@@ -796,14 +741,10 @@ export function createPuzzleTrainer({
       ? `Theme: <b>${escapeHtml(themes.slice(0, 3).join(", "))}</b>`
       : "";
     $("pz-replay").hidden = true;
-    $("pz-explain-out").hidden = true;
-    $("pz-explain-out").innerHTML = "";
-    $("pz-explain").hidden = !(getConfig() && getConfig().has_llm);
-    $("pz-explain").disabled = false;
     $("pz-next").textContent = "‹ Back to results";
     chess.load(entry.fen);
     boardView.render(false);
-    status("Reviewing a storm puzzle — step through the solution below the board, or press Explain.");
+    status("Reviewing a storm puzzle. Step through the solution below the board.");
     solution.start({
       id: entry.id,
       yourMove: entry.your_move,
@@ -815,7 +756,6 @@ export function createPuzzleTrainer({
   return {
     cancel,
     cancelAutoAdvance,
-    explain,
     handleMove,
     hint,
     initialize,

@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "dataset_id": "agent-portfolio-v2",
+  "extends": "agent_baseline_v1.json",
+  "base_case_ids": [
+    "position-current-fen-001",
+    "position-side-from-fen-002",
+    "position-active-reference-003",
+    "legality-blocked-queen-004",
+    "legality-cached-e4-005",
+    "legality-no-position-006",
+    "cached-review-explains-mistake-007",
+    "cached-candidates-no-engine-008",
+    "cache-miss-calls-engine-009",
+    "concept-isolated-pawn-010",
+    "concept-fork-011",
+    "what-if-italian-d5-012",
+    "what-if-qg-capture-013",
+    "what-if-illegal-knight-014",
+    "follow-up-resolves-prior-move-015",
+    "follow-up-prefers-current-generation-016",
+    "budget-three-moves-017",
+    "budget-one-fallback-018",
+    "profile-single-error-not-recurring-019",
+    "profile-same-game-not-recurring-020",
+    "profile-disabled-prioritize-review-021",
+    "training-established-weakness-022",
+    "training-draft-subset-023",
+    "failure-agent-unavailable-024",
+    "failure-engine-timeout-with-facts-025",
+    "failure-profile-unavailable-026"
+  ],
+  "metrics": [
+    "grounded_response_rate",
+    "illegal_move_claim_rate",
+    "correct_tool_selection_rate",
+    "unnecessary_engine_call_rate",
+    "false_personalization_rate",
+    "valid_reference_action_rate",
+    "tool_calls_per_run",
+    "engine_calls_per_run",
+    "latency_ms",
+    "task_completion_rate",
+    "degradation_correctness_rate"
+  ],
+  "cases": [
+    {
+      "id": "summary-boundary-027",
+      "category": "conversation_summary_boundary",
+      "input": {"fixture": "twelve_recent_items_plus_summary", "activity": "game_review"},
+      "expected": {"grounded": true, "correct_tool_selection": true, "reference_valid": null, "action_valid": null, "completion": "full", "degradation": "none", "error_code": null, "run_status": "success"}
+    },
+    {
+      "id": "reference-action-valid-028",
+      "category": "reference_action_validation",
+      "input": {"fixture": "retrieved_critical_and_training_draft", "activity": "training_planning"},
+      "expected": {"grounded": true, "correct_tool_selection": true, "reference_valid": true, "action_valid": true, "completion": "full", "degradation": "none", "error_code": null, "run_status": "success"}
+    },
+    {
+      "id": "reference-action-rejected-029",
+      "category": "reference_action_validation",
+      "input": {"fixture": "unretrieved_reference_and_action", "activity": "training_planning"},
+      "expected": {"grounded": null, "correct_tool_selection": true, "reference_valid": false, "action_valid": false, "completion": "error", "degradation": "invalid_output", "error_code": "invalid_agent_response", "run_status": "invalid_output"}
+    },
+    {
+      "id": "recent-improvement-030",
+      "category": "recent_improvement",
+      "input": {"fixture": "established_weakness_with_recent_successes", "activity": "conversation"},
+      "expected": {"grounded": true, "correct_tool_selection": true, "reference_valid": true, "action_valid": null, "completion": "full", "degradation": "none", "error_code": null, "run_status": "success"}
+    },
+    {
+      "id": "training-diversity-031",
+      "category": "training_diversity",
+      "input": {"fixture": "multi_game_multi_phase_candidates", "activity": "training_planning"},
+      "expected": {"grounded": true, "correct_tool_selection": true, "reference_valid": true, "action_valid": true, "completion": "full", "degradation": "none", "error_code": null, "run_status": "success"}
+    },
+    {
+      "id": "training-stale-source-032",
+      "category": "training_stale_source",
+      "input": {"fixture": "deleted_game_candidate", "activity": "training_planning"},
+      "expected": {"grounded": null, "correct_tool_selection": true, "reference_valid": false, "action_valid": false, "completion": "error", "degradation": "stale_source", "error_code": "training_game_deleted", "run_status": "invalid_output"}
+    },
+    {
+      "id": "storage-failure-033",
+      "category": "storage_failure",
+      "input": {"fixture": "run_log_append_failure", "activity": "game_review"},
+      "expected": {"grounded": true, "correct_tool_selection": true, "reference_valid": null, "action_valid": null, "completion": "full", "degradation": "telemetry_unavailable", "error_code": "agent_run_log_write_failed", "run_status": "success"}
+    },
+    {
+      "id": "stale-run-034",
+      "category": "stale_cancel",
+      "input": {"fixture": "generation_changed_during_run", "activity": "game_review"},
+      "expected": {"grounded": null, "correct_tool_selection": true, "reference_valid": null, "action_valid": null, "completion": "error", "degradation": "stale", "error_code": "stale_agent_context", "run_status": "stale"}
+    },
+    {
+      "id": "cancelled-run-035",
+      "category": "stale_cancel",
+      "input": {"fixture": "request_cancelled_during_run", "activity": "position_analysis"},
+      "expected": {"grounded": null, "correct_tool_selection": true, "reference_valid": null, "action_valid": null, "completion": "error", "degradation": "cancelled", "error_code": "agent_cancelled", "run_status": "cancelled"}
+    },
+    {
+      "id": "malformed-output-036",
+      "category": "malformed_output",
+      "input": {"fixture": "nonconforming_structured_response", "activity": "position_analysis"},
+      "expected": {"grounded": null, "correct_tool_selection": true, "reference_valid": null, "action_valid": null, "completion": "error", "degradation": "invalid_output", "error_code": "invalid_agent_response", "run_status": "invalid_output"}
+    },
+    {
+      "id": "custom-incompatibility-037",
+      "category": "custom_incompatibility",
+      "input": {"fixture": "missing_or_mismatched_certificate", "activity": "conversation"},
+      "expected": {"grounded": null, "correct_tool_selection": true, "reference_valid": null, "action_valid": null, "completion": "error", "degradation": "endpoint_incompatible", "error_code": "agent_endpoint_incompatible", "run_status": "provider_failure"}
+    }
+  ]
+}

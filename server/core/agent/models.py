@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Generic, Literal, Mapping, TypeVar
+from uuid import uuid4
 
 import chess
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -700,12 +701,26 @@ class AgentResponse(ContractModel):
     _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
 
 
+class ToolPositionReference(ContractModel):
+    game_id: str | None = None
+    critical_id: str | None = None
+    fen_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+
+    @model_validator(mode="after")
+    def _has_reference(self) -> "ToolPositionReference":
+        if not any((self.game_id, self.critical_id, self.fen_fingerprint)):
+            raise ValueError("tool position reference must contain a redacted identifier")
+        return self
+
+
 class ToolCallRecord(ContractModel):
     name: AgentToolName
     permission: ToolPermission
     status: Literal["ok", "error", "budget_exceeded"]
     duration_ms: int = Field(ge=0)
     cache_hit: bool = False
+    engine_call_count: int = Field(default=0, ge=0)
+    position_reference: ToolPositionReference | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     error_code: ToolErrorCode | None = None
 
@@ -727,6 +742,7 @@ class ToolCallRecord(ContractModel):
 
 
 class AgentRunRequest(ContractModel):
+    run_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1)
     session_id: str = Field(min_length=1)
     expected_generation: int = Field(default=0, ge=0)
     message: str = Field(min_length=1)
@@ -759,6 +775,7 @@ class AgentError(ContractModel):
         "agent_authentication_failed",
         "agent_rate_limited",
         "agent_provider_error",
+        "agent_endpoint_incompatible",
         "invalid_agent_response",
         "max_turns_exceeded",
     ]

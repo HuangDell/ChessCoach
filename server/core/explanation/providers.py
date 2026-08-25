@@ -1,23 +1,15 @@
 """Provider adapters for structured explanation generation."""
 from __future__ import annotations
 
-import json
 import ipaddress
-import os
-import shutil
-import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 
 from server import config
 from server.core.explanation.models import ExplanationRequest, ProviderResponse
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 class ExplanationProviderError(RuntimeError):
     """A model transport or availability failure safe to show through the local API."""
@@ -96,7 +88,7 @@ class OpenAICompatibleProvider(ExplanationProvider):
         }
         try:
             url = _chat_completions_url(self._base_url)
-            # Corporate/system proxy variables must not intercept Ollama/LM Studio on loopback.
+            # Corporate/system proxy variables must not intercept a configured loopback API.
             # Remote compatible APIs keep normal proxy discovery.
             with httpx.Client(trust_env=not _is_loopback_url(url)) as client:
                 response = client.post(
@@ -130,78 +122,22 @@ class OpenAICompatibleProvider(ExplanationProvider):
         return ProviderResponse(text=content.strip())
 
 
-class ClaudeCLIProvider(ExplanationProvider):
-    """Optional provider using the user's existing headless Claude CLI login."""
-
-    def __init__(self, *, model: str = ""):
-        self._model = model.strip()
-
-    @property
-    def info(self) -> ProviderInfo:
-        return ProviderInfo(provider="claude-cli", model=self._model or "claude-cli-default")
-
-    def explain_position(self, request: ExplanationRequest) -> ProviderResponse:
-        executable = shutil.which("claude")
-        if not executable:
-            raise ExplanationProviderError(
-                "No explanation model is available. Configure a local/OpenAI-compatible model "
-                "or install and sign in to the Claude CLI."
-            )
-        prompt = f"{request.system_prompt}\n\n{request.user_prompt}"
-        command = [executable, "-p", prompt, "--output-format", "json"]
-        if self._model:
-            command.extend(["--model", self._model])
-        env = {**os.environ, "CHESS_WEB_AUTOSTART": "0"}
-        env.pop("ANTHROPIC_API_KEY", None)
-        try:
-            process = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=config.EXPLANATION_TIMEOUT,
-                cwd=str(_REPO_ROOT),
-                env=env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ExplanationProviderError(
-                f"Claude CLI timed out after {config.EXPLANATION_TIMEOUT} seconds."
-            ) from exc
-        if process.returncode != 0:
-            detail = (process.stderr or process.stdout or "Claude CLI failed.").strip()[:400]
-            raise ExplanationProviderError(detail)
-        try:
-            envelope = json.loads(process.stdout)
-            content = envelope.get("result")
-        except (json.JSONDecodeError, AttributeError) as exc:
-            raise ExplanationProviderError("Claude CLI returned an invalid response envelope.") from exc
-        if not isinstance(content, str) or not content.strip() or content.strip() == "/login":
-            raise ExplanationProviderError(
-                "Claude CLI is not signed in or returned an empty explanation."
-            )
-        if envelope.get("is_error"):
-            raise ExplanationProviderError(content.strip())
-        return ProviderResponse(text=content.strip())
-
-
 def configured_provider() -> ExplanationProvider:
     """Resolve the current provider without leaking its credentials into business data."""
     selected = config.EXPLANATION_PROVIDER.strip().lower().replace("_", "-")
-    dedicated_base = config.EXPLANATION_BASE_URL.strip()
-    local_base = config.LOCAL_LLM_BASE_URL.strip()
-    base_url = dedicated_base or local_base
-    model = config.EXPLANATION_MODEL.strip() or config.LOCAL_LLM_MODEL.strip()
+    base_url = config.EXPLANATION_BASE_URL.strip()
+    model = config.EXPLANATION_MODEL.strip()
 
     if selected == "auto":
-        selected = "openai-compatible" if base_url else "claude-cli"
-    if selected in {"openai", "openai-compatible", "local-openai-compatible"}:
+        selected = "openai-compatible"
+    if selected in {"openai", "openai-compatible"}:
         return OpenAICompatibleProvider(
             base_url=base_url,
             model=model,
             api_key=config.EXPLANATION_API_KEY,
-            local=(selected == "local-openai-compatible" or not dedicated_base),
+            local=_is_loopback_url(base_url),
         )
-    if selected in {"claude", "claude-cli"}:
-        return ClaudeCLIProvider(model=config.EXPLANATION_MODEL)
     raise ExplanationProviderError(
-        "CHESS_EXPLANATION_PROVIDER must be auto, openai-compatible, or claude-cli."
+        "No explanation provider is configured. Set CHESS_EXPLANATION_BASE_URL and "
+        "CHESS_EXPLANATION_MODEL for an OpenAI-compatible API."
     )

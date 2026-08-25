@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import tempfile
 import threading
@@ -692,43 +691,6 @@ class PuzzleProducerTests(_TemporaryDataCase):
         if any(thread.is_alive() for thread in threads):
             raise AssertionError("Concurrent puzzle finalization did not complete.")
         return results, errors
-
-    def test_mcp_personal_puzzle_reports_predeleted_source_and_clears_session(self) -> None:
-        store_analysis_fixture(self.temporary.name)
-        puzzle = training.list_training_positions(self.temporary.name)[0]
-        progress = puzzle_session.set_current(puzzle)
-        with superseding_game_deletion(GAME_ID):
-            delete_game_learning(GAME_ID, data_dir=self.temporary.name)
-            history.delete_game_data(GAME_ID, self.temporary.name)
-
-        try:
-            mcp_available = importlib.util.find_spec("mcp.server.fastmcp") is not None
-        except ModuleNotFoundError:
-            mcp_available = False
-        if mcp_available:
-            from server import mcp_server
-
-            result = mcp_server._solve_puzzle_locked(
-                progress,
-                moves="d1d3",
-                explain=False,
-            )
-        else:  # pragma: no cover - optional dependency fallback
-            with self.assertRaises(training.TrainingGameDeletedError) as caught:
-                puzzle_flow.apply_mistake_move(progress, "d1d3")
-            result = puzzle_flow.discard_deleted_personal_puzzle(caught.exception)
-
-        self.assertEqual("training_game_deleted", result["error"]["code"])
-        self.assertIn("Reload your training positions", result["error"]["message"])
-        self.assertIsNone(puzzle_session.get_current())
-        self.assertEqual([], training.load_attempts(data_dir=self.temporary.name))
-        self.assertFalse(
-            any(
-                item.source_type == "training_attempt"
-                for item in ObservationStore(self.temporary.name).load()
-            )
-        )
-        self.assertFalse((Path(self.temporary.name) / "puzzles" / "state.json").exists())
 
     def _assert_storm_replacement_waits_for_submit(self, replacement: str) -> None:
         old_progress = puzzle_session.set_current(self._puzzle())

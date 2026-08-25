@@ -1,9 +1,7 @@
-"""Idle watchdog: self-terminate the server process after a stretch of inactivity.
+"""Idle watchdog: self-terminate the Web process after a stretch of inactivity.
 
-The MCP server (and its in-process web board) is long-lived — Claude Code spawns it and it
-otherwise runs until the machine reboots, so abandoned sessions can pile up as stray processes.
-This module tracks a last-activity timestamp that the MCP tools and the web layer `touch()` on
-every call, and a background thread that exits the process once it's been idle for
+This module tracks a last-activity timestamp that the Web layer `touch()`es on every request, and
+a background thread that exits the process once it has been idle for
 `config.SESSION_TTL_SECONDS`. Activity resets the timer, so an in-use session is never killed.
 
 Exit is via `os._exit` after `engine.shutdown()`: the engine pool runs non-daemon threads, so a

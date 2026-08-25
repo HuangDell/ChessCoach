@@ -17,7 +17,6 @@ export const reviewApi = {
     }),
   generateExplanations: (gameId, body, options) =>
     http.post(`/api/games/${encodeURIComponent(gameId)}/explanations`, body, options),
-  coach: (body, options) => http.post("/api/coach", body, options),
   session: (options) => http.get("/api/session", options),
   timeline: (options) => http.get("/api/timeline", options),
   analysisStatus: (options) => http.get("/api/analysis-status", options),

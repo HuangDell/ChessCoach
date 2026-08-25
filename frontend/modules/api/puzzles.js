@@ -10,11 +10,9 @@ export const puzzleApi = {
   stormMove: (body, options) => http.post("/api/puzzle/storm/move", body, options),
   stormReview: (options) => http.get("/api/puzzle/storm/review", options),
   solution: (id, options) => http.get("/api/puzzle/solution", { ...options, query: { id } }),
-  stormSummary: (options) => http.post("/api/puzzle/storm/summary", undefined, options),
   stormEnd: (options) => http.post("/api/puzzle/storm/end", undefined, options),
   state: (options) => http.get("/api/puzzle/state", options),
   giveUp: (id, options) => http.post("/api/puzzle/giveup", { id }, options),
-  explain: (body, options) => http.post("/api/puzzle/explain", body, options),
   hint: (id, options) => http.post("/api/puzzle/hint", { id }, options),
   categories: (options) => http.get("/api/puzzle/categories", options),
 };

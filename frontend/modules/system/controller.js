@@ -91,9 +91,8 @@ function showSetupBanner(banner, isErr, msgHtml, onDismiss) {
 
 // --- offline notice ------------------------------------------------------
 // Hits /api/connectivity (cached server-side reachability probe). When there's no internet, the
-// network-only features won't work: Lichess game fetch + endgame tablebase always, and the Claude-
-// backed AI chat / coach summary too — UNLESS a local LLM is configured (then AI stays available
-// offline). Amber, informational, dismissible (remembered for the session so we don't nag).
+// network-only Lichess and tablebase features will not work. Agent and explanation availability is
+// reported independently by their backend capabilities.
 async function checkOnline() {
   const banner = $("offline-banner");
   if (!banner) return;
@@ -109,12 +108,6 @@ async function checkOnline() {
   let msg =
     "<b>You're offline.</b> Local analysis (Stockfish) works as normal, but " +
     "<b>Lichess game fetch</b> and the <b>endgame tablebase</b> need internet and won't be available.";
-  if (!info.local_llm) {
-    // No local LLM, so the AI chat / coach summary go through Claude over the network.
-    msg +=
-      " The <b>AI chat &amp; coach summary</b> also won't work — they need internet (or a " +
-      "local LLM, which you can set up in ⚙ Settings).";
-  }
   msg += " Paste or upload a PGN to review a game.";
   showSetupBanner(banner, false, msg, () =>
     sessionStorage.setItem("hideOfflineBanner", "1")
@@ -128,7 +121,7 @@ async function checkOnline() {
 // read-only .app gets a download link. Dismissal is remembered per version, so a newer release
 // re-notifies. Fire-and-forget; failures are silent.
 async function checkUpdates() {
-  if (!isAppMode()) return; // only nag end-user app launches, never MCP/dev sessions
+  if (!isAppMode()) return; // only nag end-user app launches, never development sessions
   const banner = $("update-banner");
   if (!banner) return;
   let info;

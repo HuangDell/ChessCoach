@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 from pathlib import Path
 import sys
@@ -29,18 +30,23 @@ from server.core.agent.models import (
     PositionReference,
     ToolCallRecord,
     ToolError,
+    ToolPositionReference,
     ToolResult,
 )
-from server.core.agent.policy import build_model_input
+from server.core.agent.policy import POLICY_VERSION, build_model_input
 from server.core.agent.runtime import (
     AgentRuntimeAvailability,
     AgentRuntimeFailure,
+    AgentRuntimeTelemetry,
     UnavailableAgentRuntime,
 )
+from server.core.storage.agent_compatibility import AgentCompatibilityStore
+from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
 
 
 DomainToolsFactory = Callable[[AgentRunRequest], Any]
 SessionProvider = Callable[[str], Any]
+AGENTS_SDK_VERSION = "0.22.0"
 
 
 class _InlineSQLiteAsyncio:
@@ -194,6 +200,8 @@ class OpenAIAgentsRuntime:
         self._model = model
         self._domain_tools_factory = domain_tools_factory
         self._session_provider = session_provider
+        self.sdk_version = str(getattr(agents, "__version__", "unknown"))
+        self._telemetry: dict[str, AgentRuntimeTelemetry] = {}
         # Explicit values prevent the SDK from reading OPENAI_BASE_URL or another implicit endpoint.
         self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._provider = agents.OpenAIProvider(
@@ -209,6 +217,7 @@ class OpenAIAgentsRuntime:
         )
 
     async def close(self) -> None:
+        self._telemetry.clear()
         close = getattr(self._client, "close", None)
         if close is not None:
             result = close()
@@ -223,6 +232,31 @@ class OpenAIAgentsRuntime:
             int(getattr(execution, "engine_calls", 0) or 0),
         )
 
+    @staticmethod
+    def _position_reference(payload: BaseModel) -> ToolPositionReference | None:
+        values = payload.model_dump(mode="python")
+        game_id = values.get("game_id")
+        critical_id = values.get("critical_id")
+        fen = values.get("fen") or values.get("fen_before")
+        nested = values.get("position_references")
+        if isinstance(nested, list) and nested and isinstance(nested[0], dict):
+            game_id = game_id or nested[0].get("game_id")
+            critical_id = critical_id or nested[0].get("critical_id")
+            fen = fen or nested[0].get("fen")
+        fingerprint = (
+            hashlib.sha256(str(fen).encode("utf-8")).hexdigest()[:16] if fen else None
+        )
+        if not any((game_id, critical_id, fingerprint)):
+            return None
+        return ToolPositionReference(
+            game_id=str(game_id) if game_id else None,
+            critical_id=str(critical_id) if critical_id else None,
+            fen_fingerprint=fingerprint,
+        )
+
+    def take_telemetry(self, run_id: str) -> AgentRuntimeTelemetry | None:
+        return self._telemetry.pop(run_id, None)
+
     async def _call_tool(
         self,
         context: _LocalRunContext,
@@ -230,8 +264,12 @@ class OpenAIAgentsRuntime:
         payload: BaseModel,
     ) -> str:
         tools = context.tools
+        position_reference = self._position_reference(payload)
         budget_error = context.budget.reserve_total(name)
         if budget_error is not None:
+            context.budget.records[-1] = context.budget.records[-1].model_copy(
+                update={"position_reference": position_reference}
+            )
             return _error_result(budget_error)
 
         current_position = context.request.model_context.position
@@ -256,6 +294,7 @@ class OpenAIAgentsRuntime:
                     permission=AGENT_TOOL_PERMISSIONS[name],
                     status="error",
                     duration_ms=0,
+                    position_reference=position_reference,
                     error_code=error.code,
                 )
             )
@@ -273,6 +312,9 @@ class OpenAIAgentsRuntime:
             )
         budget_error = context.budget.reserve_engine(name, reserved_engine_calls)
         if budget_error is not None:
+            context.budget.records[-1] = context.budget.records[-1].model_copy(
+                update={"position_reference": position_reference}
+            )
             return _error_result(budget_error)
         started = time.monotonic()
         try:
@@ -304,6 +346,8 @@ class OpenAIAgentsRuntime:
                     status=status,
                     duration_ms=duration_ms,
                     cache_hit=cache_hit,
+                    engine_call_count=engine_calls,
+                    position_reference=position_reference,
                     evidence_refs=list(result.evidence_refs),
                     error_code=result.error.code if result.error else None,
                 )
@@ -326,6 +370,8 @@ class OpenAIAgentsRuntime:
                     permission=AGENT_TOOL_PERMISSIONS[name],
                     status="error",
                     duration_ms=duration_ms,
+                    engine_call_count=reserved_engine_calls,
+                    position_reference=position_reference,
                     error_code=error_code,
                 )
             )
@@ -740,6 +786,8 @@ class OpenAIAgentsRuntime:
         return AgentRuntimeFailure(error)
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
+        local: _LocalRunContext | None = None
+        usage: dict[str, int | float] = {}
         try:
             session = self._session_provider(request.session_id)
             local = _LocalRunContext(
@@ -795,6 +843,11 @@ class OpenAIAgentsRuntime:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             raise self._map_exception(exc) from exc
+        finally:
+            self._telemetry[request.run_id] = AgentRuntimeTelemetry(
+                tool_calls=list(local.budget.records) if local is not None else [],
+                usage=dict(usage),
+            )
 
 
 def create_openai_runtime(
@@ -806,6 +859,7 @@ def create_openai_runtime(
     openai_api_key: str,
     domain_tools_factory: DomainToolsFactory,
     session_provider: SessionProvider,
+    data_dir: str | None = None,
 ) -> OpenAIAgentsRuntime | UnavailableAgentRuntime:
     endpoint_type = "custom_responses" if base_url else "openai_responses"
     if not enabled:
@@ -816,6 +870,7 @@ def create_openai_runtime(
                 model,
                 endpoint_type,
                 "Chess Coach Agent is disabled.",
+                "agent_unavailable",
             )
         )
     if not model:
@@ -826,6 +881,30 @@ def create_openai_runtime(
                 "",
                 endpoint_type,
                 "CHESS_AGENT_MODEL is not configured.",
+                "agent_unavailable",
+            )
+        )
+    if base_url and (
+        not data_dir
+        or not AgentCompatibilityStore(data_dir).is_compatible(
+            base_url=base_url,
+            model=model,
+            sdk_version=AGENTS_SDK_VERSION,
+            policy_version=POLICY_VERSION,
+            response_schema_version=RESPONSE_SCHEMA_VERSION,
+        )
+    ):
+        return UnavailableAgentRuntime(
+            AgentRuntimeAvailability(
+                enabled=True,
+                available=False,
+                model=model,
+                endpoint_type=endpoint_type,
+                reason=(
+                    "The custom Responses endpoint has not passed the current local "
+                    "compatibility gate."
+                ),
+                error_code="agent_endpoint_incompatible",
             )
         )
     api_key = custom_api_key if base_url else openai_api_key
@@ -838,6 +917,7 @@ def create_openai_runtime(
                 model,
                 endpoint_type,
                 f"{name} is not configured.",
+                "agent_unavailable",
             )
         )
     try:
@@ -857,5 +937,6 @@ def create_openai_runtime(
                 model,
                 endpoint_type,
                 "OpenAI Agents SDK optional dependency is not installed.",
+                "agent_unavailable",
             )
         )

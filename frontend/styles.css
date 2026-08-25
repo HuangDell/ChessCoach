@@ -117,7 +117,7 @@ header h1 { font-size: 23px; font-weight: 700; margin: 0; }
   font-size: 13.5px;
   line-height: 1.45;
   color: #f0e3c0;
-  background: #3a2f12;            /* amber: optional dep (claude CLI) missing */
+  background: #3a2f12;            /* amber: optional capability unavailable */
   border-bottom: 1px solid #000;
 }
 .setup-banner[hidden] { display: none; }
@@ -487,65 +487,6 @@ main {
 .sb-counts .chip.mistake { background: var(--mistake); }
 .sb-counts .chip.inaccuracy { background: var(--inaccuracy); }
 
-/* --- AI coach summary (top of the analysis column) ---------------------- */
-.coach-ai-wrap { max-width: var(--col-width); }
-.coach-ai-btn {
-  width: 100%;
-  background: #322f4a;
-  border: 1px solid #46426a;
-  color: #d9d6ef;
-  border-radius: 8px;
-  padding: 9px 12px;
-  font-size: 13.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.coach-ai-btn:hover { background: #3b3858; border-color: #5b57c4; }
-.coach-ai {
-  background: linear-gradient(180deg, #2b2a3a 0%, var(--panel) 100%);
-  border: 1px solid #3a3850;
-  border-radius: 8px;
-  padding: 11px 13px;
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--text);
-}
-.coach-ai.pending { color: var(--muted); font-style: italic; }
-.coach-ai.err { border-color: var(--blunder); color: #f3c9c9; }
-/* rendered markdown inside the summary (bold / italics / lists / paragraphs) */
-.coach-ai p { margin: 0 0 8px; }
-.coach-ai p:last-child { margin-bottom: 0; }
-.coach-ai ul { margin: 6px 0 8px; padding-left: 20px; }
-.coach-ai li { margin: 2px 0; }
-.coach-ai strong { color: #fff; font-weight: 600; }
-.coach-ai em { font-style: italic; color: #d9c8a0; }
-.coach-ai code {
-  background: rgba(0, 0, 0, 0.3); padding: 0 4px; border-radius: 3px; font-size: 0.92em;
-}
-.coach-ai-tag {
-  float: left;                /* leading badge; the summary text wraps to its right */
-  margin: 1px 8px 0 0;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  background: #5b57c4;
-  color: #fff;
-}
-.coach-ai-refresh {
-  margin-left: 6px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: #fff;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.8;
-}
-.coach-ai-refresh:hover { opacity: 1; transform: rotate(90deg); }
-
 .side-col { flex: 0 1 430px; width: 430px; min-width: 340px; }
 /* Widen the analysis/chat column on wide windows (the board caps at --board-size, so there's dead
    space to spare) — mirrors the puzzle-rail steps. It can still flex-shrink if the board + Games
@@ -881,20 +822,6 @@ body.retry-mode .board-col { max-height: none; overflow: visible; }
   line-height: 1.5;
   color: var(--text);
 }
-/* Toggle that collapses the quick summary once the AI (Snowie) summary is shown. */
-.coach-toggle {
-  background: none;
-  border: 0;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 2px 0;
-  margin-bottom: 8px;
-  cursor: pointer;
-}
-.coach-toggle:hover { color: var(--text); }
-.coach-toggle[hidden] { display: none; }
-
 /* --- move list (clickable notation) ------------------------------------- */
 .movelist-panel { margin-bottom: 18px; }
 .movelist-head {
@@ -1719,7 +1646,7 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
 .pz-theme { color: var(--muted); font-size: 14px; }
 .pz-theme b { color: var(--text); }
 .pz-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-.pz-explain, .pz-next {
+.pz-next {
   border: 0;
   border-radius: 7px;
   padding: 9px 14px;
@@ -1727,21 +1654,8 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
   font-weight: 600;
   cursor: pointer;
 }
-.pz-explain { background: var(--panel2); color: var(--text); }
-.pz-explain:hover { background: #3d3a35; }
 .pz-next { background: var(--puzzle-accent); color: #fff; }
 .pz-next:hover { filter: brightness(1.08); }
-.pz-explain-out {
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--text);
-  border-top: 1px solid var(--panel2);
-  padding-top: 10px;
-}
-.pz-explain-out p { margin: 0 0 8px; }
-/* Follow-up chat under the explanation (reuses .chat-messages / .chat-form / .chat-msg). */
-.pz-chat { margin-top: 10px; border-top: 1px solid var(--panel2); padding-top: 10px; }
-.pz-chat .chat-messages { max-height: 240px; }
 .pz-status { color: var(--muted); font-size: 13px; min-height: 18px; }
 
 /* Source segmented control (Tactics | From your games). */
@@ -1806,11 +1720,9 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
 .pz-storm-bests b { color: var(--text); }
 #pz-storm-start { align-self: center; padding: 9px 22px; }
 
-/* Post-run review: the finished run's puzzles, opened one-by-one into the Solve result card + AI. */
+/* Post-run review: the finished run's puzzles, opened one-by-one into the Solve result card. */
 .pz-storm-review { width: 100%; max-width: 300px; text-align: left; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; border-top: 1px solid var(--border); padding-top: 12px; }
 .pz-storm-review-head { font-size: 13px; font-weight: 600; color: var(--muted); text-align: center; }
-#pz-storm-summary-btn { align-self: center; }
-#pz-storm-summary-out { font-size: 13px; }
 .pz-storm-review-list { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
 .pz-storm-review-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 9px; background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; color: var(--text); font-size: 13px; cursor: pointer; }
 .pz-storm-review-row:hover { background: #3d3a35; }

@@ -504,7 +504,9 @@ export function createReviewChat({
 
   async function sendAgent(question, request, expectedGeneration) {
     if (unavailable(capability)) {
-      throw new Error("The Agent coach is unavailable. Engine Review is still available.");
+      throw new Error(
+        capability.reason || "The Agent coach is unavailable. Engine Review is still available."
+      );
     }
     await ensureAgentSession();
     if (!request.isCurrent() || expectedGeneration !== generation) return;

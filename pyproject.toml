@@ -14,7 +14,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp[cli]>=1.27,<2"]
 agent = ["openai-agents==0.22.0"]
 
 [project.scripts]

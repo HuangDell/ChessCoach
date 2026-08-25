@@ -20,7 +20,6 @@ from server.core.learning import initialize_learning
 from server.core.agent.service import ChessAgentService, create_default_agent_service
 from server.web.routes_agent import router as agent_router
 from server.web.routes_board import router as board_router
-from server.web.routes_chat import router as chat_router
 from server.web.routes_explanation import router as explanation_router
 from server.web.routes_history import router as history_router
 from server.web.routes_import import router as import_router
@@ -43,8 +42,8 @@ mimetypes.add_type("text/javascript", ".mjs")
 # --- Local-only request guard (CSRF / DNS-rebinding defence) ------------------------------------
 # The board binds to loopback, but loopback is NOT a security boundary for a *browser*: any website
 # the user visits can make their browser send requests to 127.0.0.1, and a DNS-rebinding attack can
-# even turn that into a same-origin read. Our endpoints spawn `claude -p` (burns the user's Claude
-# quota) and expose game history + the Lichess token, so we reject requests that don't originate
+# even turn that into a same-origin read. Our endpoints can spend provider/Engine quota and expose
+# game history + the Lichess token, so we reject requests that don't originate
 # from the board itself. Two checks, both standard for localhost apps:
 #   * Host header must be a loopback name — defeats DNS rebinding (the browser sends the attacker's
 #     hostname in Host even after the IP rebinds to 127.0.0.1).
@@ -100,7 +99,7 @@ class _NoCacheStaticFiles(StaticFiles):
 def _resolve_frontend_dir() -> Path | None:
     """Locate the static frontend, working for BOTH a source checkout and an installed wheel.
 
-    A plain wheel install (e.g. `uv run` for the MCP server) ships `frontend/` inside the package
+    A plain wheel install ships `frontend/` inside the package
     as `server/_frontend/` (see pyproject force-include); a source/editable run uses the repo-root
     `frontend/` sibling. Try the packaged copy first, then the source layout. Returning None means
     the UI genuinely wasn't shipped — `create_app` logs loudly rather than silently 404-ing at `/`.
@@ -151,14 +150,14 @@ def create_app(agent_service: ChessAgentService | None = None) -> FastAPI:
     app.state.agent_service = agent_service
 
     # In app mode (double-click launcher), self-exit shortly after the browser tab is closed.
-    # No-op for the MCP-driven board and tests (config.APP_MODE is off there).
+    # No-op for development servers and tests (config.APP_MODE is off there).
     app_liveness.start()
 
     guard_active = _guard_is_active()
 
     @app.middleware("http")
     async def _guard_and_mark_activity(request: Request, call_next):
-        # Reject cross-site / rebound requests before they can spend Claude quota or read game data.
+        # Reject cross-site / rebound requests before they can spend quota or read game data.
         if guard_active:
             host = request.headers.get("host", "")
             if host and not _is_local_host(_authority_host(host)):
@@ -178,7 +177,6 @@ def create_app(agent_service: ChessAgentService | None = None) -> FastAPI:
 
     app.include_router(agent_router, prefix="/api")
     app.include_router(board_router, prefix="/api")
-    app.include_router(chat_router, prefix="/api")
     app.include_router(explanation_router, prefix="/api")
     app.include_router(history_router, prefix="/api")
     app.include_router(import_router, prefix="/api")

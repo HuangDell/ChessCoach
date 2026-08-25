@@ -1,0 +1,30 @@
+{
+  "base_case_count": 26,
+  "base_dataset_id": "agent-baseline-v1",
+  "case_count": 37,
+  "dataset_id": "agent-portfolio-v2",
+  "endpoint_type": "none",
+  "generated_at": "2026-08-25T07:11:46.194263Z",
+  "hardening_case_count": 11,
+  "metrics": {
+    "correct_tool_selection_rate": {"applicable": 37, "passed": 37, "value": 1.0},
+    "degradation_correctness_rate": {"applicable": 11, "passed": 11, "value": 1.0},
+    "engine_calls_per_run": {"engine_calls": 8, "runs": 37, "value": 0.216216},
+    "false_personalization_rate": {"applicable": 37, "false": 0, "value": 0.0},
+    "grounded_response_rate": {"applicable": 30, "passed": 30, "value": 1.0},
+    "illegal_move_claim_rate": {"claims": 9, "incorrect": 0, "value": 0.0},
+    "latency_ms": {"max": 795, "p50": 10, "p95": 520},
+    "task_completion_rate": {"applicable": 37, "passed": 37, "value": 1.0},
+    "tool_calls_per_run": {"runs": 37, "tool_calls": 26, "value": 0.702703},
+    "unnecessary_engine_call_rate": {"engine_calls": 8, "unnecessary": 0, "value": 0.0},
+    "valid_reference_action_rate": {"applicable": 5, "passed": 5, "value": 1.0}
+  },
+  "model": "deterministic-fixtures",
+  "observed_runs_id": "agent-portfolio-v2-deterministic-fixtures",
+  "policy_version": 1,
+  "response_schema_version": 1,
+  "schema_version": 2,
+  "scorer_version": 2,
+  "sdk_version": "0.22.0",
+  "source": "deterministic"
+}

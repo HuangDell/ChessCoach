@@ -3,7 +3,6 @@ import { createLatestRequestScope } from "../core/async.js";
 import { byId } from "../core/dom.js";
 import { storageGet, storageSet } from "../core/storage.js";
 import { createPuzzleBoardView } from "./board-view.js";
-import { createPuzzleChat } from "./chat.js";
 import { createPuzzleProgress } from "./progress.js";
 import { createSolutionPlayback } from "./solution-playback.js";
 import { createPuzzleStorm } from "./storm.js";
@@ -15,7 +14,6 @@ export function createPuzzleController({ board, lifecycle }) {
   let active = false;
   let modeGeneration = 0;
   let config = null;
-  let personalizeHistory = true;
   let preferences = {};
   let storm;
 
@@ -26,18 +24,11 @@ export function createPuzzleController({ board, lifecycle }) {
   });
   const progress = createPuzzleProgress({ $, getConfig: () => config });
   let trainer;
-  const chat = createPuzzleChat({
-    $,
-    getPuzzle: () => trainer && trainer.current,
-    usePersonalHistory: () => personalizeHistory,
-    onEngage: () => trainer.cancelAutoAdvance(),
-  });
   const solution = createSolutionPlayback({ $, board, boardView });
   trainer = createPuzzleTrainer({
     $,
     board,
     boardView,
-    chat,
     getConfig: () => config,
     isActive: () => active,
     isStormShown: () => !!(storm && storm.shown),
@@ -121,8 +112,6 @@ export function createPuzzleController({ board, lifecycle }) {
     $("pz-prev").addEventListener("click", () => trainer.restorePrevious());
     $("pz-hint").addEventListener("click", () => trainer.hint());
     $("pz-solution").addEventListener("click", () => trainer.showSolution());
-    $("pz-explain").addEventListener("click", () => trainer.explain());
-    $("pz-chat-form").addEventListener("submit", chat.send);
     $("pz-src-tactics").addEventListener("click", () => trainer.setSource("lichess"));
     $("pz-src-mine").addEventListener("click", () => trainer.setSource("your_games"));
     $("pz-category").addEventListener("change", (event) =>
@@ -136,7 +125,6 @@ export function createPuzzleController({ board, lifecycle }) {
     $("pz-mode-solve").addEventListener("click", () => storm.setShown(false));
     $("pz-mode-storm").addEventListener("click", () => storm.setShown(true));
     $("pz-storm-start").addEventListener("click", () => storm.start());
-    $("pz-storm-summary-btn").addEventListener("click", () => storm.summarize());
     $("pz-review-prev").addEventListener("click", () => solution.step(-1));
     $("pz-review-next").addEventListener("click", () => solution.step(1));
   }
@@ -157,7 +145,6 @@ export function createPuzzleController({ board, lifecycle }) {
 
   function setPreferences(nextPreferences = {}) {
     preferences = nextPreferences;
-    personalizeHistory = nextPreferences.personalizeHistory !== false;
     trainer.setPreferences(nextPreferences);
   }
 

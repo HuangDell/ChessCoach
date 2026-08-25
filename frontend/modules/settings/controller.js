@@ -124,8 +124,6 @@ async function openSettings() {
   $("set-elo").value = elo || SKILL_DEFAULT_ELO;
   updateSkillUI();
   $("set-stockfish").value = s.stockfish_path || "";
-  $("set-local-llm-url").value = s.local_llm_base_url || "";
-  $("set-local-llm-model").value = s.local_llm_model || "";
   $("set-review-side").value = s.default_review_side || "auto";
   $("set-board-orientation").value = s.board_orientation || "review";
   $("set-analysis-preset").value = s.analysis_preset || "balanced";
@@ -137,10 +135,6 @@ async function openSettings() {
   $("set-engine-details").textContent =
     `Threads ${engineConfig.threads ?? "—"} · Hash ${engineConfig.hash_mb ?? "—"} MB · ` +
     `base scan depth ${engineConfig.scan_depth ?? "—"} · deep depth ${engineConfig.deep_depth ?? "—"}`;
-  $("set-ollama-status").textContent = "";
-  $("set-ollama-pick-row").hidden = true; // picker only appears after a successful Detect
-  $("set-coach-ai-auto").checked = !!s.coach_ai_auto; // auto-generate per game (default off)
-  $("set-coach-ai-persist").checked = s.coach_ai_persist !== false; // remember summaries (default on)
   $("set-personalize").checked = s.personalize_history !== false; // personalize chat (default on)
   $("set-puzzle-animations").checked = s.puzzle_animations !== false; // solve animations (default on)
   $("set-puzzle-auto-advance").checked = s.puzzle_auto_advance === true; // auto-next after solve (default off)
@@ -164,46 +158,6 @@ function activateSettingsTab(name) {
     .forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
 }
 
-// One-click Ollama setup: fill in the default URL if blank, ask the backend what models Ollama
-// has pulled, populate the model picker, and auto-select the first one if none is chosen yet.
-async function detectOllama() {
-  const status = $("set-ollama-status");
-  status.textContent = "Looking for Ollama…";
-  const url = $("set-local-llm-url").value.trim();
-  let data;
-  try {
-    data = await settingsApi.ollamaModels(url);
-  } catch (_) {
-    status.textContent = "Could not reach the server.";
-    return;
-  }
-  if (!data.ok) {
-    status.textContent = data.error || "No Ollama found.";
-    return;
-  }
-  if (!url) $("set-local-llm-url").value = data.base_url; // adopt the URL we found it at
-  const sel = $("set-ollama-model-select");
-  sel.innerHTML = "";
-  for (const name of data.models) {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    sel.appendChild(opt);
-  }
-  if (!data.models.length) {
-    $("set-ollama-pick-row").hidden = true;
-    status.textContent = "Ollama is running but has no models. Pull one: ollama pull qwen2.5-coder";
-    return;
-  }
-  // Show the picker; keep the existing model if it's one Ollama has, else default to the first.
-  $("set-ollama-pick-row").hidden = false;
-  const current = $("set-local-llm-model").value.trim();
-  const chosen = data.models.includes(current) ? current : data.models[0];
-  sel.value = chosen;
-  $("set-local-llm-model").value = chosen;
-  status.textContent = `Found ${data.models.length} model${data.models.length === 1 ? "" : "s"} ✓ — pick one and Save.`;
-}
-
 async function saveSettings(e) {
   e.preventDefault();
   $("settings-status").textContent = "Saving…";
@@ -215,10 +169,6 @@ async function saveSettings(e) {
     aliases: $("set-aliases").value.trim(),
     lichess_token: $("set-token").value.trim(),
     stockfish_path: $("set-stockfish").value.trim(),
-    local_llm_base_url: $("set-local-llm-url").value.trim(),
-    local_llm_model: $("set-local-llm-model").value.trim(),
-    coach_ai_auto: $("set-coach-ai-auto").checked,
-    coach_ai_persist: $("set-coach-ai-persist").checked,
     personalize_history: $("set-personalize").checked,
     puzzle_animations: $("set-puzzle-animations").checked,
     puzzle_auto_advance: $("set-puzzle-auto-advance").checked,
@@ -264,10 +214,6 @@ async function saveSettings(e) {
     $("set-skill-auto").addEventListener("change", updateSkillUI);
     $("set-chesscom-sync").addEventListener("change", updateChesscomSyncUI);
     $("set-elo").addEventListener("input", updateSkillUI);
-    $("set-ollama-detect").addEventListener("click", detectOllama);
-    $("set-ollama-model-select").addEventListener("change", (event) => {
-      $("set-local-llm-model").value = event.target.value;
-    });
   }
 
   return { mount };

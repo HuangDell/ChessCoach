@@ -46,9 +46,8 @@
         aria-label="Toggle games panel">☰ Games</button>
     </header>
 
-    <!-- Setup self-check banner (filled by checkSetup() from /api/doctor): shown only when an
-         environment dependency is missing — red for a blocker (Stockfish), amber for the optional
-         claude CLI (AI chat / coach summary). Dismissible. -->
+    <!-- Setup self-check banner (filled by checkSetup() from /api/doctor): shown only when a Web
+         dependency such as Stockfish is missing. Dismissible. -->
     <div id="setup-banner" class="setup-banner" hidden></div>
 
     <!-- Update-available notice (filled by checkUpdates() from /api/update-check, app mode only):
@@ -56,9 +55,8 @@
          on git/zip installs, or a download link on the read-only .app. Dismissible per version. -->
     <div id="update-banner" class="setup-banner update" hidden></div>
 
-    <!-- Offline notice (filled by checkOnline() from /api/connectivity): no internet was detected,
-         so the network-only features (Lichess fetch + endgame tablebase, and Claude AI unless a
-         local LLM is configured) won't work. Amber, informational, dismissible. -->
+    <!-- Offline notice (filled by checkOnline() from /api/connectivity): network-backed imports,
+         tablebases, and configured API providers are unavailable. -->
     <div id="offline-banner" class="setup-banner" hidden></div>
 
     <main>
@@ -175,10 +173,9 @@
         </div>
 
         <div class="pz-ghosts" id="pz-ghosts">
-          <!-- Shown only right after an auto-advance: jumps back to the puzzle you just solved so you
-               can still ask "why?" once the trainer has already moved you on. -->
+          <!-- Shown only right after auto-advance so the previous solution remains inspectable. -->
           <button type="button" id="pz-prev" class="pz-ghost" hidden
-            title="Go back to the puzzle you just solved (to review it or ask why)">‹ Previous</button>
+            title="Go back to the puzzle you just solved">‹ Previous</button>
           <button type="button" id="pz-hint" class="pz-ghost">Hint</button>
           <button type="button" id="pz-solution" class="pz-ghost">Show solution</button>
           <button type="button" id="pz-skip" class="pz-ghost">Skip ›</button>
@@ -188,19 +185,8 @@
           <div class="pz-verdict" id="pz-verdict"></div>
           <div class="pz-theme" id="pz-theme"></div>
           <div class="pz-actions">
-            <button type="button" id="pz-explain" class="pz-explain">✨ Explain why</button>
             <a href="#" id="pz-replay" class="pz-replay" hidden>↩ replay in full game</a>
             <button type="button" id="pz-next" class="pz-next">Next puzzle →</button>
-          </div>
-          <div class="pz-explain-out" id="pz-explain-out" hidden></div>
-          <!-- Follow-up chat: appears only after "Explain why", threaded on that explanation. -->
-          <div class="pz-chat" id="pz-chat" hidden>
-            <div id="pz-chat-messages" class="chat-messages"></div>
-            <form id="pz-chat-form" class="chat-form">
-              <input id="pz-chat-input" type="text" autocomplete="off"
-                placeholder="Ask a follow-up…" aria-label="Ask a follow-up question" />
-              <button type="submit" id="pz-chat-send" aria-label="Send" title="Send">→</button>
-            </form>
           </div>
         </div>
 
@@ -225,12 +211,9 @@
           <div class="pz-storm-bests" id="pz-storm-bests"></div>
           <button type="button" id="pz-storm-start" class="pz-next">⚡ Start storm</button>
 
-          <!-- Post-run review: shown on the game-over card so the rush turns into study time. Each
-               row opens that puzzle on the board with the AI coach; "Summarize" recaps the misses. -->
+          <!-- Post-run review opens each deterministic puzzle result on the board for inspection. -->
           <div class="pz-storm-review" id="pz-storm-review" hidden>
             <div class="pz-storm-review-head">Review your puzzles</div>
-            <button type="button" id="pz-storm-summary-btn" class="pz-explain">✨ Summarize my run</button>
-            <div class="pz-explain-out" id="pz-storm-summary-out" hidden></div>
             <div class="pz-storm-review-list" id="pz-storm-review-list"></div>
           </div>
         </div>
@@ -263,6 +246,8 @@
             <button type="button" id="review-tab-mistakes" data-view="mistakes" role="tab">My mistakes</button>
             <button type="button" id="review-tab-all" data-view="all" role="tab">All moves</button>
           </div>
+
+          <div id="coach" class="coach" hidden></div>
 
           <div id="review-position-list" class="review-position-list"></div>
 
@@ -331,20 +316,6 @@
         </section>
 
         <div class="legacy-review" hidden>
-        <!-- Templated "quick" summary. Once the fuller AI (Snowie) summary is on screen it's
-            collapsed behind this toggle, expandable on demand (syncQuickSummary in main.js). -->
-        <button id="coach-toggle" class="coach-toggle" type="button" hidden></button>
-        <div id="coach" class="coach" hidden></div>
-        <!-- AI summary lives in this scrolling column so the board column stays short enough to pin
-             (see .board-col position:sticky in styles.css). Per-move feedback (#comment / #verdict)
-             sits lower, between the Moves list and Mistakes. -->
-        <div class="coach-ai-wrap">
-          <button id="coach-ai-btn" class="coach-ai-btn" hidden
-            title="Have Snowie write a fuller coaching summary of this game (uses your Claude subscription)">
-            ✨ Generate AI coach (Snowie) summary
-          </button>
-          <div id="coach-ai" class="coach-ai" hidden></div>
-        </div>
         <!-- Per-move feedback: the mistake explanation (#comment) + technical verdict (#verdict),
              between Moves and Mistakes. Both update as you step through the moves. -->
         <div id="comment" class="comment"></div>
@@ -438,6 +409,9 @@
             <button id="clear-engine-cache" type="button" title="Clear recomputable Engine analysis cache">
               Clear Engine cache
             </button>
+            <button id="clear-agent-runs" type="button" title="Clear redacted Agent run metrics only">
+              Clear Agent runs
+            </button>
             <span id="data-action-status" class="muted" role="status"></span>
           </div>
         </section>
@@ -472,7 +446,7 @@
           <button type="button" class="set-tab-btn active" data-tab="account" role="tab">Account</button>
           <button type="button" class="set-tab-btn" data-tab="coaching" role="tab">Coaching</button>
           <button type="button" class="set-tab-btn" data-tab="puzzles" role="tab">Puzzles</button>
-          <button type="button" class="set-tab-btn" data-tab="system" role="tab">Engine &amp; AI</button>
+          <button type="button" class="set-tab-btn" data-tab="system" role="tab">Engine &amp; Agent</button>
         </div>
 
         <!-- Scrolling content area: the tab bar above and the actions below stay pinned. -->
@@ -524,34 +498,15 @@
           </label>
         </div>
 
-        <!-- Coaching: the game-review AI + mistake sensitivity + memory. -->
+        <!-- Coaching: deterministic sensitivity and optional canonical-history personalization. -->
         <div class="set-panel" data-panel="coaching">
           <label class="set-field set-check">
             <span class="set-check-row">
-              <input id="set-coach-ai-auto" type="checkbox" />
-              <span class="set-label">Auto-generate AI coach (Snowie) summary <span class="set-opt">(uses your Claude subscription)</span></span>
-            </span>
-            <span class="set-hint">Auto-write the fuller summary for every game, instead of pressing the
-              button under the board. The quick side-panel summary always shows.</span>
-          </label>
-
-          <label class="set-field set-check">
-            <span class="set-check-row">
               <input id="set-personalize" type="checkbox" />
-              <span class="set-label">Personalize AI coach with my history</span>
+              <span class="set-label">Personalize coaching with my history</span>
             </span>
-            <span class="set-hint">Include your cross-game history so Snowie coaches you on recurring
-              patterns. Turn off to send fewer tokens.</span>
-          </label>
-
-          <label class="set-field set-check">
-            <span class="set-check-row">
-              <input id="set-coach-ai-persist" type="checkbox" />
-              <span class="set-label">Remember AI coach summaries between sessions</span>
-            </span>
-            <span class="set-hint">On (default): a generated Snowie summary is saved with the game, so
-              reopening it later shows the saved text instead of spending Claude to regenerate. Use the
-              ⟳ on the summary to re-run it anyway. Off: summaries regenerate each time you reopen.</span>
+            <span class="set-hint">Use canonical cross-game evidence for review priorities, Agent
+              answers, and training suggestions. Turn off to disable those reads.</span>
           </label>
 
           <label class="set-field set-check">
@@ -627,7 +582,7 @@
           </label>
         </div>
 
-        <!-- Engine & AI: local paths / local model. -->
+        <!-- Engine and API-backed model behavior. Credentials stay in process environment. -->
         <div class="set-panel" data-panel="system">
           <label class="set-field">
             <span class="set-label">Default review side</span>
@@ -659,7 +614,6 @@
             <select id="set-explanation-provider">
               <option value="auto">Auto</option>
               <option value="openai-compatible">OpenAI-compatible API</option>
-              <option value="claude-cli">Claude CLI</option>
             </select>
           </label>
           <label class="set-field">
@@ -680,30 +634,6 @@
             <input id="set-stockfish" type="text" autocomplete="off" />
             <span id="set-sf-status" class="set-hint"></span>
           </label>
-          <div class="set-field">
-            <span class="set-label">Local AI model <span class="set-opt">(optional — run the AI locally instead of Claude)</span></span>
-            <span class="set-hint">Run the “why?” chat + AI coach entirely on your own machine instead
-              of your Claude subscription — <b>no <code>claude</code> CLI or login needed</b>. Connects
-              directly to any local server with an OpenAI-compatible API (Ollama, LM Studio, llama.cpp,
-              a LiteLLM proxy, and more). <b>Ollama is easiest:</b> just click <b>Detect Ollama</b>
-              below. For anything else, fill in the URL (and model) by hand. Leave blank to use Claude.</span>
-            <div class="set-llm-row">
-              <button type="button" id="set-ollama-detect" class="linklike">Detect Ollama</button>
-              <span id="set-ollama-status" class="set-hint"></span>
-            </div>
-            <label class="set-sub">
-              <span class="set-sub-label">URL</span>
-              <input id="set-local-llm-url" type="text" autocomplete="off" placeholder="http://localhost:11434" />
-            </label>
-            <label class="set-sub" id="set-ollama-pick-row" hidden>
-              <span class="set-sub-label">Detected</span>
-              <select id="set-ollama-model-select"></select>
-            </label>
-            <label class="set-sub">
-              <span class="set-sub-label">Model</span>
-              <input id="set-local-llm-model" type="text" autocomplete="off" placeholder="e.g. qwen2.5-coder" />
-            </label>
-          </div>
           <details class="set-advanced">
             <summary>Advanced</summary>
             <div class="set-field">

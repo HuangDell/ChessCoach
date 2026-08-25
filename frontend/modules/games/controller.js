@@ -1,3 +1,4 @@
+import { agentApi } from "../api/agent.js";
 import { gamesApi } from "../api/games.js";
 import { settingsApi } from "../api/settings.js";
 import { systemApi } from "../api/system.js";
@@ -163,6 +164,17 @@ export function createGamesController({ bridge }) {
     }
   }
 
+  async function clearAgentRuns() {
+    const status = $("data-action-status");
+    status.textContent = "Clearing…";
+    try {
+      const data = await agentApi.clearRuns();
+      status.textContent = `${data.records_removed || 0} Agent run record(s) removed.`;
+    } catch (error) {
+      status.textContent = errorMessage(error, "Agent run cleanup failed.");
+    }
+  }
+
   function mount() {
     $("history-toggle").addEventListener("click", bridge.toggleHistory);
     $("history-collapse").addEventListener("click", bridge.toggleHistory);
@@ -204,6 +216,7 @@ export function createGamesController({ bridge }) {
       maybeAutoload();
     });
     $("clear-engine-cache").addEventListener("click", clearEngineCache);
+    $("clear-agent-runs").addEventListener("click", clearAgentRuns);
     importer.mount();
     insights.mount();
   }

@@ -93,7 +93,6 @@ test("puzzles controller delegates stateful activities", async () => {
   assert.ok(controller.trim().split("\n").length <= 400);
   for (const moduleName of [
     "board-view.js",
-    "chat.js",
     "progress.js",
     "solution-playback.js",
     "storm.js",
@@ -122,7 +121,7 @@ test("cross-feature Agent navigation ignores superseded history responses", asyn
   );
 });
 
-test("chat and settings endpoints have single API owners", async () => {
+test("Agent and settings endpoints have single API owners", async () => {
   const apiDirectory = path.join(frontend, "modules", "api");
   const sources = await Promise.all(
     (await readdir(apiDirectory)).filter((name) => name.endsWith(".js")).map(async (name) => ({
@@ -130,10 +129,14 @@ test("chat and settings endpoints have single API owners", async () => {
       source: await readFile(path.join(apiDirectory, name), "utf8"),
     }))
   );
-  assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/chat"')).map(({ name }) => name), ["chat.js"]);
+  assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/chat"')).map(({ name }) => name), []);
   assert.deepEqual(sources.filter(({ source }) => source.includes('"/api/settings"')).map(({ name }) => name), ["settings.js"]);
   assert.deepEqual(
     sources.filter(({ source }) => source.includes('"/api/agent/sessions"')).map(({ name }) => name),
+    ["agent.js"]
+  );
+  assert.deepEqual(
+    sources.filter(({ source }) => source.includes('"/api/agent/metrics"')).map(({ name }) => name),
     ["agent.js"]
   );
   assert.deepEqual(

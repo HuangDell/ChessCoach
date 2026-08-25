@@ -2,7 +2,7 @@
 
 Handlers are plain `def` (not `async def`) on purpose: the engine calls are blocking, so
 Starlette runs these in its threadpool and they don't stall the event loop. They read/write
-the same singleton ReviewSession + engine pool the MCP tools use.
+the process-wide ReviewSession and engine pool.
 """
 from __future__ import annotations
 
@@ -14,14 +14,13 @@ from pydantic import BaseModel
 from server import config
 from server.core import app_liveness
 from server.core import lines
-from server.core import local_llm
 from server.core import history as history_mod
 from server.core import session as session_mod
 
 router = APIRouter()
 
 # Cached internet-reachability probe (see /connectivity). A miss means "offline", which gates the
-# closable banner warning that the Lichess/tablebase/Claude network features won't work. Kept cheap:
+# closable banner warning that the Lichess/tablebase network features will not work. Kept cheap:
 # one short HEAD per TTL window, best-effort (any failure -> offline), never raised to the page.
 _CONN_CACHE: dict[str, float | bool] = {}
 _CONN_TTL = 30.0  # seconds
@@ -81,7 +80,7 @@ class BestMovesBody(BaseModel):
 
 @router.get("/doctor")
 def get_doctor() -> dict:
-    """Structured environment self-check for the UI setup banner (Python / Stockfish / claude CLI).
+    """Structured environment self-check for the UI setup banner (Python and Stockfish).
     Mirrors `python -m server.doctor`; best-effort, never raises."""
     from server import doctor
 
@@ -101,6 +100,8 @@ def get_app_config(request: Request) -> dict:
         "available": False,
         "model": config.AGENT_MODEL,
         "endpoint_type": "custom_responses" if config.AGENT_BASE_URL else "openai_responses",
+        "reason": "Chess Coach Agent service is not initialized.",
+        "error_code": "agent_unavailable",
         "features": {"review_chat": True},
     }
     return {
@@ -110,7 +111,6 @@ def get_app_config(request: Request) -> dict:
         "chesscom_username": config.CHESSCOM_USERNAME or "",  # configured chess.com handle (if any)
         "chesscom_sync": config.CHESSCOM_SYNC_ENABLED,  # auto-analyze new chess.com games on launch?
         "chesscom_sync_max": config.CHESSCOM_SYNC_MAX,  # how many recent games auto-sync checks
-        "coach_ai_auto": config.COACH_AI_AUTO,  # auto-press the AI-summary button on each game?
         "personalize_history": config.PERSONALIZE_HISTORY,  # inject coaching profile into chat?
         "puzzle_animations": config.PUZZLE_ANIMATIONS,  # play the puzzle solve/miss board animations?
         "puzzle_auto_advance": config.PUZZLE_AUTO_ADVANCE,  # auto-load the next puzzle after a solve?
@@ -122,18 +122,13 @@ def get_app_config(request: Request) -> dict:
         "show_threat_arrows": config.SHOW_THREAT_ARROWS,
         "agent": agent,
         "current_version": config.APP_VERSION,  # for the update notice (cheap, local)
-        # Is the in-browser AI served by a local LLM (works offline) vs. Claude over the network?
-        # Drives the offline banner's wording (AI still works offline only with a local LLM).
-        "local_llm": local_llm.is_enabled(),
     }
 
 
 @router.get("/connectivity")
 def get_connectivity() -> dict:
-    """Is the machine online? Drives a closable banner warning that the network-only features
-    (Lichess game fetch + endgame tablebase, and Claude-backed AI when no local LLM is configured)
-    won't work offline. Best-effort + cached; never raised to the page."""
-    return {"online": _probe_online(), "local_llm": local_llm.is_enabled()}
+    """Report reachability for optional Lichess and tablebase integrations."""
+    return {"online": _probe_online()}
 
 
 @router.get("/session")
@@ -145,14 +140,10 @@ def get_session() -> dict:
     summary = session_mod.summarize_session(sess)
     summary["explore_fen"] = sess.explore_fen
     # The raw PGN, so the board can re-analyse this same game from the other side without a refetch.
-    # Web-only (kept off summarize_session so the MCP tool output stays compact).
     summary["pgn"] = sess.pgn
     # A link back to the game on Lichess/Chess.com (from the PGN's Site/Link header), so the board
     # header can offer an "open on the source site" arrow. Web-only.
     summary["game_url"] = history_mod.game_url_from_headers(sess.headers)
-    # An already-generated AI coach summary (from this session or restored from cache), so reopening
-    # a game shows it immediately instead of making the user press "Generate". Web-only.
-    summary["coach_ai_text"] = sess.coach_ai_text
     return summary
 
 

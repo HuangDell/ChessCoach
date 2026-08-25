@@ -274,8 +274,11 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
             )
 
             for failure, expected_code in (
+                (_AuthenticationError(), "agent_authentication_failed"),
+                (_RateLimitError(), "agent_rate_limited"),
                 (_APITimeoutError(), "agent_timeout"),
                 (_FakeAgents.MaxTurnsExceeded(), "max_turns_exceeded"),
+                (_FakeAgents.ModelBehaviorError(), "invalid_agent_response"),
                 (TypeError("responses unsupported"), "agent_provider_error"),
             ):
                 with self.subTest(expected_code=expected_code):

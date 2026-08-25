@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timezone
 import inspect
 import json
-import os
-from pathlib import Path
-import threading
+import time
 from typing import Any
 
 import chess
@@ -54,6 +51,7 @@ from server.core.agent.policy import (
     is_review_priority_request,
     is_training_planning_request,
     validate_agent_response,
+    POLICY_VERSION,
 )
 from server.core.agent.prioritization import PrioritizationError, build_review_prioritization
 from server.core.agent.runtime import AgentRuntime, AgentRuntimeAvailability, AgentRuntimeFailure
@@ -74,6 +72,13 @@ from server.core.agent.summary import ConversationSummaryBuilder
 from server.core.agent.tools import ActiveReviewArtifact, AgentTools
 from server.core.learning import memory as learning_memory
 from server.core import training_planner
+from server.core.storage.agent_runs import (
+    AgentRunRecord,
+    AgentRunStore,
+    RESPONSE_SCHEMA_VERSION,
+    RunStatus,
+    utc_now,
+)
 
 
 ToolsFactory = Callable[[ResolvedContextBundle], AgentTools]
@@ -85,51 +90,6 @@ class AgentServiceFailure(RuntimeError):
     def __init__(self, error: AgentError | SessionError):
         super().__init__(error.message)
         self.error = error
-
-
-class AgentRunAuditLog:
-    """Append-only, content-free summaries of successful Agent runs."""
-
-    def __init__(self, data_dir: str | os.PathLike[str]) -> None:
-        self.path = Path(data_dir) / "agent" / "runs.jsonl"
-        self._lock = threading.RLock()
-
-    def append_success(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        result: Any,
-    ) -> None:
-        record = {
-            "schema_version": 1,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-            "session_id": session_id,
-            "generation": generation,
-            "status": "success",
-            "tool_calls": [
-                {
-                    "name": call.name,
-                    "permission": call.permission,
-                    "status": call.status,
-                    "duration_ms": call.duration_ms,
-                    "cache_hit": call.cache_hit,
-                    "error_code": call.error_code,
-                }
-                for call in result.tool_calls
-            ],
-            "usage": dict(result.usage),
-        }
-        content = (
-            json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            + "\n"
-        )
-        with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
 
 
 def _session_error(code: str, message: str, *, recoverable: bool) -> AgentServiceFailure:
@@ -325,7 +285,7 @@ class ChessAgentService:
         coordinator: SessionMutationCoordinator | None = None,
         message_gate: SessionMessageGate | None = None,
         tools_factory: ToolsFactory = _default_tools,
-        audit_log: AgentRunAuditLog | None = None,
+        run_store: AgentRunStore | None = None,
         summary_builder: ConversationSummaryBuilder | None = None,
         max_turns: int = 4,
         max_total_tool_calls: int = 6,
@@ -339,7 +299,8 @@ class ChessAgentService:
         self.coordinator = coordinator or SessionMutationCoordinator()
         self.message_gate = message_gate or SessionMessageGate()
         self.tools_factory = tools_factory
-        self.audit_log = audit_log
+        self.run_store = run_store
+        self._last_run_log_error: str | None = None
         self.summary_builder = summary_builder or ConversationSummaryBuilder()
         self.max_turns = max_turns
         self.max_total_tool_calls = max_total_tool_calls
@@ -450,11 +411,25 @@ class ChessAgentService:
             "available": availability.available,
             "model": availability.model,
             "endpoint_type": availability.endpoint_type,
+            "reason": availability.reason,
+            "error_code": availability.error_code,
             "features": {
                 "review_chat": True,
                 "personalized_training": bool(config.PERSONALIZE_HISTORY),
             },
         }
+
+    def run_metrics(self, *, limit: int = 100) -> dict[str, object]:
+        if self.run_store is None:
+            return AgentRunStore(config.DATA_DIR, max_records=config.AGENT_RUN_MAX_RECORDS).metrics(
+                limit=limit
+            )
+        return self.run_store.metrics(limit=limit)
+
+    def clear_runs(self) -> dict[str, int]:
+        if self.run_store is None:
+            return {"records_removed": 0, "bytes_removed": 0}
+        return self.run_store.clear()
 
     def session_for_runtime(self, session_id: str) -> GenerationGuardedSession:
         try:
@@ -736,58 +711,138 @@ class ChessAgentService:
         )
         self._active_sessions[session_id] = guarded
         self._active_tools[session_id] = tools
+        started_at = utc_now()
+        started = time.monotonic()
+        result = None
+        status: RunStatus = "provider_failure"
+        error_code: str | None = None
         try:
-            async with asyncio.timeout(self.timeout_seconds):
-                result = await self.runtime.run(run_request)
-            if len(result.tool_calls) > self.max_total_tool_calls:
-                raise AgentResponseValidationError("Agent runtime exceeded its tool budget.")
-            if any(call.name not in run_request.allowed_tools for call in result.tool_calls):
-                raise AgentResponseValidationError("Agent runtime called a tool outside this run.")
-            validate_agent_response(
-                result.response,
-                model_context,
-                result.tool_calls,
-                validated_tool_references=_successful_tool_references(tools),
-                successful_training_drafts=_successful_training_drafts(tools),
-            )
-            if not guarded.staged_items:
-                await guarded.add_items(
-                    [
-                        {"role": "user", "content": request.message},
-                        {"role": "assistant", "content": result.response.text},
-                    ]
+            try:
+                async with asyncio.timeout(self.timeout_seconds):
+                    result = await self.runtime.run(run_request)
+                if len(result.tool_calls) > self.max_total_tool_calls:
+                    raise AgentResponseValidationError("Agent runtime exceeded its tool budget.")
+                if any(call.name not in run_request.allowed_tools for call in result.tool_calls):
+                    raise AgentResponseValidationError("Agent runtime called a tool outside this run.")
+                validate_agent_response(
+                    result.response,
+                    model_context,
+                    result.tool_calls,
+                    validated_tool_references=_successful_tool_references(tools),
+                    successful_training_drafts=_successful_training_drafts(tools),
                 )
-            on_committed = None
-            if self.audit_log is not None:
-                on_committed = lambda: self.audit_log.append_success(
+                if not guarded.staged_items:
+                    await guarded.add_items(
+                        [
+                            {"role": "user", "content": request.message},
+                            {"role": "assistant", "content": result.response.text},
+                        ]
+                    )
+                await guarded.commit()
+                final_state = await self._update_conversation_metadata(
                     session_id=session_id,
-                    generation=request.expected_generation,
-                    result=result,
+                    expected_generation=request.expected_generation,
+                    initial_state=state,
+                    backing=backing,
+                    model_context=model_context,
+                    response=result.response,
                 )
-            await guarded.commit(on_committed=on_committed)
-            final_state = await self._update_conversation_metadata(
-                session_id=session_id,
-                expected_generation=request.expected_generation,
-                initial_state=state,
-                backing=backing,
-                model_context=model_context,
-                response=result.response,
-            )
-            return AgentMessageResponse(
-                session=AgentSessionSummary(
-                    session_id=session_id,
-                    generation=final_state.generation,
-                    conversation_summary=final_state.conversation_summary,
-                ),
-                response=result.response,
-                tool_calls=result.tool_calls,
-            )
+                status = "success"
+                return AgentMessageResponse(
+                    session=AgentSessionSummary(
+                        session_id=session_id,
+                        generation=final_state.generation,
+                        conversation_summary=final_state.conversation_summary,
+                    ),
+                    response=result.response,
+                    tool_calls=result.tool_calls,
+                )
+            except asyncio.CancelledError:
+                status = "cancelled"
+                error_code = "agent_cancelled"
+                raise
+            except StaleAgentContextError:
+                status = "stale"
+                error_code = "stale_agent_context"
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                status = "timeout"
+                error_code = "agent_timeout"
+                raise
+            except AgentResponseValidationError:
+                status = "invalid_output"
+                error_code = "invalid_agent_response"
+                raise
+            except AgentRuntimeFailure as exc:
+                error_code = exc.error.code
+                status = (
+                    "timeout"
+                    if exc.error.code == "agent_timeout"
+                    else "invalid_output"
+                    if exc.error.code == "invalid_agent_response"
+                    else "provider_failure"
+                )
+                raise
+            except BaseException:
+                error_code = "agent_internal_error"
+                raise
         except BaseException:
             guarded.discard()
             raise
         finally:
             self._active_sessions.pop(session_id, None)
             self._active_tools.pop(session_id, None)
+            telemetry_loader = getattr(self.runtime, "take_telemetry", None)
+            telemetry = telemetry_loader(run_request.run_id) if callable(telemetry_loader) else None
+            tool_calls = (
+                list(telemetry.tool_calls)
+                if telemetry is not None
+                else list(result.tool_calls)
+                if result is not None
+                else []
+            )
+            usage = (
+                dict(telemetry.usage)
+                if telemetry is not None
+                else dict(result.usage)
+                if result is not None
+                else {}
+            )
+            if self.run_store is not None:
+                try:
+                    self.run_store.append(
+                        AgentRunRecord(
+                            run_id=run_request.run_id,
+                            session_id=session_id,
+                            generation=request.expected_generation,
+                            task_kind=self._task_kind(request.message, model_context.task.activity),
+                            activity=model_context.task.activity,
+                            model=self.availability.model,
+                            endpoint_type=self.availability.endpoint_type,
+                            sdk_version=str(getattr(self.runtime, "sdk_version", "0.22.0")),
+                            policy_version=POLICY_VERSION,
+                            response_schema_version=RESPONSE_SCHEMA_VERSION,
+                            started_at=started_at,
+                            duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+                            usage=usage,
+                            status=status,
+                            error_code=error_code,
+                            tool_calls=tool_calls,
+                        )
+                    )
+                    self._last_run_log_error = None
+                except Exception:
+                    self._last_run_log_error = "agent_run_log_write_failed"
+
+    @staticmethod
+    def _task_kind(message: str, activity: str) -> str:
+        if is_training_planning_request(message):
+            return "training_plan"
+        if is_review_priority_request(message):
+            return "review_priorities"
+        if is_follow_up_reference_request(message):
+            return "position_follow_up"
+        return str(activity)
 
     async def _update_conversation_metadata(
         self,
@@ -901,13 +956,14 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             model=config.AGENT_MODEL,
             endpoint_type=("custom_responses" if config.AGENT_BASE_URL else "openai_responses"),
             reason="Chess Coach Agent runtime is initializing.",
+            error_code="agent_unavailable",
         )
     )
     service = ChessAgentService(
         checkpoint_store=ChessSessionCheckpointStore(root),
         runtime=placeholder,
         conversation_factory=InMemoryConversationSessionFactory(),
-        audit_log=AgentRunAuditLog(root),
+        run_store=AgentRunStore(root, max_records=config.AGENT_RUN_MAX_RECORDS),
         max_turns=config.AGENT_MAX_TURNS,
         max_total_tool_calls=config.AGENT_MAX_TOOL_CALLS,
         max_engine_tool_calls=config.AGENT_MAX_ENGINE_CALLS,
@@ -922,6 +978,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             openai_api_key=config.OPENAI_API_KEY,
             domain_tools_factory=service.tools_for_runtime,
             session_provider=service.session_for_runtime,
+            data_dir=root,
         )
     except Exception as exc:  # optional Agent initialization must not prevent Web startup
         runtime = UnavailableAgentRuntime(
@@ -933,6 +990,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
                     "custom_responses" if config.AGENT_BASE_URL else "openai_responses"
                 ),
                 reason=f"Chess Coach Agent initialization failed: {type(exc).__name__}.",
+                error_code="agent_unavailable",
             )
         )
     service.runtime = runtime
@@ -948,6 +1006,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
                     model=config.AGENT_MODEL,
                     endpoint_type=runtime.availability.endpoint_type,
                     reason=f"Agent conversation storage failed: {type(exc).__name__}.",
+                    error_code="agent_unavailable",
                 )
             )
         else:
@@ -957,7 +1016,6 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
 
 
 __all__ = [
-    "AgentRunAuditLog",
     "AgentServiceFailure",
     "ChessAgentService",
     "create_default_agent_service",

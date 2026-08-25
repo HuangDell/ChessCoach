@@ -1,12 +1,8 @@
-"""User-editable settings, so the app is standalone (no hand-editing of .mcp.json).
+"""User-editable settings for the standalone Web application.
 
-A small JSON file at `<DATA_DIR>/settings.json` holds the knobs a user would otherwise set as env
-vars in `.mcp.json` (username, alt accounts, Lichess token, profile windows, Stockfish path).
-`apply_saved()` is called at startup by both entry points (the MCP server and the standalone web
-app) to override the env-derived `config` values — so **settings.json wins over the environment**,
-which wins over the built-in defaults. Because the rest of the code reads `config.*` at call-time,
-writing settings live (via the Settings panel) takes effect immediately without a restart, and
-persists across runs and across the MCP server / app processes (both read the same file).
+`settings.json` holds local identity, UI preferences, profile windows, and the Stockfish path.
+Unknown legacy keys remain readable but are ignored and are never returned or rewritten by new
+patches.
 """
 from __future__ import annotations
 
@@ -30,14 +26,10 @@ KEYS = (
     "profile_lifetime",
     "player_elo",
     "stockfish_path",
-    "coach_ai_auto",
-    "coach_ai_persist",
     "personalize_history",
     "puzzle_animations",
     "puzzle_auto_advance",
     "puzzle_mistake_interleave",
-    "local_llm_base_url",
-    "local_llm_model",
     "default_review_side",
     "board_orientation",
     "analysis_preset",
@@ -108,10 +100,6 @@ def apply(settings: dict) -> None:
         sp = config.clean_path(settings["stockfish_path"])
         if sp:
             config.STOCKFISH_PATH = shutil.which(sp) or sp
-    if "coach_ai_auto" in settings:
-        config.COACH_AI_AUTO = bool(settings["coach_ai_auto"])
-    if "coach_ai_persist" in settings:
-        config.COACH_AI_PERSIST = bool(settings["coach_ai_persist"])
     if "personalize_history" in settings:
         config.PERSONALIZE_HISTORY = bool(settings["personalize_history"])
     if "puzzle_animations" in settings:
@@ -120,10 +108,6 @@ def apply(settings: dict) -> None:
         config.PUZZLE_AUTO_ADVANCE = bool(settings["puzzle_auto_advance"])
     if "puzzle_mistake_interleave" in settings:
         config.PUZZLE_MISTAKE_INTERLEAVE = bool(settings["puzzle_mistake_interleave"])
-    if "local_llm_base_url" in settings:
-        config.LOCAL_LLM_BASE_URL = (settings["local_llm_base_url"] or "").strip()
-    if "local_llm_model" in settings:
-        config.LOCAL_LLM_MODEL = (settings["local_llm_model"] or "").strip()
     if "default_review_side" in settings:
         value = str(settings["default_review_side"] or "auto").strip().lower()
         if value in {"auto", "white", "black"}:
@@ -138,7 +122,7 @@ def apply(settings: dict) -> None:
             config.ANALYSIS_PRESET = value
     if "explanation_provider" in settings:
         value = str(settings["explanation_provider"] or "auto").strip().lower()
-        if value in {"auto", "openai-compatible", "claude-cli"}:
+        if value in {"auto", "openai-compatible"}:
             config.EXPLANATION_PROVIDER = value
     if "explanation_language" in settings:
         value = str(settings["explanation_language"] or "zh-CN").strip()
@@ -168,14 +152,10 @@ def effective() -> dict:
         "profile_lifetime": "all" if config.PROFILE_LIFETIME is None else str(config.PROFILE_LIFETIME),
         "player_elo": "" if config.PLAYER_ELO is None else str(config.PLAYER_ELO),
         "stockfish_path": config.STOCKFISH_PATH or "",
-        "coach_ai_auto": config.COACH_AI_AUTO,
-        "coach_ai_persist": config.COACH_AI_PERSIST,
         "personalize_history": config.PERSONALIZE_HISTORY,
         "puzzle_animations": config.PUZZLE_ANIMATIONS,
         "puzzle_auto_advance": config.PUZZLE_AUTO_ADVANCE,
         "puzzle_mistake_interleave": config.PUZZLE_MISTAKE_INTERLEAVE,
-        "local_llm_base_url": config.LOCAL_LLM_BASE_URL or "",
-        "local_llm_model": config.LOCAL_LLM_MODEL or "",
         "default_review_side": config.DEFAULT_REVIEW_SIDE,
         "board_orientation": config.BOARD_ORIENTATION,
         "analysis_preset": config.ANALYSIS_PRESET,
@@ -187,7 +167,8 @@ def effective() -> dict:
 
 def update(patch: dict, data_dir: Optional[str] = None) -> dict:
     """Merge a partial settings patch into the store, persist it, apply it live, return effective."""
-    settings = load(data_dir)
+    loaded = load(data_dir)
+    settings = {key: loaded[key] for key in KEYS if key in loaded}
     for key in KEYS:
         if key in patch:
             settings[key] = patch[key]

@@ -10,16 +10,16 @@
 
 | 决策项 | 当前结论 |
 | --- | --- |
-| 产品形态 | 个人本地使用的完整 Web 项目 |
+| 产品形态 | 个人本地使用的完整 Web 项目；FastAPI + 无构建前端是唯一产品运行时 |
 | 开源基线 | `Chess-analysis-mcp/tintins-chess-analysis` v2.0.2 |
 | 后端 | Python 3.11+、FastAPI、`python-chess`、原生 Stockfish |
 | 前端 | 沿用 base 的静态 Web UI、Chessground、`chess.js` |
 | 前端策略 | 先迭代现有页面，不立即迁移 React/Next.js |
 | Engine | 本地原生 Stockfish，Engine 是棋局判断的唯一权威 |
-| AI | 后端调用可替换的 LLM Provider，只解释结构化 Engine 事实 |
+| AI | 后端 API-only：单 Agent 负责编排，bounded Provider 只解释结构化 Engine 事实 |
 | 数据 | 本地 JSON/JSONL 起步，确有需要后再迁移 SQLite |
 | 账号与部署 | 不做账号系统，不做在线多用户部署 |
-| MCP/Skill | 不作为产品必需能力，从 Web 主流程中解耦 |
+| MCP/模型 CLI | 不属于产品运行时；无 MCP server、模型子进程、登录或隐式 fallback |
 
 ## 3. 产品定位
 
@@ -84,6 +84,13 @@ AI 可以：
 
 只有在现有实现阻碍核心需求时才替换模块。
 
+### 4.5 Web-only 与降级
+
+- FastAPI 同时提供 JSON API 和 `frontend/` 静态资源，不保留第二套产品入口。
+- 模型 credential 只由后端读取；浏览器、prompt、日志和 artifact 不保存 credential。
+- Agent 或 explanation Provider 不可用时，Engine Review、历史、画像、Retry 和训练继续工作。
+- Stockfish、doctor、下载器和 eval runner 属于开发/运维入口，不是替代产品运行时。
+
 ## 5. MVP 范围
 
 ### 5.1 MVP 必须具备
@@ -131,6 +138,7 @@ FastAPI Web Backend
   Analysis Orchestrator
   Fact Extractor
   Explanation Service
+  Single Agent Service
   Local History Service
           |
           v
@@ -140,7 +148,8 @@ python-chess + Native Stockfish
 Local JSON / JSONL / Cache
 ```
 
-LLM 由 FastAPI 后端调用。浏览器不直接访问模型，也不保存模型密钥。
+LLM 仅由 FastAPI 后端通过 API 调用。浏览器不直接访问模型，也不保存模型密钥；自定义 Responses
+endpoint 必须通过本地 compatibility gate，失败时不得回退到其他 transport。
 
 ## 7. 统一数据产物
 

@@ -1,198 +1,165 @@
 # Chess Review Coach
 
-Chess Review Coach 是一个仅在本机运行的个人国际象棋复盘 Web 应用。当前代码基于
-[`Chess-analysis-mcp/tintins-chess-analysis`](https://github.com/Chess-analysis-mcp/tintins-chess-analysis)
-v2.0.2，保留其 FastAPI、Stockfish 进程池、Chessground 棋盘、历史记录、变化探索和
-训练能力，并将 Web 作为唯一主运行路径。
+Chess Review Coach 是一个仅在本机运行的单用户国际象棋复盘应用。唯一产品运行时是一个 Python
+进程：FastAPI 同时提供 JSON API 和 `frontend/` 下的无构建 Web 前端。Stockfish 和确定性 Core
+拥有棋类事实；可选 Agent 与 bounded explanation 只解释已验证证据。
 
-## 环境要求
+没有模型、credential 或 Agent SDK 时，棋盘、Engine Review、历史、长期学习画像、Retry、Puzzle
+和训练仍然工作。项目不提供 MCP、模型 CLI/subprocess、交互式登录、conversation resume 或隐式
+transport fallback。
 
-- Python 3.11+
-- [Stockfish](https://stockfishchess.org/download/) 可执行文件
-- `uv`，或 Python 自带的 `venv` + `pip`
+## 安装与启动
 
-Stockfish 会依次从 `STOCKFISH_PATH`、系统 `PATH`、常见安装目录以及应用数据目录的
-`engine/` 子目录中查找。Linux 可使用系统包管理器安装，也可执行：
-
-```bash
-python scripts/download_stockfish.py
-```
-
-## 启动
-
-使用 `uv`：
+要求 Python 3.11+ 和 Stockfish。推荐使用 `uv`：
 
 ```bash
 uv sync
-uv run python -m server.web.runner
+CHESS_WEB_OPEN=0 uv run python -m server.web.runner
 ```
 
-或使用标准 Python 环境：
+需要 Agent 时安装锁定的 `openai-agents==0.22.0` extra：
+
+```bash
+uv sync --extra agent
+CHESS_AGENT_MODEL=your-model OPENAI_API_KEY=... \
+CHESS_WEB_OPEN=0 uv run python -m server.web.runner
+```
+
+也可使用普通虚拟环境：
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m server.web.runner
-CHESS_WEB_OPEN=0 CHESS_WEB_PORT=8875 .venv/bin/python -m server.web.runner
-CHESSCOACH_DATA_DIR=/home/msn/ChessCoach/.chess-review CHESS_WEB_OPEN=0 CHESS_WEB_PORT=8875 .venv/bin/python -m server.web.runner
+CHESS_WEB_OPEN=0 .venv/bin/python -m server.web.runner
 ```
 
-浏览器访问 <http://127.0.0.1:8765>。打开 Games 面板的 `Import`，可粘贴或上传
-单盘/多盘 PGN；系统会先规范化并保存棋局，再执行“全盘快速扫描 -> 关键局面选择 ->
-MultiPV 深度分析 -> 确定性棋盘事实提取”。事实层从 FEN 和合法 PV 重放生成，不调用
-LLM；用户主动请求后，后端才会逐个关键局面生成结构化中文解释。同一 Engine/Facts 输入
-和同一 Provider 配置都会在本地复用。
+默认访问 <http://127.0.0.1:8765>。Web 只允许监听 loopback。Stockfish 会从
+`STOCKFISH_PATH`、系统 `PATH`、常见安装目录和 `<DATA_DIR>/engine/` 查找；也可运行：
 
-复盘页默认进入 `Key positions`，也可切换到 `My mistakes` 或 `All moves`。棋盘、White POV
-评估时间线、关键局面列表和解释面板共用同一个 ply；实战线/最佳线中的 SAN 可点击并播放，
-随时可以返回主线。AI 不可用时面板直接展示 Engine facts、推荐着和合法变化，不阻塞复盘。
-
-每个关键局面都可以进入 `Retry`：棋盘先隐藏实战着、Engine 推荐、箭头、评价和解释，用户
-直接走一步后再获得 MultiPV/Stockfish 反馈。提示按 Think、Area、First move、Show line
-逐级揭示。`Practice` 会把当前局面直接送入 `Puzzles -> From your games`；个人题也可按
-fact category 筛选，多个合理候选着均可通过，不要求猜中 Engine 第一选择。
-
-## 本地配置
-
-| 环境变量 | 用途 | 默认值 |
-| --- | --- | --- |
-| `CHESSCOACH_DATA_DIR` | 历史、设置、缓存和 managed Stockfish 的根目录 | 操作系统用户数据目录 |
-| `CHESS_DATA_DIR` | 兼容上游项目的数据目录变量 | 未设置 |
-| `STOCKFISH_PATH` | Stockfish 路径或命令名 | 自动发现 |
-| `CHESS_WEB_HOST` | Web 监听地址，只允许 loopback | `127.0.0.1` |
-| `CHESS_WEB_PORT` | Web 端口 | `8765` |
-| `CHESS_WEB_OPEN` | 启动时是否自动打开浏览器 | `1` |
-| `CHESS_ENGINE_POOL_SIZE` | 复用的 Stockfish 进程数 | `2` |
-| `CHESS_SWEEP_DEPTH` | Stage 1 全盘扫描深度 | `16` |
-| `CHESS_DEEP_ANALYSIS_DEPTH` | Stage 2 关键局面深度 | `22` |
-| `CHESS_DEEP_ANALYSIS_MULTIPV` | 关键局面候选线数量，最少为 3 | `3` |
-| `CHESS_CRITICAL_MIN` / `CHESS_CRITICAL_MAX` | 每盘关键局面目标范围 | `3` / `8` |
-| `CHESS_ANALYSIS_PRESET` | Web 分析档位：`fast` / `balanced` / `deep` | `balanced` |
-| `CHESS_FACT_LINE_PLIES` | facts 对实战线和最佳线的最大重放 ply 数 | `8` |
-| `CHESS_ENGINE_CACHE` | 是否启用版本化局面磁盘缓存 | `1` |
-| `CHESS_EXPLANATION_PROVIDER` | 解释 Provider：`auto` / `openai-compatible` / `claude-cli` | `auto` |
-| `CHESS_EXPLANATION_BASE_URL` | 专用于解释的 OpenAI-compatible API base URL | 复用设置页本地模型 |
-| `CHESS_EXPLANATION_MODEL` | 专用于解释的模型名 | 复用设置页本地模型 |
-| `CHESS_EXPLANATION_API_KEY` | 远程兼容 API 的 Bearer Key，仅后端进程读取 | 未设置 |
-| `CHESS_EXPLANATION_TIMEOUT` | 单局面模型调用超时秒数 | `600` |
-| `CHESS_EXPLANATION_LANGUAGE` | 结构化解释语言：`zh-CN` / `en` | `zh-CN` |
-| `CHESS_AGENT_ENABLED` | 是否启用可选 Agent API | `1` |
-| `CHESS_AGENT_MODEL` | Agent SDK 使用的模型，必须显式配置 | 未设置 |
-| `CHESS_AGENT_BASE_URL` | 可选的 Responses-compatible API base URL | OpenAI 官方 API |
-| `CHESS_AGENT_API_KEY` | 自定义 Agent endpoint credential，仅后端读取 | 未设置 |
-| `OPENAI_API_KEY` | OpenAI 官方 Agent API credential，仅后端读取 | 未设置 |
-| `CHESS_AGENT_MAX_TURNS` | 单次 Agent run 最大 turn | `4` |
-| `CHESS_AGENT_MAX_TOOL_CALLS` | 单次 Agent run 最大工具调用 | `6` |
-| `CHESS_AGENT_MAX_ENGINE_CALLS` | 单次 Agent run 最大 Engine 工具调用 | `2` |
-| `CHESS_AGENT_TIMEOUT` | 单次 Agent run wall-clock timeout 秒数 | `120` |
-| `CHESS_PERSONALIZE_HISTORY` | 是否读取 canonical learning memory 用于个性化、复盘排序和弱点训练 | `1` |
-
-设置面板会把个人配置保存到数据目录下的 `settings.json`。代码目录不保存个人棋局。
-
-导入棋局的 Engine 结果保存在 `<DATA_DIR>/games/<game_id>/analysis.json`，不同复盘方的
-结果同时保存在 `analysis/white.json` 或 `analysis/black.json`。每个 `critical_positions[]`
-都内嵌 `facts`，包含三个局面 snapshot、实战/最佳着效果、有限变例结果、material/王安全/
-活动性 delta，以及仅在证据充分时产生的 motif 和分类。相关接口：
-
-```text
-POST /api/games/{game_id}/analyze
-GET  /api/jobs/{job_id}
-GET  /api/games/{game_id}/analysis?review_side=white|black
-POST /api/games/{game_id}/explanations
-GET  /api/games/{game_id}/explanations?review_side=white|black
-POST /api/training/attempt
-GET  /api/training/hint
-GET  /api/training/attempts
-GET  /api/profile?days=7|30|0
-DELETE /api/games/{game_id}
-POST /api/data/engine-cache/clear
-POST /api/agent/sessions
-GET  /api/agent/sessions/{session_id}
-POST /api/agent/sessions/{session_id}/context
-POST /api/agent/sessions/{session_id}/messages
-POST /api/agent/sessions/{session_id}/actions/start-training
-DELETE /api/agent/sessions/{session_id}
+```bash
+python scripts/download_stockfish.py
+python -m server.doctor
 ```
 
-`POST .../explanations` 默认逐个生成所有关键局面，也可传
-`{"review_side":"white","critical_id":"ply-33","force":false}` 只处理一处。输入未变化时
-直接命中缓存；`force=true` 显式重生成。通过 schema、权威着法/分类和证据引用校验的内容才会
-写入 `<DATA_DIR>/games/<game_id>/explanations.json`，各复盘方另存于
-`explanations/white.json` 或 `explanations/black.json`。模型失败不会改动 `analysis.json`，也
-不会让 Engine Review 不可用。
+## 复盘与训练
 
-Retry 和个人题的每次提交都追加保存到 `<DATA_DIR>/history/attempts.jsonl`，记录原棋局、
-`critical_id`、复盘方、所选 UCI、判定、提示次数和是否解决；旧版
-`<DATA_DIR>/training/attempts.jsonl` 会继续被读取。已存在的 Stage 2 MultiPV/实战线会
-直接复用；只有未被预分析覆盖的合法着法才会触发一次按需 Stockfish 分析。
+从 Games -> Import 粘贴或上传 PGN。分析流程为全盘快速扫描、关键局面选择、MultiPV 深度分析和
+确定性 facts 提取。FEN、合法着重放、评价、分类和训练判定都不依赖模型。
 
-长期学习事实统一保存在 `<DATA_DIR>/learning/`：`observations.jsonl` 是可从 analysis/attempt
-artifact 重建、按稳定 key 去重的 canonical evidence；`estimates.json` 是 taxonomy v1、
-aggregation policy v1 下生成的 recent/lifetime cache。Recent 窗口固定为最近 30 天，单次失败
-最多进入 `watch`；weakness 至少需要两次 failure 且跨两个独立局面，strength 至少需要三次
-success 且跨两个独立局面。旧 `/api/profile` 继续保留 category、accuracy 和 training 统计形状，
-但 weakness、coach summary、Agent memory 和弱点题目偏置只读取 canonical estimates。
+复盘页可浏览 Key positions、My mistakes 和 All moves，并进入 Retry 或 Practice。个人训练会复用
+现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical
+observation，再确定性重建 recent/lifetime skill estimate。
 
-应用启动时会同步执行幂等 backfill 并校验 estimates。学习文件损坏或版本不兼容时会从
-observations 重建；backfill 或 learning projection 失败只关闭本进程的个性化能力，并暴露可操作
-的 `learning_sync_error` / `learning_storage_error`，不会阻止棋盘、历史或 Engine Review 启动。
-关闭 `CHESS_PERSONALIZE_HISTORY` 后，Agent service、profile tool 和 retrieval 会在读取学习文件前
-直接短路。
-
-分析成功后，`<DATA_DIR>/history/games.jsonl` 会按 `(game_id, reviewed_side)` 原子更新，
-而不是重复追加同一盘。Personal coach 可按最近 7 天、30 天或全部历史聚合胜负、accuracy、
-错误级别、Stage 2 category、阶段损失、开局和训练解决率；只有同类错误重复出现且占比或
-累计损失达到阈值时才显示为弱点。每条弱点都可回到典型关键局面或直接进入个人训练。
-删除单局会同步删除该局 artifact、索引和关联 attempt；清理 Engine cache 只删除可重建缓存，
-不会删除棋局、解释、画像或 managed Stockfish。
-
-设置页已有的本地模型地址和模型名会被 `auto` Provider 直接复用。连接远程兼容 API 时，
-例如可在启动进程中设置：
+`Generate AI explanation` 使用独立的 bounded OpenAI-compatible API provider，结果通过 schema、
+权威着法/分类和 evidence 校验后写入 `explanations.json`。它不进入 Agent loop，也不复用 Agent
+credential：
 
 ```bash
 CHESS_EXPLANATION_PROVIDER=openai-compatible \
 CHESS_EXPLANATION_BASE_URL=https://api.example.com/v1 \
 CHESS_EXPLANATION_MODEL=your-model \
-CHESS_EXPLANATION_API_KEY=your-key \
+CHESS_EXPLANATION_API_KEY=... \
 .venv/bin/python -m server.web.runner
 ```
 
-API Key 只用于后端 Authorization header，不返回浏览器、不进入 prompt，也不写入
-`explanations.json`。未配置兼容 API 时，`auto` 会尝试现有 Claude CLI 登录；两者都不可用
-时只返回解释服务错误，棋盘和 Stockfish 分析保持正常。
+`auto` 只选择这条 API provider；base URL 或 model 缺失时 explanation 明确 unavailable，不回退
+CLI。模型失败不会修改 `analysis.json`，也不会影响 Engine Review。
 
-## 可选能力
+## Agent 配置
 
-Web 核心不依赖 MCP。只有需要保留上游 MCP 入口时才安装额外依赖：
+Agent 使用后端 Responses API、一个 Chess Coach Agent、typed function tools、structured output、
+SQLite conversation session 和非流式 bounded runs。
 
-```bash
-uv sync --extra mcp
-uv run python -m server.mcp_server
+| 环境变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `CHESS_AGENT_ENABLED` | 启用 Agent surface | `1` |
+| `CHESS_AGENT_MODEL` | 显式模型显示名/ID | 未设置 |
+| `OPENAI_API_KEY` | 官方 OpenAI Responses credential | 未设置 |
+| `CHESS_AGENT_BASE_URL` | 自定义 Responses-compatible base URL | 官方 OpenAI API |
+| `CHESS_AGENT_API_KEY` | 自定义 endpoint credential | 未设置 |
+| `CHESS_AGENT_MAX_TURNS` | 单 run 最大 turn | `4` |
+| `CHESS_AGENT_MAX_TOOL_CALLS` | 单 run 最大工具调用 | `6` |
+| `CHESS_AGENT_MAX_ENGINE_CALLS` | 单 run 最大 Engine 工具调用 | `2` |
+| `CHESS_AGENT_TIMEOUT` | 单 run wall-clock 秒数 | `120` |
+| `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
+
+官方 OpenAI 路径不需要本地 compatibility certificate。自定义 endpoint 必须先使用相同 runtime、
+fixture tools、dataset 和 scorer 完整通过 portfolio；证书绑定 endpoint SHA-256 指纹、模型、SDK、
+policy、response schema、dataset 和 scorer 版本。缺失、损坏或不匹配时 capability 返回
+`agent_endpoint_incompatible`，不会回退到 Chat Completions 或自建 tool loop。
+
+Credential 只由后端读取，不返回浏览器，不写 prompt、conversation、artifact、run log 或 eval
+report。完整 custom 认证命令见 [Operations](docs/operations.md)。
+
+## 其他配置
+
+| 环境变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `CHESSCOACH_DATA_DIR` | 所有个人数据和 managed Engine 的根目录 | 操作系统用户数据目录 |
+| `CHESS_DATA_DIR` | 旧数据目录变量兼容 | 未设置 |
+| `STOCKFISH_PATH` | Stockfish 路径或命令名 | 自动发现 |
+| `CHESS_WEB_HOST` / `CHESS_WEB_PORT` | loopback 地址和端口 | `127.0.0.1` / `8765` |
+| `CHESS_WEB_OPEN` | 启动时打开浏览器 | `1` |
+| `CHESS_ENGINE_POOL_SIZE` | Stockfish pool 大小 | `2` |
+| `CHESS_SWEEP_DEPTH` | Stage 1 扫描深度 | `16` |
+| `CHESS_DEEP_ANALYSIS_DEPTH` | Stage 2 深度 | `22` |
+| `CHESS_DEEP_ANALYSIS_MULTIPV` | Stage 2 候选数 | `3` |
+| `CHESS_ANALYSIS_PRESET` | `fast` / `balanced` / `deep` | `balanced` |
+| `CHESS_ENGINE_CACHE` | 版本化 Engine cache | `1` |
+| `CHESS_PERSONALIZE_HISTORY` | canonical learning memory/训练个性化 | `1` |
+
+设置页只保存仍有效的 Web 设置到 `<DATA_DIR>/settings.json`。旧 `coach_ai_*`、`local_llm_*` 和
+`claude-cli` 值可以被旧文件读取，但会被忽略，且下次保存时不会重写。
+
+## 数据与 API
+
+主要 artifact：
+
+```text
+<DATA_DIR>/games/<game_id>/analysis.json
+<DATA_DIR>/games/<game_id>/explanations.json
+<DATA_DIR>/history/games.jsonl
+<DATA_DIR>/history/attempts.jsonl
+<DATA_DIR>/learning/observations.jsonl
+<DATA_DIR>/learning/estimates.json
+<DATA_DIR>/agent/conversations.sqlite3
+<DATA_DIR>/agent/sessions/<session_id>.json
+<DATA_DIR>/agent/runs.jsonl
+<DATA_DIR>/agent/compatibility/custom-responses.json
 ```
 
-Grounded single Agent 也作为独立 optional extra 安装：
+`analysis.json`、`explanations.json`、history、attempt 和 learning schema 保持兼容。旧 analysis
+cache 中的 `coach_ai_text` 可加载但被忽略。
 
-```bash
-uv sync --extra agent
-CHESS_AGENT_MODEL=your-model OPENAI_API_KEY=your-key \
-  .venv/bin/python -m server.web.runner
+Agent API 包括 session create/get/context/message/delete、validated start-training action，以及：
+
+```text
+GET    /api/agent/metrics?limit=100
+DELETE /api/agent/runs
 ```
 
-Review chat 始终使用 Agent session/context/message API，不再回退到遗留 `/api/chat` 或 CLI
-conversation state。后端未配置 SDK、模型或 credential 时，chat 会显示 Agent 不可用；棋盘、
-Stockfish 复盘、历史和训练仍可正常工作。Agent checkpoint（包括 compact conversation
-summary）、SDK conversation 和脱敏 run summary 分别保存在
-`<DATA_DIR>/agent/sessions/`、`conversations.sqlite3` 和 `runs.jsonl`。Agent 不读取 CLI 登录态，
-也不会把 endpoint 或 key 返回浏览器。遗留 `/api/chat` 仅供尚未迁移的其他功能使用。
+run log 只记录 version、run/session/generation、去敏 task/activity、model/endpoint type、usage、
+status/error、latency 和 tool 摘要。位置只保存 game/critical reference 或 FEN fingerprint；不保存
+完整 prompt、FEN、PV、base URL、credential、reasoning 或 traceback。清理 runs 不会触碰 session、
+learning、棋局、解释、attempt 或 Engine cache。
 
-开启个性化后，“接下来练什么”会从 canonical weakness 和已有 Stage 2 analysis 检索最多十个
-候选，并生成最多五题的临时训练草案。用户点击训练动作时，后端会按 session generation 和
-源 artifact 重新验证全部位置，再按草案顺序进入 Puzzles；草案不持久化，评分和长期 evidence
-更新继续复用现有 attempt、observation 和 estimate 流程。
+## Eval 与验证
 
-AI 教练同样不是 Web 启动前提；没有模型时，Stockfish 复盘、棋盘、历史和训练功能仍可
-工作。解释业务层通过统一 Provider 接口调用本地/远程 OpenAI-compatible API 或可选的
-Claude CLI，浏览器不直接接触模型凭据。
+Phase 0 的 26 个 case、ID 和 v1 baseline 保持不变；`agent-portfolio-v2` 在其上增加 summary、
+reference/action、recent improvement、training diversity/stale source、storage、stale/cancel、
+malformed output 和 custom incompatibility cases。
 
-需求入口见 [Requirement.md](Requirement.md)，架构范围见
-[docs/requirements/01-base-and-architecture.md](docs/requirements/01-base-and-architecture.md)。
+默认离线验证：
+
+```bash
+npm run test:frontend
+.venv/bin/python -m unittest discover -s tests/backend -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
+  'from server.web.app import create_app; create_app()'
+.venv/bin/python -m tests.evals.run_portfolio --source deterministic
+```
+
+真实 OpenAI/custom eval 是显式网络操作，不属于默认测试，也不把 credential 作为开发前提。当前
+提交包含 deterministic v2 report；live OpenAI/custom reports 需提供 credential 后生成。详细命令、
+降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见 [ADR](docs/adr/)，Agent 需求
+与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。

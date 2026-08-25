@@ -1,9 +1,4 @@
-"""Phase 0 regression baseline for existing backend coaching surfaces.
-
-The new Agent API did not exist when this baseline was recorded. ``/api/chat`` below is the
-legacy CLI-backed contract and is intentionally exercised only through mocks; it is not a model
-transport compatibility requirement for the new Agent runtime.
-"""
+"""Regression baseline for deterministic backend surfaces and Web-only hardening."""
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +31,7 @@ os.environ.update(
 
 import httpx
 
-from server import claude_bridge, config
+from server import config
 from server.core import app_liveness, history, lifecycle, training
 from server.core.explanation.models import ProviderResponse
 from server.core.agent.models import ChessReference, LearningMemoryItem, LearningObservation
@@ -133,12 +128,11 @@ class _BackendBaselineCase(unittest.TestCase):
         self._data.cleanup()
 
 
-class LegacyChatContractTests(_BackendBaselineCase):
-    def test_openapi_exposes_current_coaching_surface_contracts(self) -> None:
+class WebOnlyContractTests(_BackendBaselineCase):
+    def test_openapi_exposes_deterministic_surfaces_and_removes_legacy_ai(self) -> None:
         schema = self.app.openapi()
         paths = schema["paths"]
         expected_methods = {
-            "/api/chat": {"post"},
             "/api/profile": {"get"},
             "/api/training/attempt": {"post"},
             "/api/training/hint": {"get"},
@@ -152,12 +146,15 @@ class LegacyChatContractTests(_BackendBaselineCase):
                     self.assertIn("200", paths[path][method]["responses"])
                     self.assertIn("422", paths[path][method]["responses"])
 
-        self.assertEqual(
-            "#/components/schemas/ChatBody",
-            paths["/api/chat"]["post"]["requestBody"]["content"]["application/json"][
-                "schema"
-            ]["$ref"],
-        )
+        for legacy_path in (
+            "/api/chat",
+            "/api/chat-history",
+            "/api/chat-reset",
+            "/api/coach",
+            "/api/puzzle/explain",
+            "/api/puzzle/storm/summary",
+        ):
+            self.assertNotIn(legacy_path, paths)
         self.assertEqual(
             "#/components/schemas/AttemptBody",
             paths["/api/training/attempt"]["post"]["requestBody"]["content"][
@@ -183,7 +180,6 @@ class LegacyChatContractTests(_BackendBaselineCase):
 
     def test_fastapi_rejects_invalid_bodies_and_query_values(self) -> None:
         responses = [
-            self.request("POST", "/api/chat", json={}),
             self.request(
                 "POST",
                 "/api/training/attempt",
@@ -202,52 +198,6 @@ class LegacyChatContractTests(_BackendBaselineCase):
             self.request("GET", "/api/profile?days=not-an-integer"),
         ]
         self.assertTrue(all(response.status_code == 422 for response in responses))
-
-    def test_chat_forwards_position_context_and_returns_legacy_response(self) -> None:
-        response_payload = {"answer": "The pawn is pinned.", "session_id": "legacy-session"}
-        with patch("server.web.routes_chat.claude_bridge.ask", return_value=response_payload) as ask:
-            response = self.request(
-                "POST",
-                "/api/chat",
-                json={
-                    "question": "Why not take?",
-                    "fen": "test-fen",
-                    "last_move": "Nxd5",
-                    "move_fen": "move-fen",
-                    "session_id": "previous-session",
-                    "use_profile": True,
-                },
-            )
-
-        self.assertEqual(200, response.status_code)
-        self.assertEqual(response_payload, response.json())
-        ask.assert_called_once_with(
-            "Why not take?",
-            fen="test-fen",
-            last_move="Nxd5",
-            move_fen="move-fen",
-            session_id="previous-session",
-            use_profile=True,
-        )
-
-    def test_chat_rejects_blank_question_without_calling_model(self) -> None:
-        with patch("server.web.routes_chat.claude_bridge.ask") as ask:
-            response = self.request("POST", "/api/chat", json={"question": "   "})
-
-        self.assertEqual(400, response.status_code)
-        self.assertEqual({"error": "Empty question."}, response.json())
-        ask.assert_not_called()
-
-    def test_chat_model_failure_has_stable_503_degradation(self) -> None:
-        with patch(
-            "server.web.routes_chat.claude_bridge.ask",
-            side_effect=claude_bridge.ChatError("Model unavailable."),
-        ):
-            response = self.request("POST", "/api/chat", json={"question": "What now?"})
-
-        self.assertEqual(503, response.status_code)
-        self.assertEqual({"error": "Model unavailable."}, response.json())
-
 
 class ProfileContractTests(_BackendBaselineCase):
     def test_profile_aggregates_games_weakness_and_training_from_local_files(self) -> None:

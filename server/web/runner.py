@@ -1,4 +1,4 @@
-"""Run Chess Review Coach as a standalone Web app or an optional background server."""
+"""Run the sole Chess Review Coach FastAPI + static frontend product runtime."""
 from __future__ import annotations
 
 import ipaddress
@@ -13,8 +13,6 @@ from server.core import engine
 from server.core import settings
 from server.web.app import create_app
 
-_thread: threading.Thread | None = None
-_lock = threading.Lock()
 _opened = False
 _open_lock = threading.Lock()
 
@@ -51,43 +49,6 @@ def open_board_once() -> None:
     except Exception as exc:  # pragma: no cover - defensive
         print(f"[chess-web] could not open browser ({exc}); board is at {url}",
               file=sys.stderr, flush=True)
-
-
-def _serve() -> None:
-    try:
-        _require_loopback(config.WEB_HOST)
-        cfg = uvicorn.Config(
-            create_app(),
-            host=config.WEB_HOST,
-            port=config.WEB_PORT,
-            log_level="warning",
-            access_log=False,
-        )
-        uvicorn.Server(cfg).run()  # blocks (runs its own event loop)
-    except OSError as exc:
-        print(
-            f"[chess-web] could not bind {config.WEB_HOST}:{config.WEB_PORT} ({exc}); "
-            "board disabled for this process.",
-            file=sys.stderr,
-            flush=True,
-        )
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"[chess-web] web server stopped: {exc}", file=sys.stderr, flush=True)
-
-
-def start_in_thread() -> None:
-    """Start the web server once. Safe to call multiple times."""
-    global _thread
-    with _lock:
-        if _thread is not None and _thread.is_alive():
-            return
-        _thread = threading.Thread(target=_serve, name="chess-web", daemon=True)
-        _thread.start()
-        print(
-            f"[chess-web] serving board at {_web_url()}",
-            file=sys.stderr,
-            flush=True,
-        )
 
 
 def _require_loopback(host: str) -> None:

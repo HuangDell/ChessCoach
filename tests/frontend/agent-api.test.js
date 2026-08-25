@@ -12,6 +12,8 @@ test("agent API owns the complete session endpoint contract", async () => {
   http.post = async (...args) => { calls.push(["POST", ...args]); return {}; };
   http.delete = async (...args) => { calls.push(["DELETE", ...args]); return null; };
   try {
+    await agentApi.metrics(250, { signal });
+    await agentApi.clearRuns({ signal });
     await agentApi.createSession({ game_id: "game-1" }, { signal });
     await agentApi.getSession("session/one", { signal });
     await agentApi.updateContext("session/one", { expected_generation: 2 }, { signal });
@@ -24,6 +26,8 @@ test("agent API owns the complete session endpoint contract", async () => {
   }
 
   assert.deepEqual(calls, [
+    ["GET", "/api/agent/metrics", { signal, query: { limit: 250 } }],
+    ["DELETE", "/api/agent/runs", { signal }],
     ["POST", "/api/agent/sessions", { game_id: "game-1" }, { signal }],
     ["GET", "/api/agent/sessions/session%2Fone", { signal }],
     ["POST", "/api/agent/sessions/session%2Fone/context", { expected_generation: 2 }, { signal }],

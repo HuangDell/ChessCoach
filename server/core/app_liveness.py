@@ -1,7 +1,7 @@
 """App-mode liveness: quit the server shortly after the app's browser tab is *really* closed.
 
-Only active in **app mode** (CHESS_APP_MODE=1 — the double-click launcher), so the MCP-driven board
-never self-exits when you close a tab.
+Only active in **app mode** (CHESS_APP_MODE=1, the double-click launcher). Normal Web development
+servers do not self-exit when a tab closes.
 
 The hard part is telling "tab closed" apart from "tab lost focus / went to the background", because
 browsers heavily throttle background-tab timers (down to ~once a minute). So we use two signals:

@@ -306,7 +306,7 @@ test("Storm review renders filtered themes and opens the selected puzzle", async
       blink() {}, render() {}, reset() {}, setLastMove() {}, setOrientation() {},
       setShapes() {}, shake() {},
     },
-    getConfig: () => ({ has_llm: true }),
+    getConfig: () => ({}),
     isPuzzleActive: () => true,
     solution: { clear() {} },
     trainer,

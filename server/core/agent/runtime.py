@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from server.core.agent.models import AgentError, AgentRunRequest, AgentRunResult
+from server.core.agent.models import AgentError, AgentRunRequest, AgentRunResult, ToolCallRecord
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,13 @@ class AgentRuntimeAvailability:
     model: str
     endpoint_type: str
     reason: str | None = None
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentRuntimeTelemetry:
+    tool_calls: list[ToolCallRecord]
+    usage: dict[str, int | float]
 
 
 class AgentRuntimeFailure(RuntimeError):
@@ -38,10 +45,11 @@ class UnavailableAgentRuntime:
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
         del request
+        code = self.availability.error_code or "agent_unavailable"
         raise AgentRuntimeFailure(
             AgentError(
-                code="agent_unavailable",
+                code=code,
                 message=self.availability.reason or "Chess Coach Agent is not available.",
-                recoverable=True,
+                recoverable=code not in {"agent_endpoint_incompatible", "agent_authentication_failed"},
             )
         )

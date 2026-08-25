@@ -312,7 +312,7 @@ def resolve_identity(
             if a_plat is None or _norm_platform(str(a_plat)) == platform:
                 return pid, platform, name
 
-    # 2. CHESS_USERNAME + CHESS_ALIASES from the env (the .mcp.json setup path): every listed
+    # 2. CHESS_USERNAME + CHESS_ALIASES from the environment: every listed
     #    handle folds into CHESS_USERNAME as the canonical player_id.
     if name_lc and config.USERNAME:
         if name_lc == config.USERNAME.lower():
@@ -735,7 +735,7 @@ def _is_recurring(motif: str, data_dir: Optional[str]) -> bool:
 def coach_summary(sess: ReviewSession, data_dir: Optional[str] = None) -> Optional[str]:
     """A short, engine-free end-of-game coaching blurb grounded in this game's flagged moves.
 
-    Same philosophy as MoveReview.comment: templated + deterministic, no engine and no Claude
+    Same philosophy as MoveReview.comment: templated and deterministic, with no Engine or model
     call, so it's free and always available. Three beats — overall accuracy/tally, the single
     costliest moment (with the better move), and the recurring thread to watch (tied to the
     player's profile when the same theme shows up across games). Returns None for a clean game.
@@ -1680,11 +1680,11 @@ def write_profile(player_id: str, data_dir: Optional[str] = None) -> dict:
 
 
 # --------------------------------------------------------------------------------------
-# Public entry points (used by the MCP tools)
+# Public entry points used by Web jobs and tests.
 # --------------------------------------------------------------------------------------
 def record_game(sess: ReviewSession, data_dir: Optional[str] = None) -> dict:
     """Append the game to history and refresh the player's profile cache. Returns the record."""
-    # Legacy API/MCP callers may start analysis without going through POST /games/import. Materialize
+    # Compatibility callers may start analysis without going through POST /games/import. Materialize
     # the same stable source artifact here so every new history row remains reopenable after restart.
     game_id = _game_id(sess)
     source_path = os.path.join(_data_dir(data_dir), "games", game_id, "source.pgn")

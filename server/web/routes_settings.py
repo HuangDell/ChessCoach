@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import shutil
 
-import httpx
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -18,11 +17,6 @@ from server.core import engine
 from server.core import settings as settings_mod
 
 router = APIRouter()
-
-# Where Ollama serves by default; used when the Settings field is still blank so "Detect" works
-# with one click on a stock install.
-_OLLAMA_DEFAULT_URL = "http://localhost:11434"
-
 
 class SettingsPatch(BaseModel):
     username: str | None = None
@@ -35,14 +29,10 @@ class SettingsPatch(BaseModel):
     profile_lifetime: str | None = None
     player_elo: str | None = None
     stockfish_path: str | None = None
-    coach_ai_auto: bool | None = None
-    coach_ai_persist: bool | None = None
     personalize_history: bool | None = None
     puzzle_animations: bool | None = None
     puzzle_auto_advance: bool | None = None
     puzzle_mistake_interleave: bool | None = None
-    local_llm_base_url: str | None = None
-    local_llm_model: str | None = None
     default_review_side: str | None = None
     board_orientation: str | None = None
     analysis_preset: str | None = None
@@ -70,29 +60,6 @@ def get_settings() -> dict:
             "deep_depth": config.DEEP_ANALYSIS_DEPTH,
         },
     }
-
-
-@router.get("/ollama/models")
-def ollama_models(url: str = "") -> dict:
-    """List the models a local Ollama install has pulled, so the Settings panel can offer a picker.
-
-    Queries Ollama's native `GET /api/tags`. `url` is the optional base URL the user typed; blank
-    falls back to the saved local-LLM URL, then Ollama's default port. Never raises — a server
-    that's down or not Ollama just returns `{ok: false}` with a friendly hint.
-    """
-    base = (url or config.LOCAL_LLM_BASE_URL or _OLLAMA_DEFAULT_URL).strip().rstrip("/")
-    try:
-        resp = httpx.get(f"{base}/api/tags", timeout=3.0)
-        resp.raise_for_status()
-        models = [m["name"] for m in resp.json().get("models", []) if m.get("name")]
-    except Exception:
-        return {
-            "ok": False,
-            "base_url": base,
-            "models": [],
-            "error": f"No Ollama found at {base}. Is it installed and running (`ollama serve`)?",
-        }
-    return {"ok": True, "base_url": base, "models": models}
 
 
 @router.post("/settings")

@@ -1,7 +1,7 @@
 """In-memory state for the puzzle currently being solved.
 
-A process singleton, mirroring `session.py`'s ReviewSession, so the board and a future MCP tool
-share one "current puzzle". Holds the puzzle plus solve progress (which ply the solver is on,
+A process singleton, mirroring `session.py`'s ReviewSession, so the Web process has one
+"current puzzle". Holds the puzzle plus solve progress (which ply the solver is on,
 attempts, whether hints were used, and whether it has already been failed/scored).
 """
 

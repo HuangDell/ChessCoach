@@ -5,13 +5,11 @@ import { createPuzzleController } from "./puzzles/controller.js";
 import { createReviewController } from "./review/controller.js";
 import { createSettingsController } from "./settings/controller.js";
 import { createSystemController } from "./system/controller.js";
-import { chatApi } from "./api/chat.js";
 import { gamesApi } from "./api/games.js";
 import { puzzleApi } from "./api/puzzles.js";
 import { reviewApi } from "./api/review.js";
 import { systemApi } from "./api/system.js";
 import { byId } from "./core/dom.js";
-import { storageGet, storageSet } from "./core/storage.js";
 
 export function createApp() {
   const $ = byId;
@@ -42,7 +40,6 @@ export function createApp() {
     if (config.agent) agentCapability = config.agent;
     return {
       review: {
-        coachAiAuto: !!config.coach_ai_auto,
         personalizeHistory: config.personalize_history !== false,
         defaultReviewSide: config.default_review_side || "auto",
         boardOrientation: config.board_orientation || "review",
@@ -71,13 +68,6 @@ export function createApp() {
 
   async function loadInitialState() {
     const generation = startupGeneration;
-    try {
-      if (!storageGet(sessionStorage, "chessAppSession")) {
-        storageSet(sessionStorage, "chessAppSession", "1");
-        await chatApi.reset().catch(() => {});
-      }
-    } catch (_) {}
-
     let config = {};
     try {
       config = await systemApi.appConfig();
@@ -124,7 +114,6 @@ export function createApp() {
     if (generation !== startupGeneration || artifactsLoaded === false) return;
     if (!wantPuzzle) review.selectInitial(session);
     review.restoreChat();
-    review.prepareCoachAI(session);
     if (wantPuzzle) await puzzles.setMode(true, { resume: true });
   }
 

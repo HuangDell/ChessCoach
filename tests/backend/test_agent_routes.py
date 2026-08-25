@@ -118,6 +118,14 @@ class FakeAgentService:
         self.calls.append(("delete", session_id))
         self._fail()
 
+    def run_metrics(self, *, limit: int = 100) -> dict:
+        self.calls.append(("metrics", limit))
+        return {"schema_version": 1, "record_count": 2, "limit": limit}
+
+    def clear_runs(self) -> dict:
+        self.calls.append(("clear_runs", None))
+        return {"records_removed": 2, "bytes_removed": 123}
+
     async def close(self) -> None:
         self.closed = True
 
@@ -210,6 +218,7 @@ class AgentRouteTests(unittest.TestCase):
             (AgentError(code="invalid_agent_response", message="invalid output", recoverable=True), 502),
             (AgentError(code="max_turns_exceeded", message="turns", recoverable=True), 502),
             (AgentError(code="agent_unavailable", message="unavailable", recoverable=True), 503),
+            (AgentError(code="agent_endpoint_incompatible", message="incompatible", recoverable=False), 503),
             (AgentError(code="agent_authentication_failed", message="auth", recoverable=True), 503),
             (AgentError(code="agent_rate_limited", message="limited", recoverable=True), 503),
             (AgentError(code="agent_timeout", message="timeout", recoverable=True), 504),
@@ -251,6 +260,18 @@ class AgentRouteTests(unittest.TestCase):
         serialized = response.text.lower()
         self.assertNotIn("base_url", serialized)
         self.assertNotIn("api_key", serialized)
+
+    def test_metrics_limit_and_run_only_cleanup_contract(self) -> None:
+        metrics = self.request("GET", "/api/agent/metrics?limit=250")
+        self.assertEqual(200, metrics.status_code)
+        self.assertEqual(250, metrics.json()["limit"])
+
+        cleared = self.request("DELETE", "/api/agent/runs")
+        self.assertEqual(200, cleared.status_code)
+        self.assertEqual(2, cleared.json()["records_removed"])
+
+        invalid = self.request("GET", "/api/agent/metrics?limit=1001")
+        self.assertEqual(422, invalid.status_code)
 
     def test_openapi_and_existing_guards_remain_active(self) -> None:
         paths = self.app.openapi()["paths"]

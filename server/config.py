@@ -245,7 +245,7 @@ if ANALYSIS_PRESET not in {"fast", "balanced", "deep"}:
 FACT_LINE_PLIES: int = max(1, int(os.environ.get("CHESS_FACT_LINE_PLIES", "8")))
 
 # Engine process pool size. 1-2 is plenty for a single-user local tool. Default 2 so the
-# web /evaluate route and a concurrent MCP call don't serialise behind one engine.
+# Separate pooled workers keep concurrent Web analysis requests from serializing behind one Engine.
 ENGINE_POOL_SIZE: int = int(os.environ.get("CHESS_ENGINE_POOL_SIZE", "2"))
 
 # Per-engine UCI options.
@@ -316,7 +316,7 @@ def _compose_identity(lichess: str, chesscom: str, aliases_raw: str) -> None:
     USERNAME_ALIASES = aliases
 
 
-# Identity from the env (.mcp.json setup path). Legacy CHESS_USERNAME is treated as the Lichess
+# Identity from environment variables. Legacy CHESS_USERNAME is treated as the Lichess
 # handle (it has always driven autoload); CHESS_CHESSCOM_USERNAME and CHESS_ALIASES are optional.
 _compose_identity(
     os.environ.get("CHESS_USERNAME", ""),
@@ -349,27 +349,13 @@ ANALYSIS_CACHE_MAX: int = int(os.environ.get("CHESS_ANALYSIS_CACHE_MAX", "1000")
 # changes. Entries live separately from whole-game ReviewSession caches.
 ENGINE_CACHE_ENABLED: bool = os.environ.get("CHESS_ENGINE_CACHE", "1") != "0"
 
-# The engine-grounded templated coaching blurb (history.coach_summary) is always attached to a
-# session summary — it's free (no engine/Claude work). The richer, Claude-WRITTEN summary is
-# generated on demand via /api/coach (a button in the UI), so it only spends the user's Claude
-# subscription when asked. This flag controls whether the UI presses that button AUTOMATICALLY for
-# each game opened; off by default (CHESS_COACH_AI_AUTO=1 to default it on).
-COACH_AI_AUTO: bool = os.environ.get("CHESS_COACH_AI_AUTO", "0") == "1"
-
-# Whether a generated AI coach summary is REMEMBERED across app restarts (persisted into the
-# analysis cache alongside the game) so reopening a game shows the saved summary instead of
-# spending the user's Claude subscription to regenerate it. On by default to save tokens; a
-# Settings → Advanced toggle and CHESS_COACH_AI_PERSIST=0 turn it off (regenerate each session).
-# The refresh (⟳) button on the summary card always forces a fresh write regardless.
-COACH_AI_PERSIST: bool = os.environ.get("CHESS_COACH_AI_PERSIST", "1") == "1"
-
-# Whether the in-browser "Ask your AI coach" chat injects the player's cross-game coaching profile
+# Whether the API-backed Agent uses the player's cross-game coaching profile
 # (recurring patterns from history) into the prompt. On by default; a Settings-panel toggle and
 # CHESS_PERSONALIZE_HISTORY=0 turn it off to send fewer tokens.
 PERSONALIZE_HISTORY: bool = os.environ.get("CHESS_PERSONALIZE_HISTORY", "1") == "1"
 
-# Self-terminate the server process after this many seconds of inactivity (no MCP tool call
-# and no board request), so an abandoned session doesn't linger as a process forever. Activity
+# Self-terminate the server process after this many seconds of Web inactivity, so an abandoned
+# standalone launch does not linger forever. Activity
 # resets the timer. Default 24h; CHESS_SESSION_TTL=0 disables the watchdog.
 SESSION_TTL_SECONDS: int = int(os.environ.get("CHESS_SESSION_TTL", str(24 * 60 * 60)))
 
@@ -448,29 +434,22 @@ CHESSCOM_TIMEOUT: float = float(os.environ.get("CHESS_CHESSCOM_TIMEOUT", "20"))
 CHESSCOM_SYNC_ENABLED: bool = os.environ.get("CHESS_CHESSCOM_SYNC", "1") != "0"
 CHESSCOM_SYNC_MAX: int = int(os.environ.get("CHESS_CHESSCOM_SYNC_MAX", "5"))
 
-# Endgame tablebase (server.core.tablebase). For <=7-man positions the in-browser chat / AI coach
-# facts include the EXACT theoretical result (win/draw/loss + DTZ/DTM) from the public Lichess
-# tablebase API, so endgame advice is precise instead of trusting a depth-limited eval. Best-effort
-# (any network/parse failure is silently omitted) and only used by the chat/coach path — the
-# interactive board never probes. CHESS_TABLEBASE=0 disables it; the API base is overridable for
-# tests.
+# Endgame tablebase boundary. CHESS_TABLEBASE=0 disables it; the API base is overridable for tests.
 TABLEBASE_ENABLED: bool = os.environ.get("CHESS_TABLEBASE", "1") != "0"
 TABLEBASE_API_BASE: str = os.environ.get(
     "CHESS_TABLEBASE_API_BASE", "https://tablebase.lichess.ovh"
 ).rstrip("/")
 TABLEBASE_TIMEOUT: float = float(os.environ.get("CHESS_TABLEBASE_TIMEOUT", "6"))
 
-# Web board. The standalone FastAPI process is the primary runtime. WEB_AUTOSTART is retained for
-# the optional MCP entry point, which can reuse the same engine pool and ReviewSession.
+# Web board. The standalone FastAPI process is the only product runtime.
 WEB_HOST: str = os.environ.get("CHESS_WEB_HOST", "127.0.0.1")
 WEB_PORT: int = int(os.environ.get("CHESS_WEB_PORT", "8765"))
-WEB_AUTOSTART: bool = os.environ.get("CHESS_WEB_AUTOSTART", "1") != "0"
 # Auto-open the board in the default browser the first time a game is analysed, so a
 # first-time user never has to be told the URL. Set CHESS_WEB_OPEN=0 to disable.
 WEB_OPEN: bool = os.environ.get("CHESS_WEB_OPEN", "1") != "0"
 # "App mode" is retained for compatibility with packaged launchers. The frontend reads it via
 # /api/app-config and, when on, auto-loads the user's most recent Lichess game on open. Left off
-# (0) for the MCP-driven board and dev `run_web.py <pgn>` runs, so neither gets a surprise autoload.
+# for normal development runs, so they do not get a surprise autoload.
 APP_MODE: bool = os.environ.get("CHESS_APP_MODE", "0") == "1"
 
 # Review-workspace preferences. These are also editable in the local Settings panel and never
@@ -483,20 +462,8 @@ if BOARD_ORIENTATION not in {"review", "white", "black"}:
     BOARD_ORIENTATION = "review"
 SHOW_THREAT_ARROWS: bool = os.environ.get("CHESS_SHOW_THREAT_ARROWS", "0") == "1"
 
-# Local / self-hosted LLM for the in-browser chat + AI coach summary. When LOCAL_LLM_BASE_URL is
-# set, the chat/coach are served by DIRECT HTTP to that server (see server.core.local_llm) — no
-# `claude` CLI and no login needed — instead of the user's Claude subscription. Any server with an
-# OpenAI-compatible /v1/chat/completions endpoint works (Ollama, LM Studio, llama.cpp, a LiteLLM
-# proxy). LOCAL_LLM_MODEL names the model to request (e.g. "qwen2.5-coder"); required for the local
-# path. Both are editable in the Settings panel. Leave the base URL blank to keep the default
-# subscription path (headless `claude -p`).
-LOCAL_LLM_BASE_URL: str = os.environ.get("CHESS_LOCAL_LLM_BASE_URL", "").strip()
-LOCAL_LLM_MODEL: str = os.environ.get("CHESS_LOCAL_LLM_MODEL", "").strip()
-
-# Structured per-position coaching explanations (Phase 5). ``auto`` reuses the local
-# OpenAI-compatible model from Settings when configured, otherwise it falls back to the optional
-# Claude CLI. A dedicated base/model/key can be supplied for a remote OpenAI-compatible API without
-# exposing credentials to the browser or persisting them in game artifacts.
+# Structured per-position coaching explanations. ``auto`` uses the dedicated OpenAI-compatible
+# API configuration when complete; there is no CLI, login, or subprocess fallback.
 EXPLANATION_PROVIDER: str = os.environ.get("CHESS_EXPLANATION_PROVIDER", "auto").strip() or "auto"
 EXPLANATION_BASE_URL: str = os.environ.get("CHESS_EXPLANATION_BASE_URL", "").strip()
 EXPLANATION_MODEL: str = os.environ.get("CHESS_EXPLANATION_MODEL", "").strip()
@@ -505,8 +472,7 @@ EXPLANATION_TIMEOUT: int = max(1, int(os.environ.get("CHESS_EXPLANATION_TIMEOUT"
 EXPLANATION_LANGUAGE: str = os.environ.get("CHESS_EXPLANATION_LANGUAGE", "zh-CN").strip() or "zh-CN"
 
 # Optional API-only Chess Coach Agent. This configuration is deliberately separate from the
-# bounded explanation provider and the legacy CLI-backed chat: no setting, CLI login, or desktop
-# subscription is used as an implicit Agent credential or transport fallback.
+# bounded explanation provider: no other setting or local login is used as an implicit credential.
 AGENT_ENABLED: bool = os.environ.get("CHESS_AGENT_ENABLED", "1") != "0"
 AGENT_MODEL: str = os.environ.get("CHESS_AGENT_MODEL", "").strip()
 AGENT_BASE_URL: str = os.environ.get("CHESS_AGENT_BASE_URL", "").strip().rstrip("/")
@@ -516,9 +482,10 @@ AGENT_MAX_TURNS: int = max(1, _parse_int("CHESS_AGENT_MAX_TURNS", 4))
 AGENT_MAX_TOOL_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_TOOL_CALLS", 6))
 AGENT_MAX_ENGINE_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_ENGINE_CALLS", 2))
 AGENT_TIMEOUT: int = max(1, _parse_int("CHESS_AGENT_TIMEOUT", 120))
+AGENT_RUN_MAX_RECORDS: int = max(1, _parse_int("CHESS_AGENT_RUN_MAX_RECORDS", 1000))
 
 # --- Puzzle mode (server.core.puzzles / puzzle_rating) ------------------------------------------
-# A tactical-trainer built on the same substrate (board, engine, claude_bridge, DATA_DIR). Puzzles
+# A tactical trainer built on the same board, Engine, and DATA_DIR substrate. Puzzles
 # ship as small compressed JSONL: a committed offline baseline (server/data/puzzles/baseline.jsonl.gz,
 # >=100/band) plus dense per-band shards downloaded on demand (P3) from a SEPARATE data repo so the
 # app's Releases tab stays app-versions-only. Per-user state (rating, seen_ids, streak) lives in

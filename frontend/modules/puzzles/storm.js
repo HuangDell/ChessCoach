@@ -1,7 +1,6 @@
 import { puzzleApi } from "../api/puzzles.js";
 import { createLatestRequestScope, sleep } from "../core/async.js";
 import { escapeHtml } from "../core/dom.js";
-import { renderMarkdown } from "../core/format.js";
 import { formatClock, motifThemes } from "./helpers.js";
 
 export function createPuzzleStorm({
@@ -339,15 +338,10 @@ export function createPuzzleStorm({
     reviewEntries = Array.isArray(log) ? log : [];
     const wrapper = $("pz-storm-review");
     const list = $("pz-storm-review-list");
-    const summaryButton = $("pz-storm-summary-btn");
-    $("pz-storm-summary-out").hidden = true;
-    $("pz-storm-summary-out").innerHTML = "";
     if (!reviewEntries.length) {
       wrapper.hidden = true;
       return;
     }
-    summaryButton.hidden = !(getConfig() && getConfig().has_llm);
-    summaryButton.disabled = false;
     const rows = reviewEntries.map((entry, index) => ({ entry, index }))
       .sort((left, right) => left.entry.solved === right.entry.solved
         ? left.index - right.index
@@ -380,30 +374,9 @@ export function createPuzzleStorm({
     trainer.cancel();
     $("pz-next").textContent = "Next puzzle →";
     $("pz-result").hidden = true;
-    $("pz-explain-out").hidden = true;
-    $("pz-explain-out").innerHTML = "";
     $("pz-solve").hidden = true;
     $("pz-storm").hidden = false;
     return true;
-  }
-
-  async function summarize() {
-    const button = $("pz-storm-summary-btn");
-    const output = $("pz-storm-summary-out");
-    button.disabled = true;
-    output.hidden = false;
-    output.innerHTML = '<p class="muted">Snowie is reviewing your run (thinking)</p>';
-    const summaryRequest = requests.begin();
-    try {
-      const response = await puzzleApi.stormSummary({ signal: summaryRequest.signal });
-      if (!summaryRequest.isCurrent()) return;
-      output.innerHTML = renderMarkdown(response.error || response.answer || "");
-    } catch (_) {
-      if (!summaryRequest.isCurrent()) return;
-      output.innerHTML = '<p class="muted">Summary failed — try again.</p>';
-    } finally {
-      if (summaryRequest.isCurrent()) button.disabled = false;
-    }
   }
 
   function end({ abandon = false } = {}) {
@@ -421,7 +394,6 @@ export function createPuzzleStorm({
     handleMove,
     setShown,
     start,
-    summarize,
     get active() { return shown && running; },
     get shown() { return shown; },
   };

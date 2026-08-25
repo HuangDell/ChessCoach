@@ -1,9 +1,7 @@
 """Puzzle-trainer API routes (all under /api/puzzle).
 
-Sync handlers, like the board routes: selection/validation is pure-Python (engine-free) and the
-optional coach spawns `claude -p` in the threadpool. Everything is wrapped so a puzzle bug can
-never break the analysis board — a failure returns `{error}` rather than raising. The request
-middleware already calls `lifecycle.touch()`, so handlers don't.
+Sync handlers, like the board routes: selection and validation are deterministic Core operations.
+Everything is wrapped so a puzzle bug cannot break the analysis board.
 """
 from __future__ import annotations
 
@@ -16,8 +14,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from server import config
-from server import claude_bridge
-from server.core import local_llm
 from server.core import puzzle_flow
 from server.core import puzzle_mistakes
 from server.core import puzzle_rating
@@ -42,17 +38,13 @@ def _has_engine() -> bool:
     return bool(looks_like_path and os.path.exists(path))
 
 
-def _has_llm() -> bool:
-    return bool(local_llm.is_enabled() or shutil.which("claude"))
-
-
 def _disabled() -> JSONResponse:
     return JSONResponse({"error": "Puzzle mode is disabled."}, status_code=404)
 
 
 @router.get("/puzzle/config")
 def puzzle_config() -> dict:
-    """Gate the frontend: whether puzzles exist + the user's rating/streak + engine/LLM presence."""
+    """Return deterministic puzzle progress and Engine availability."""
     if not config.PUZZLES_ENABLED:
         return {"enabled": False}
     state = puzzle_rating.load_state()
@@ -69,7 +61,6 @@ def puzzle_config() -> dict:
         "storm_duration": config.PUZZLE_STORM_DURATION,
         "themes_available": puzzles_mod.available_themes(),
         "has_engine": _has_engine(),
-        "has_llm": _has_llm(),
     }
 
 
@@ -545,39 +536,6 @@ def _puzzle_current_locked(prog) -> JSONResponse:
     })
 
 
-class ExplainBody(BaseModel):
-    id: str
-    outcome: str  # solved_first_try | solved_with_hints | failed
-    your_move: str | None = None
-
-
-@router.post("/puzzle/explain")
-def puzzle_explain(body: ExplainBody) -> JSONResponse:
-    """The puzzle coach: name the motif (solved) or refute the user's move then teach (failed)."""
-    if not config.PUZZLES_ENABLED:
-        return _disabled()
-    prog = puzzle_session.get_current()
-    in_session = bool(prog and prog.id == body.id)
-    puzzle = prog.puzzle if in_session else puzzles_mod.get_puzzle(body.id)
-    if not puzzle:
-        return JSONResponse({"error": "Unknown puzzle."}, status_code=404)
-    tried = prog.tried if in_session else None
-    try:
-        result = claude_bridge.explain_puzzle(
-            puzzle, body.outcome, your_move=body.your_move, tried=tried
-        )
-    except claude_bridge.ChatError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
-    # The position the follow-up chat should ground on: the solve position (mistake puzzles have
-    # no forced line, so `fen` is it). `session_id` lets the chat thread onto this explanation.
-    chat_fen = puzzle.get("solve_fen") or puzzle.get("fen")
-    return JSONResponse({
-        "answer": result.get("answer", ""),
-        "session_id": result.get("session_id"),
-        "chat_fen": chat_fen,
-    })
-
-
 # --- Puzzle storm (timed rush, P4) --------------------------------------------------------------
 # Unrated: reuses the tactic selection + shared session but never touches Glicko. All best-effort.
 
@@ -669,26 +627,6 @@ def puzzle_solution(id: str) -> JSONResponse:
         "solution_uci": moves[1:],
         "solution_san": puzzles_mod.solution_san(puzzle)[1:],
     })
-
-
-@router.post("/puzzle/storm/summary")
-def storm_summary() -> JSONResponse:
-    """One Claude-written recap of the just-finished run: the recurring weak themes across misses."""
-    if not config.PUZZLES_ENABLED:
-        return _disabled()
-    if not _has_llm():
-        return JSONResponse(
-            {"error": "The AI coach is unavailable (no `claude` CLI or local model)."},
-            status_code=503,
-        )
-    run = puzzle_storm.get_run()
-    if run is None or not run.log:
-        return JSONResponse({"error": "No finished run to summarize."}, status_code=404)
-    try:
-        result = claude_bridge.summarize_storm_run(run.log)
-    except claude_bridge.ChatError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
-    return JSONResponse({"answer": result.get("answer", ""), "session_id": result.get("session_id")})
 
 
 @router.post("/puzzle/storm/end")

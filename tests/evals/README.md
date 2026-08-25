@@ -34,3 +34,38 @@ reproduction:
   tests.backend.test_agent_eval_dataset \
   tests.backend.test_agent_eval_runner
 ```
+
+## Portfolio v2
+
+`agent_portfolio_v2.json` imports the ordered 26 v1 case IDs without changing the v1 dataset or
+report. It adds 11 hardening cases for summary limits, reference/action validation, recent
+improvement, training diversity and stale sources, storage degradation, stale/cancelled runs,
+malformed output, and custom endpoint incompatibility.
+
+`portfolio_v2.py` aggregates the v1 scores with the hardening observations and adds valid
+reference/action, Engine calls per run, p50/p95/max latency, and degradation correctness.
+`deterministic_report_v2.json` is the committed offline report. Reproduce it without an SDK,
+credential, network, user data, or Engine process:
+
+```bash
+.venv/bin/python -m tests.evals.run_portfolio --source deterministic
+```
+
+Live modes are explicit. They create a temporary data directory and run the fixed v1 cases through
+the production `OpenAIAgentsRuntime` with fixture tools. Reports never contain a credential, prompt,
+raw base URL, reasoning, or user data:
+
+```bash
+OPENAI_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
+  --source openai --model your-model --output reports/openai-responses.json
+
+CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
+  --source custom --model custom-model --base-url http://127.0.0.1:9900/v1 \
+  --certificate-data-dir "$CHESSCOACH_DATA_DIR" \
+  --output reports/custom-responses.json
+```
+
+Custom mode writes `agent/compatibility/custom-responses.json` only after structured Responses,
+function tools, SQLite recent-items, and every portfolio quality gate pass. The certificate stores
+an endpoint SHA-256 fingerprint, never the URL. No live report is committed until the corresponding
+credential-backed command has actually run.

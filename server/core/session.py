@@ -1,8 +1,4 @@
-"""Process-wide review session state shared between the MCP tools and (later) the web layer.
-
-The MCP `analyze_game` tool *writes* the session; `goto_mistake` mutates `current_index`;
-the future FastAPI board will *read* it. Keeping this a single in-memory singleton is the
-explicit design choice from the plan (one process, one session)."""
+"""Process-wide review state for the single-user Web application."""
 from __future__ import annotations
 
 from typing import Optional
@@ -62,8 +58,8 @@ class ReviewSession(BaseModel):
     mistakes: list[MoveReview] = Field(default_factory=list)  # inaccuracy/mistake/blunder
     current_index: int = 0  # index into `mistakes`
     explore_fen: Optional[str] = None
-    # Cache for the opt-in Claude-written coaching summary (generated once on demand via
-    # /api/coach, then reused). Cleared naturally when a new game replaces the session.
+    # Legacy cache field retained only so older analysis artifacts still validate. New code
+    # ignores the value and never serializes it through the Web API.
     coach_ai_text: Optional[str] = None
     # Skill-adaptive review: the Elo we tuned the mistake thresholds to (normalized scale),
     # where it came from, the resulting (inaccuracy, mistake, blunder) win%-drop cutoffs, and
@@ -115,8 +111,7 @@ def resolve_opening(sess: ReviewSession) -> str:
 def summarize_session(sess: ReviewSession) -> dict:
     """Compact, JSON-friendly summary of a session.
 
-    Shared by the MCP `analyze_game` tool and the web `GET /api/session` route so both
-    surfaces present an identical mistake list.
+    Used by the Web `GET /api/session` route and deterministic history producers.
     """
     mistakes = [
         {
@@ -174,8 +169,8 @@ def summarize_session(sess: ReviewSession) -> dict:
 def goto_core(index: int) -> dict:
     """Move the review cursor to mistake `index` and return the position before it.
 
-    Shared by the MCP `goto_mistake` tool and the web `GET /api/position/{index}` route.
-    Returns an `error` key (rather than raising) so both surfaces handle it uniformly.
+    Used by the Web `GET /api/position/{index}` route. Returns an `error` key rather than raising
+    to preserve the established JSON contract.
     """
     sess = get_session()
     if sess is None:

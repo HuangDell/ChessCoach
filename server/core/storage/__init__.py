@@ -41,3 +41,7 @@ __all__ = [
     "store_game",
     "superseding_game_deletion",
 ]
+from server.core.storage.agent_runs import AgentRunRecord, AgentRunStore
+from server.core.storage.agent_compatibility import AgentCompatibilityStore
+
+__all__ = ["AgentCompatibilityStore", "AgentRunRecord", "AgentRunStore"]

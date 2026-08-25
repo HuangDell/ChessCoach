@@ -1,10 +1,7 @@
-"""Shared solve orchestration for the puzzle trainer.
+"""HTTP-free solve orchestration for the Web puzzle trainer.
 
-The web routes (`routes_puzzles.py`) and the MCP tools (`mcp_server.py`) both drive puzzles through
-this one module, so "everything the board does, a tool can do" — they mutate the *same*
-`puzzle_session` singleton and apply Glicko exactly the same way. The routes wrap the returned dicts
-in `JSONResponse`; the MCP tools return them straight to Claude Code. Keep the logic here HTTP-free
-(plain dicts, no FastAPI) so both callers stay thin.
+The routes wrap these plain dictionaries in `JSONResponse`; keeping the scoring flow in Core makes
+the deterministic contracts directly testable and keeps FastAPI out of the domain layer.
 
 `score_attempt` is the single source of truth for the "does this attempt move the rating?" rule (the
 RD-gate + no-hints rule); `apply_solver_moves` runs the per-ply validation loop for a curated
@@ -37,7 +34,7 @@ def to_uci(fen: str, token: str) -> Optional[str]:
     """Normalise a move `token` (UCI like 'g1f3' or SAN like 'Nf3') to UCI, given the board `fen`.
 
     Returns the UCI string when the move is legal in that position, else None (illegal/unparseable).
-    Lets the MCP tool accept either notation the way `get_engine_line` already does.
+    Accept either notation while keeping the route adapter thin.
     """
     token = (token or "").strip()
     if not token:

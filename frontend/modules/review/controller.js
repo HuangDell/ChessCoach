@@ -63,7 +63,7 @@ let showThreatsByDefault = false;
     onReference: openAgentReference,
     onAction: runAgentAction,
   });
-  const coach = createReviewCoach({ $, api: reviewApi, hasTimeline: () => timeline.length > 0 });
+  const coach = createReviewCoach({ $ });
   const graph = createReviewGraph({
     $,
     getSnapshot: () => ({
@@ -598,7 +598,6 @@ async function applyAnalysisReady(session, tl, operation = {}) {
   else if (prevCur === 0 && mistakes.length) selectMistake(session.current_index ?? 0);
   else gotoNode(clamp(prevCur, 0, timeline.length - 1));
   chat.restore(); // repopulate this game's in-memory Q&A (if we've chatted about it this session)
-  coach.prepare(session); // timeline is set now → show saved summary, auto-generate, or offer button
 }
 
 function onAnalysisError(msg) {
@@ -640,7 +639,6 @@ function onAnalysisError(msg) {
     $("generate-explanation").addEventListener("click", generateReviewExplanations);
     $("variation-play").addEventListener("click", variation.toggle);
     $("variation-mainline").addEventListener("click", returnToReview);
-    coach.mount();
     chat.mount();
     retry.mount();
   }
@@ -678,7 +676,6 @@ function onAnalysisError(msg) {
   }
 
   function setPreferences(preferences = {}) {
-    coach.setAutoGenerate(preferences.coachAiAuto);
     chat.setAgentCapability(preferences.agent);
     defaultReviewSide = preferences.defaultReviewSide || "auto";
     boardOrientationPreference = preferences.boardOrientation || "review";
@@ -701,7 +698,6 @@ function onAnalysisError(msg) {
     applyTimeline,
     loadReviewArtifacts,
     restoreChat: chat.restore,
-    prepareCoachAI: coach.prepare,
     setPreferences,
     setPendingCritical(id) { pendingCriticalId = id; },
     setPendingPly(ply) { pendingGotoPly = ply; },
@@ -744,7 +740,6 @@ function onAnalysisError(msg) {
         renderGraph();
         refreshBestMoves();
       }
-      coach.refreshAfterSettings();
     },
   };
 }

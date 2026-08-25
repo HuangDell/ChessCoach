@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from server.core.agent.models import (
@@ -29,6 +29,7 @@ _ERROR_STATUS = {
     "invalid_session_context": 400,
     "training_action_unavailable": 409,
     "agent_provider_error": 502,
+    "agent_endpoint_incompatible": 503,
     "invalid_agent_response": 502,
     "max_turns_exceeded": 502,
     "agent_unavailable": 503,
@@ -60,6 +61,19 @@ def _error_response(failure: AgentServiceFailure) -> JSONResponse:
     status = _ERROR_STATUS.get(error.code, 502)
     payload = AgentErrorResponse(error=error).model_dump(mode="json")
     return JSONResponse(payload, status_code=status)
+
+
+@router.get("/metrics")
+def get_agent_metrics(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, object]:
+    return _service(request).run_metrics(limit=limit)
+
+
+@router.delete("/runs")
+def delete_agent_runs(request: Request) -> dict[str, int]:
+    return _service(request).clear_runs()
 
 
 @router.post(
