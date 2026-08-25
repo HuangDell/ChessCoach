@@ -692,11 +692,101 @@ class StartTrainingActionResult(ContractModel):
     )
 
 
+class AgentFactualClaims(ContractModel):
+    """Machine-checkable claims mirrored from material facts stated in ``text``."""
+
+    side_to_move: ReviewSide | None = None
+    move_uci: str | None = None
+    move_san: str | None = None
+    resolved_move_uci: str | None = None
+    legal: bool | None = None
+    classification: str | None = None
+    best_move_uci: str | None = None
+    score_pov: ReviewSide | None = None
+
+    @field_validator("move_uci", "resolved_move_uci", "best_move_uci")
+    @classmethod
+    def _valid_optional_uci(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_uci(value)
+
+    @field_validator("move_san", "classification")
+    @classmethod
+    def _valid_optional_claim_text(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="grounding claim")
+
+    @model_validator(mode="after")
+    def _paired_move_claim(self) -> "AgentFactualClaims":
+        if self.move_san is not None and self.move_uci is None:
+            raise ValueError("move_san requires move_uci")
+        if self.legal is not None and self.move_uci is None:
+            raise ValueError("legal requires move_uci")
+        return self
+
+
+class AgentPersonalizationClaims(ContractModel):
+    """Bounded profile assertions that must be backed by retrieved learning evidence."""
+
+    skill_id: str | None = None
+    status: Literal["unknown", "watch", "weakness", "strength"] | None = None
+    distinct_games: int | None = Field(default=None, ge=0)
+
+    @field_validator("skill_id")
+    @classmethod
+    def _valid_optional_skill_id(cls, value: str | None) -> str | None:
+        return _non_empty_optional(value, label="skill_id")
+
+
+class AgentMoveClaim(ContractModel):
+    """A legality assertion that the policy checks against its canonical FEN."""
+
+    position: PositionReference
+    move_uci: str
+    legal: bool
+
+    _valid_move_uci = field_validator("move_uci")(_validate_uci)
+
+    @model_validator(mode="after")
+    def _has_exact_position(self) -> "AgentMoveClaim":
+        if self.position.fen is None:
+            raise ValueError("move claims require an exact FEN")
+        return self
+
+
+class AgentResponseGrounding(ContractModel):
+    """Structured grounding and degradation annotations for one Agent answer."""
+
+    acknowledges_uncertainty: bool = Field(
+        default=False,
+        description=(
+            "True only when missing context, tool failure, or tool budget leaves the final "
+            "answer materially unresolved; routine caveats do not count."
+        ),
+    )
+    claims: AgentFactualClaims = Field(default_factory=AgentFactualClaims)
+    personalization_claims: AgentPersonalizationClaims = Field(
+        default_factory=AgentPersonalizationClaims
+    )
+    move_claims: list[AgentMoveClaim] = Field(default_factory=list, max_length=5)
+    completion: Literal["full", "partial"] = Field(
+        default="full",
+        description="Full when available facts answer the request; partial only after degradation.",
+    )
+    degradation: Literal[
+        "none",
+        "missing_context",
+        "tool_error_handled",
+        "tool_budget_exhausted",
+        "recoverable_tool_failure",
+    ] = "none"
+    error_code: ToolErrorCode | None = None
+
+
 class AgentResponse(ContractModel):
     text: str = Field(min_length=1)
     references: list[ChessReference] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     suggested_actions: list[SuggestedAction] = Field(default_factory=list)
+    grounding: AgentResponseGrounding = Field(default_factory=AgentResponseGrounding)
 
     _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
 

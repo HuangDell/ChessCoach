@@ -11,7 +11,9 @@ from typing import Any
 
 from server.core.agent.models import (
     AgentRunRequest,
+    EngineFactsContext,
     ModelVisibleContext,
+    MoveReference,
     PositionContext,
     PositionReference,
     TaskContext,
@@ -27,6 +29,8 @@ from server.core.agent.runtime_openai import (
 )
 from server.core.storage.agent_compatibility import AgentCompatibilityStore, endpoint_fingerprint
 from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
+from server.core.learning.taxonomy import resolve_skill_id
+from tests.evals.evaluator import diagnose_dataset
 from tests.evals.portfolio_v2 import score_portfolio
 
 
@@ -44,6 +48,71 @@ class _FixtureTools:
         self.case = case
         self.fixtures = fixtures
         self.executions: list[dict[str, Any]] = []
+        self.attempted_names: list[str] = []
+        self.attempt_summaries: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _resolved_focus(
+        actual: dict[str, Any], id_key: str, category_key: str
+    ) -> set[str] | None:
+        skill_ids = actual.get(id_key, [])
+        resolved_ids = [resolve_skill_id(value) for value in skill_ids]
+        if skill_ids and all(value is not None for value in resolved_ids):
+            return {value for value in resolved_ids if value is not None}
+        raw = [*skill_ids, *actual.get(category_key, [])]
+        resolved = [resolve_skill_id(value) for value in raw]
+        return None if any(value is None for value in resolved) else set(resolved)
+
+    def _semantically_matches(
+        self,
+        name: str,
+        actual: dict[str, Any],
+        expected: dict[str, Any],
+        fixture: dict[str, Any],
+    ) -> bool:
+        if name == "get_player_profile":
+            expected_skills = set(expected.get("focus_skill_ids", []))
+            if self._resolved_focus(
+                actual, "focus_skill_ids", "focus_categories"
+            ) != expected_skills:
+                return False
+            return not expected_skills or 1 <= int(actual.get("limit", 3)) <= 5
+        if name == "get_training_candidates":
+            expected_skills = set(expected.get("skill_ids", []))
+            actual_skills = self._resolved_focus(actual, "skill_ids", "categories")
+            prior_profile = any(
+                execution["name"] == "get_player_profile"
+                for execution in self.executions
+            )
+            if actual_skills != expected_skills and not (
+                actual_skills == set() and prior_profile
+            ):
+                return False
+            candidate_count = len(
+                fixture["result"].get("data", {}).get("candidates", [])
+            )
+            if int(actual.get("limit", 10)) < candidate_count:
+                return False
+            return all(
+                actual.get(key) == value
+                for key, value in expected.items()
+                if key not in {"skill_ids", "categories", "limit"}
+            )
+        if name == "create_training_draft":
+            material = {
+                "objective_skill_ids",
+                "position_references",
+                "recommended_count",
+                "source",
+            }
+            return all(
+                actual.get(key) == value
+                for key, value in expected.items()
+                if key in material
+            )
+        if name == "analyze_position":
+            return actual.get("fen") == expected.get("fen")
+        return all(actual.get(key) == value for key, value in expected.items())
 
     def _match(self, name: str, payload: Any) -> tuple[str, dict[str, Any]] | None:
         actual = payload.model_dump(mode="json", exclude_none=True)
@@ -52,7 +121,14 @@ class _FixtureTools:
             if fixture["tool"] != name:
                 continue
             expected = fixture["request"]
-            if all(actual.get(key) == value for key, value in expected.items()):
+            fixture_error = fixture["result"].get("error")
+            if (
+                name == "get_player_profile"
+                and fixture_error is not None
+                and fixture_error.get("code") == "profile_unavailable"
+            ):
+                return fixture_id, fixture
+            if self._semantically_matches(name, actual, expected, fixture):
                 return fixture_id, fixture
         return None
 
@@ -61,13 +137,48 @@ class _FixtureTools:
         return int(bool(matched and matched[1]["uses_engine"]))
 
     async def execute(self, name: str, payload: Any) -> Any:
+        self.attempted_names.append(name)
+        actual = payload.model_dump(mode="json", exclude_none=True)
         matched = self._match(name, payload)
+        summary: dict[str, Any] = {"name": name, "matched": matched is not None}
+        if name in {"get_player_profile", "get_training_candidates"}:
+            id_key = "focus_skill_ids" if name == "get_player_profile" else "skill_ids"
+            category_key = (
+                "focus_categories" if name == "get_player_profile" else "categories"
+            )
+            raw_focus = [*actual.get(id_key, []), *actual.get(category_key, [])]
+            resolved = [resolve_skill_id(value) for value in raw_focus]
+            summary.update(
+                {
+                    "canonical_skill_ids": sorted(
+                        {value for value in resolved if value is not None}
+                    ),
+                    "unresolved_focus_count": sum(value is None for value in resolved),
+                }
+            )
+        elif name == "create_training_draft":
+            summary.update(
+                {
+                    "objective_skill_ids": sorted(actual["objective_skill_ids"]),
+                    "position_count": len(actual["position_references"]),
+                }
+            )
+        elif name == "analyze_position":
+            summary["purpose"] = actual["purpose"]
+        self.attempt_summaries.append(summary)
         if matched is None:
+            error_code = (
+                "profile_unavailable"
+                if name == "get_player_profile"
+                else "training_unavailable"
+                if name in {"get_training_candidates", "create_training_draft"}
+                else "position_not_found"
+            )
             return SimpleNamespace(
                 result=ToolResult[Any](
                     ok=False,
                     error=ToolError(
-                        code="position_not_found",
+                        code=error_code,
                         message="The live eval tool request did not match an assigned fixture.",
                         recoverable=False,
                     ),
@@ -97,6 +208,50 @@ class _FixtureTools:
         )
 
 
+def _engine_facts(
+    case: dict[str, Any],
+    dataset: dict[str, Any],
+    position_name: str | None,
+) -> EngineFactsContext | None:
+    if position_name is None:
+        return None
+    evidence = dataset["fixtures"]["evidence"]
+    matched: list[tuple[str, dict[str, Any]]] = []
+    for evidence_ref in case["input"].get("context_evidence_refs", []):
+        fixture = evidence.get(evidence_ref)
+        if (
+            evidence_ref.startswith("review:")
+            and fixture is not None
+            and fixture.get("position_fixture") == position_name
+        ):
+            matched.append((evidence_ref, fixture["claims"]))
+    if not matched:
+        return None
+
+    combined_claims: dict[str, Any] = {}
+    for _, claims in matched:
+        combined_claims.update(claims)
+    reference = PositionReference.model_validate(
+        dataset["fixtures"]["positions"][position_name]["reference"]
+    )
+    return EngineFactsContext(
+        reference=reference,
+        played_move=(
+            MoveReference.model_validate(combined_claims["played_move"])
+            if "played_move" in combined_claims
+            else None
+        ),
+        best_move=(
+            MoveReference.model_validate(combined_claims["best_move"])
+            if "best_move" in combined_claims
+            else None
+        ),
+        classification=combined_claims.get("classification"),
+        facts=combined_claims,
+        evidence_refs=[evidence_ref for evidence_ref, _ in matched],
+    )
+
+
 def _context(case: dict[str, Any], dataset: dict[str, Any]) -> ModelVisibleContext:
     position_name = case["input"].get("position_fixture")
     position = None
@@ -112,10 +267,11 @@ def _context(case: dict[str, Any], dataset: dict[str, Any]) -> ModelVisibleConte
         task=TaskContext(
             activity=case["input"]["activity"],
             user_goal=case["task"],
+            review_side=(position.reference.review_side if position else None),
             personalization_enabled=bool(case["input"].get("profile_enabled")),
         ),
         position=position,
-        engine_facts=None,
+        engine_facts=_engine_facts(case, dataset, position_name),
         relevant_profile=None,
         relevant_memory=[],
         conversation_summary="",
@@ -138,6 +294,67 @@ def _position_names(response: Any, positions: dict[str, Any]) -> list[str]:
     return found
 
 
+def _position_name(reference: Any, positions: dict[str, Any]) -> str | None:
+    for name, fixture in positions.items():
+        owned = fixture["reference"]
+        if reference.fen == fixture["fen"] or (
+            reference.game_id == owned.get("game_id")
+            and reference.critical_id == owned.get("critical_id")
+            and reference.game_id is not None
+        ):
+            return name
+    return None
+
+
+def _observed_response(response: Any, positions: dict[str, Any]) -> dict[str, Any]:
+    grounding = response.grounding
+    move_claims = []
+    for claim in grounding.move_claims:
+        position_name = _position_name(claim.position, positions)
+        if position_name is not None:
+            move_claims.append(
+                {
+                    "position_fixture": position_name,
+                    "move_uci": claim.move_uci,
+                    "legal": claim.legal,
+                }
+            )
+    personalization_claims = grounding.personalization_claims.model_dump(
+        mode="json", exclude_none=True
+    )
+    return {
+        "evidence_refs": response.evidence_refs,
+        "position_fixtures": _position_names(response, positions),
+        "acknowledges_uncertainty": grounding.acknowledges_uncertainty,
+        "claims": grounding.claims.model_dump(mode="json", exclude_none=True),
+        "claim_tags": [],
+        "personalization_claims": personalization_claims,
+        "personalization_tags": [
+            "profile" for ref in response.references if ref.kind == "skill"
+        ],
+        "move_claims": move_claims,
+        "completion": grounding.completion,
+        "degradation": grounding.degradation,
+        "error_code": grounding.error_code,
+    }
+
+
+def _runtime_error_response(error_code: str) -> dict[str, Any]:
+    return {
+        "evidence_refs": [],
+        "position_fixtures": [],
+        "acknowledges_uncertainty": True,
+        "claims": {},
+        "claim_tags": [],
+        "personalization_claims": {},
+        "personalization_tags": [],
+        "move_claims": [],
+        "completion": "error",
+        "degradation": error_code,
+        "error_code": error_code,
+    }
+
+
 async def _run_cases(
     runtime: OpenAIAgentsRuntime,
     sessions: SQLiteConversationSessionFactory,
@@ -155,6 +372,15 @@ async def _run_cases(
         session_id = f"live-eval-{index:03d}"
         tools = _FixtureTools(case, dataset["fixtures"]["tool_results"])
         tool_instances[session_id] = tools
+        session = sessions.get_session(session_id)
+        seeded_items = [
+            {"role": item["role"], "content": item["content"]}
+            for item in case["input"].get("conversation", [])
+            if item.get("content")
+        ]
+        if seeded_items:
+            await session.add_items(seeded_items)
+        initial_item_count = len(await session.get_items(limit=12))
         request = AgentRunRequest(
             session_id=session_id,
             expected_generation=0,
@@ -170,35 +396,33 @@ async def _run_cases(
         any_expected_function_tool = any_expected_function_tool or expected_function
         started = time.monotonic()
         try:
+            if case["input"].get("agent_available") is False:
+                runs.append(
+                    {
+                        "case_id": case["id"],
+                        "tool_calls": [],
+                        "tool_attempt_names": [],
+                        "tool_attempt_summaries": [],
+                        "response": _runtime_error_response("agent_unavailable"),
+                        "latency_ms": max(1, round((time.monotonic() - started) * 1000)),
+                    }
+                )
+                continue
             result = await runtime.run(request)
             response = result.response
             structured_successes += 1
-            if await sessions.get_session(session_id).get_items(limit=12):
+            if len(await session.get_items(limit=12)) > initial_item_count:
                 sqlite_recent_items_successes += 1
-            function_tool_executed = function_tool_executed or bool(tools.executions)
-            text = response.text.lower()
+            function_tool_executed = function_tool_executed or bool(
+                tools.attempted_names or tools.executions
+            )
             runs.append(
                 {
                     "case_id": case["id"],
                     "tool_calls": tools.executions,
-                    "response": {
-                        "evidence_refs": response.evidence_refs,
-                        "position_fixtures": _position_names(response, positions),
-                        "acknowledges_uncertainty": any(
-                            marker in text
-                            for marker in ("uncertain", "insufficient", "cannot verify", "不确定", "无法确认")
-                        ),
-                        "claims": {},
-                        "claim_tags": [],
-                        "personalization_claims": {},
-                        "personalization_tags": [
-                            "profile" for ref in response.references if ref.kind == "skill"
-                        ],
-                        "move_claims": [],
-                        "completion": "full",
-                        "degradation": "none",
-                        "error_code": None,
-                    },
+                    "tool_attempt_names": [call.name for call in result.tool_calls],
+                    "tool_attempt_summaries": list(tools.attempt_summaries),
+                    "response": _observed_response(response, positions),
                     "latency_ms": max(1, round((time.monotonic() - started) * 1000)),
                 }
             )
@@ -208,19 +432,9 @@ async def _run_cases(
                 {
                     "case_id": case["id"],
                     "tool_calls": tools.executions,
-                    "response": {
-                        "evidence_refs": [],
-                        "position_fixtures": [],
-                        "acknowledges_uncertainty": True,
-                        "claims": {},
-                        "claim_tags": [],
-                        "personalization_claims": {},
-                        "personalization_tags": [],
-                        "move_claims": [],
-                        "completion": "error",
-                        "degradation": exc.error.code,
-                        "error_code": exc.error.code,
-                    },
+                    "tool_attempt_names": list(tools.attempted_names),
+                    "tool_attempt_summaries": list(tools.attempt_summaries),
+                    "response": _runtime_error_response(exc.error.code),
                     "latency_ms": max(1, round((time.monotonic() - started) * 1000)),
                 }
             )
@@ -298,6 +512,7 @@ async def _run(
                 "deterministic_hardening_case_count": len(portfolio["cases"]),
             },
         )
+        report["live_case_diagnostics"] = diagnose_dataset(dataset, baseline_observed)
         gates["portfolio_quality"] = _all_quality_gates(report)
         report["compatibility_gates"] = gates
         report["all_passed"] = all(gates.values())

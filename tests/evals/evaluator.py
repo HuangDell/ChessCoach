@@ -75,17 +75,28 @@ def _tool_selection(case: dict[str, Any], run: dict[str, Any], fixtures: dict[st
     return correct, engine_calls, unnecessary_engine
 
 
-def _grounded(case: dict[str, Any], response: dict[str, Any]) -> bool | None:
+def _grounding_checks(
+    case: dict[str, Any], response: dict[str, Any]
+) -> dict[str, bool] | None:
     if case["expected"]["outcome"]["completion"] == "error":
         return None
     expected = case["expected"]["grounding"]
-    return (
-        set(expected["evidence"]).issubset(response["evidence_refs"])
-        and set(expected["positions"]).issubset(response["position_fixtures"])
-        and response["acknowledges_uncertainty"] == expected["uncertainty"]
-        and all(matches(response, matcher) for matcher in expected["required"])
-        and all(matches(response, matcher) for matcher in expected["forbidden"])
-    )
+    return {
+        "evidence": set(expected["evidence"]).issubset(response["evidence_refs"]),
+        "positions": set(expected["positions"]).issubset(response["position_fixtures"]),
+        "uncertainty": response["acknowledges_uncertainty"] == expected["uncertainty"],
+        "required_claims": all(
+            matches(response, matcher) for matcher in expected["required"]
+        ),
+        "forbidden_claims": all(
+            matches(response, matcher) for matcher in expected["forbidden"]
+        ),
+    }
+
+
+def _grounded(case: dict[str, Any], response: dict[str, Any]) -> bool | None:
+    checks = _grounding_checks(case, response)
+    return None if checks is None else all(checks.values())
 
 
 def _personalization_ok(case: dict[str, Any], response: dict[str, Any]) -> bool:
@@ -118,7 +129,9 @@ def _rate(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 6) if denominator else 0.0
 
 
-def score_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> dict[str, Any]:
+def _evaluate_dataset(
+    dataset: dict[str, Any], observed: dict[str, Any]
+) -> list[dict[str, Any]]:
     if observed["dataset_id"] != dataset["dataset_id"]:
         raise ValueError("Observed runs target a different dataset")
     cases = {case["id"]: case for case in dataset["cases"]}
@@ -136,14 +149,17 @@ def score_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> dict[str
         correct_tools, engine_calls, unnecessary_engine = _tool_selection(
             case, run, tool_fixtures
         )
-        grounded = _grounded(case, response)
+        grounding_checks = _grounding_checks(case, response)
+        grounded = None if grounding_checks is None else all(grounding_checks.values())
         personalization_ok = _personalization_ok(case, response)
         incorrect_moves = _incorrect_move_claims(response, positions)
         results.append(
             {
                 "case_id": case_id,
                 "grounded": grounded,
+                "grounding_checks": grounding_checks,
                 "correct_tool_selection": correct_tools,
+                "personalization_ok": personalization_ok,
                 "false_personalization": not personalization_ok,
                 "task_completed": _task_completed(case, response),
                 "move_claims": len(response["move_claims"]),
@@ -152,8 +168,47 @@ def score_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> dict[str
                 "engine_calls": engine_calls,
                 "unnecessary_engine_calls": unnecessary_engine,
                 "latency_ms": run["latency_ms"],
+                "error_code": response["error_code"],
+                "completion": response["completion"],
+                "degradation": response["degradation"],
+                "attempted_tools": run.get(
+                    "tool_attempt_names",
+                    [call["name"] for call in run["tool_calls"]],
+                ),
+                "matched_tools": [call["name"] for call in run["tool_calls"]],
+                "tool_attempt_summaries": run.get("tool_attempt_summaries", []),
             }
         )
+    return results
+
+
+def diagnose_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return redacted per-case checks without prompts, model text, or raw endpoint data."""
+
+    return [
+        {
+            "case_id": item["case_id"],
+            "grounded": item["grounded"],
+            "grounding_checks": item["grounding_checks"],
+            "correct_tool_selection": item["correct_tool_selection"],
+            "personalization_ok": item["personalization_ok"],
+            "task_completed": item["task_completed"],
+            "error_code": item["error_code"],
+            "actual_outcome": {
+                "completion": item["completion"],
+                "degradation": item["degradation"],
+                "error_code": item["error_code"],
+            },
+            "attempted_tools": item["attempted_tools"],
+            "matched_tools": item["matched_tools"],
+            "tool_attempt_summaries": item["tool_attempt_summaries"],
+        }
+        for item in _evaluate_dataset(dataset, observed)
+    ]
+
+
+def score_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> dict[str, Any]:
+    results = _evaluate_dataset(dataset, observed)
 
     grounded_results = [item["grounded"] for item in results if item["grounded"] is not None]
     move_claims = sum(item["move_claims"] for item in results)

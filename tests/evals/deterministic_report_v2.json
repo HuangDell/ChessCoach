@@ -21,10 +21,10 @@
   },
   "model": "deterministic-fixtures",
   "observed_runs_id": "agent-portfolio-v2-deterministic-fixtures",
-  "policy_version": 1,
-  "response_schema_version": 1,
+  "policy_version": 2,
+  "response_schema_version": 2,
   "schema_version": 2,
-  "scorer_version": 2,
+  "scorer_version": 3,
   "sdk_version": "0.22.0",
   "source": "deterministic"
 }

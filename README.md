@@ -71,7 +71,9 @@ CLI。模型失败不会修改 `analysis.json`，也不会影响 Engine Review�
 ## Agent 配置
 
 Agent 使用后端 Responses API、一个 Chess Coach Agent、typed function tools、structured output、
-SQLite conversation session 和非流式 bounded runs。
+SQLite conversation session 和非流式 bounded runs。response schema v2 额外要求模型把正文中的关键
+棋类事实、个性化声明、合法性声明和降级状态镜像到 `grounding`；后端再用当前 FEN、Engine facts
+和本次成功工具结果确定性校验，未经验证的模型文本不会作为成功响应提交。
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |

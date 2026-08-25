@@ -251,6 +251,16 @@ def _successful_training_drafts(tools: AgentTools) -> list[TrainingDraft]:
     return drafts
 
 
+def _successful_tool_results(tools: AgentTools) -> list[object]:
+    results: list[object] = []
+    for execution in getattr(tools, "executions", []):
+        result = getattr(execution, "result", None)
+        data = getattr(result, "data", None) if getattr(result, "ok", False) else None
+        if data is not None:
+            results.append(data)
+    return results
+
+
 def _successful_profile_references(tools: AgentTools) -> list[ChessReference]:
     """Backward-compatible name for callers that predate candidate retrieval."""
 
@@ -730,6 +740,7 @@ class ChessAgentService:
                     result.tool_calls,
                     validated_tool_references=_successful_tool_references(tools),
                     successful_training_drafts=_successful_training_drafts(tools),
+                    successful_tool_results=_successful_tool_results(tools),
                 )
                 if not guarded.staged_items:
                     await guarded.add_items(

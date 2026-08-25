@@ -26,6 +26,7 @@ from server.core.agent.runtime_openai import (
     SQLiteConversationSessionFactory,
     _LocalRunContext,
     _ToolBudget,
+    _canonical_tool_focus,
     create_openai_runtime,
 )
 from server.core.agent.sessions import (
@@ -170,6 +171,19 @@ class _FakeAgents:
 
 
 class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
+    def test_explicit_canonical_focus_takes_precedence_over_redundant_categories(self) -> None:
+        self.assertEqual(
+            (["tactics.fork_detection"], []),
+            _canonical_tool_focus(
+                ["tactics.fork_detection"],
+                ["forks"],
+            ),
+        )
+        self.assertEqual(
+            ([], ["unknown-focus"]),
+            _canonical_tool_focus([], ["unknown-focus"]),
+        )
+
     def setUp(self) -> None:
         _AsyncClient.created.clear()
         _FakeAgents.last_agent = None

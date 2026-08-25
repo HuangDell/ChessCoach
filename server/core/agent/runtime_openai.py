@@ -40,6 +40,7 @@ from server.core.agent.runtime import (
     AgentRuntimeTelemetry,
     UnavailableAgentRuntime,
 )
+from server.core.learning import taxonomy
 from server.core.storage.agent_compatibility import AgentCompatibilityStore
 from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
 
@@ -178,6 +179,17 @@ class _LocalRunContext:
 
 def _error_result(error: ToolError) -> str:
     return ToolResult[Any](ok=False, error=error).model_dump_json()
+
+
+def _canonical_tool_focus(
+    skill_ids: list[str], categories: list[str]
+) -> tuple[list[str], list[str]]:
+    """Prefer explicit resolvable skill IDs over redundant model-supplied categories."""
+
+    resolved = [taxonomy.resolve_skill_id(value) for value in skill_ids]
+    if skill_ids and all(value is not None for value in resolved):
+        return list(dict.fromkeys(value for value in resolved if value is not None)), []
+    return skill_ids, categories
 
 
 class OpenAIAgentsRuntime:
@@ -575,9 +587,12 @@ class OpenAIAgentsRuntime:
             ) -> str:
                 """Read at most five evidence-backed profile items relevant to this task."""
                 try:
+                    canonical_ids, canonical_categories = _canonical_tool_focus(
+                        focus_skill_ids or [], focus_categories or []
+                    )
                     payload = GetPlayerProfileInput(
-                        focus_skill_ids=focus_skill_ids or [],
-                        focus_categories=focus_categories or [],
+                        focus_skill_ids=canonical_ids,
+                        focus_categories=canonical_categories,
                         limit=limit,
                     )
                 except ValidationError:
@@ -628,9 +643,12 @@ class OpenAIAgentsRuntime:
             ) -> str:
                 """Retrieve verified, bounded own-game positions for personalized practice."""
                 try:
+                    canonical_ids, canonical_categories = _canonical_tool_focus(
+                        skill_ids or [], categories or []
+                    )
                     payload = GetTrainingCandidatesInput(
-                        skill_ids=skill_ids or [],
-                        categories=categories or [],
+                        skill_ids=canonical_ids,
+                        categories=canonical_categories,
                         window=window,
                         limit=limit,
                         exclude_recently_practiced=exclude_recently_practiced,

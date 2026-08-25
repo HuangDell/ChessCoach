@@ -24,5 +24,7 @@ data/
 .agents/
 docs/requirements/
 
+reports/
+
 proxy.sh
 

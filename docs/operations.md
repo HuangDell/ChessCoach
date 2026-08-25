@@ -81,3 +81,10 @@ A custom certificate is written only when the Responses structured-output, funct
 recent-items, and portfolio quality gates all pass. Reports record an endpoint fingerprint rather
 than the raw custom URL. Changing the URL, model, SDK, policy, response schema, dataset, or scorer
 invalidates the certificate immediately.
+
+Live reports include `live_case_diagnostics` with only case IDs and boolean grounding/tool/outcome
+checks. For `grounded_response_rate`, every non-error case is applicable and passes only if its
+required evidence, position, uncertainty, required claims, and forbidden claims all match. The
+diagnostics deliberately omit prompts, answer text, credentials, and raw endpoint data.
+Tool-attempt summaries are limited to tool names, canonical skill IDs, unresolved-focus counts,
+bounded position counts, and analysis purpose; raw tool arguments are not retained.

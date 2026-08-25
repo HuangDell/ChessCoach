@@ -25,6 +25,16 @@ Every fake tool fixture contains a complete request plus a concrete Pydantic
 scores all documented metrics without a model, Engine process, filesystem state,
 or network access. `baseline_report.json` is the reproducible aggregate output.
 
+`grounded_response_rate` uses every non-error case as its denominator. A case contributes to the
+numerator only when all five checks pass: required evidence refs, required position refs, the
+expected uncertainty flag, every required claim matcher, and every forbidden claim matcher. Live
+runs read these observations from the validated `AgentResponse.grounding` contract rather than
+inferring them from answer keywords. A live report also includes redacted per-case
+`live_case_diagnostics` booleans so a failed evidence, position, uncertainty, required-claim, or
+forbidden-claim check can be identified without storing model text or prompts. Tool mismatch
+diagnostics retain only tool names, canonical skill IDs, unresolved-focus counts, bounded position
+counts, and analysis purpose; they never retain raw arguments.
+
 The backend tests validate DTO schemas, timeline replay, fixture ownership,
 matcher behavior, scorer sensitivity to regressions, and exact report
 reproduction:
@@ -66,6 +76,8 @@ CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
 ```
 
 Custom mode writes `agent/compatibility/custom-responses.json` only after structured Responses,
-function tools, SQLite recent-items, and every portfolio quality gate pass. The certificate stores
-an endpoint SHA-256 fingerprint, never the URL. No live report is committed until the corresponding
-credential-backed command has actually run.
+function tools, SQLite recent-items, and every portfolio quality gate pass. Grounded response,
+tool selection, task completion, reference/action validity, and degradation correctness must each
+be 100%; illegal move claims, unnecessary Engine calls, and false personalization must each be 0%.
+The certificate stores an endpoint SHA-256 fingerprint, never the URL. No live report is committed
+until the corresponding credential-backed command has actually run.
