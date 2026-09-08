@@ -1,5 +1,21 @@
 # Chess Review Coach 开发约定
 
+## Engineering Style
+
+Prefer the smallest sufficient implementation.
+
+- Do not over-engineer.
+- Do not future-proof without a current requirement.
+- Do not introduce abstractions for hypothetical reuse.
+- Prefer modifying existing code over introducing new architecture.
+- Consider only realistic or high-impact edge cases.
+- Do not refactor unrelated code.
+- Do not add optional features unless requested.
+- Prefer one clear implementation path.
+- Keep plans concise.
+- When one solution is clearly sufficient, do not enumerate alternatives.
+- Once the requested behavior works and is verified, stop.
+
 ## 项目定位
 
 这是一个仅在本机运行的单用户国际象棋复盘应用。主运行路径是一个 Python 进程：
@@ -72,8 +88,6 @@ Agent/LLM 只基于已验证的 Engine facts 生成讲解；模型不可用时�
 - 改动 Engine 接线、两阶段分析、facts 或训练判定：增加/运行固定棋局系统测试，并确认测试完成后
   Engine pool 和后台资源被关闭。
 
-当前仓库已具备前端自动化测试，但尚未建立正式的 Python 测试集。新增后端行为时应同时建立
-相应的 `tests/backend/` 覆盖，而不是继续只做 import smoke test。
 
 ## 常用命令
 
