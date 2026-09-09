@@ -1,7 +1,8 @@
 # Execution-Aware Tool Orchestration：P0 实施计划
 
-**日期：** 2026-09-08  
-**状态：** Planned；分期边界已确认，本文不代表实现或实验已完成  
+**日期：** 2026-09-08；P0 完成于 2026-09-09
+
+**状态：** Implemented；离线 fixture 与 SDK fake-model 门禁已完成，未运行 live 模型实验
 **上级计划：** [研究分析与实施计划](execution-aware-tool-orchestration-plan.md)  
 **前置约束：** [README](../../README.md)、[Agent 共享设计](../requirements/agent/README.md)、
 [现有 Eval](../../tests/evals/README.md)、[开发约定](../../AGENTS.md)
@@ -39,7 +40,7 @@ P0 不实现 embedding、planner、依赖图训练、压力工具库、多 Agent
 | [sessions.py](../../server/core/agent/sessions.py) | 复用 generation guard 和隔离 conversation session，验证取消后无旧结果提交。 |
 | [run_portfolio_live.py](../../tests/evals/run_portfolio_live.py) | 参考既有 fixture executor 和生产验收接线；研究 runner 不复用其签发 certificate 的执行入口。 |
 
-拟新增文件按职责最小拆分；以下名称是实现落点，不表示文件已经存在：
+实现文件按职责最小拆分：
 
 | 位置 | 内容 |
 | --- | --- |
@@ -248,19 +249,23 @@ SDK 缺失时 P0.1/P0.2 仍可独立通过；P0.3 的 SDK 测试可明确 skip�
 
 ## 6. 验证命令与提交顺序
 
-以下是仓库已有命令，用于实施各步后的回归验证；不是本文已经执行的测试结果。运行前在外层
+以下命令用于回归验证。运行前在外层
 设置临时 `CHESSCOACH_DATA_DIR`，并关闭自动开浏览器；测试 bootstrap 必须早于配置相关导入。
 反复执行的隔离初始化和检查要沉淀到 `tests/`。
 
 ```bash
 .venv/bin/python -m unittest discover -s tests/backend -p 'test_*.py'
 .venv/bin/python -m tests.evals.run_portfolio --source deterministic
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m tests.evals.orchestration.runner \
+  --mode replay --output-dir /tmp/chesscoach-orchestration-p0-replay
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m tests.evals.orchestration.runner \
+  --mode sdk-fake --variant S01-main --output-dir /tmp/chesscoach-orchestration-p0-sdk
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
   'from server.web.app import create_app; create_app()'
 ```
 
-新增研究 runner 的真实 CLI、输出路径及逐步测试命令在实现后写入
-`tests/evals/orchestration/README.md`，不把拟议命令当成当前可执行入口。
+研究 runner 的输出合同和逐步测试命令见
+[orchestration eval README](../../tests/evals/orchestration/README.md)。
 涉及 session 提交、API 或 storage 接线时运行对应 FastAPI 集成测试；如实际改动 Engine/facts/
 训练判定，则增加固定短局、低深度系统测试并验证 Engine pool 关闭。仅有模拟 Engine 计数不能
 代替这类系统测试。前端不在本次范围；实际发生前端改动时运行 `npm run test:frontend`。
@@ -276,13 +281,19 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 
 ## 7. P0 完成清单与 P1 交接
 
-- [ ] P0.1：24 个开发任务、7 工具 registry、独立 gold/scorer 通过验收。
-- [ ] P0.2：状态回放、参数匹配、错误/资源投影、标签与个人数据隔离通过验收。
-- [ ] P0.3：真实 SDK＋fake model 的逐轮 schemas、snapshot、历史、取消和预算检查实际通过。
-- [ ] 运行产物可追溯到版本与 manifest；失败/拦截/中断均保留，无未来标签输入。
-- [ ] 生产响应验收仍生效，现有 26＋11 门禁和后端相关回归通过，资源已关闭。
-- [ ] 生产默认路径、去敏日志、个人 artifact 与 certificate 未被研究入口扩展。
-- [ ] 交付真实复现命令、已知限制和未运行测试；不把 fake 数据解释为 live 质量或费用。
+- [x] P0.1：24 个开发任务、7 工具 registry、独立 gold/scorer 通过验收。
+- [x] P0.2：状态回放、参数匹配、错误/资源投影、标签与个人数据隔离通过验收。
+- [x] P0.3：真实 SDK＋fake model 的逐轮 schemas、snapshot、历史、取消和预算检查实际通过。
+- [x] 运行产物可追溯到版本与 manifest；失败/拦截/中断均保留，无未来标签输入。
+- [x] 生产响应验收仍生效，现有 26＋11 门禁和后端相关回归通过，资源已关闭。
+- [x] 生产默认路径、去敏日志、个人 artifact 与 certificate 未被研究入口扩展。
+- [x] 交付真实复现命令、已知限制和未运行测试；不把 fake 数据解释为 live 质量或费用。
+
+2026-09-09 的完成验证：P0 专项 19 项测试通过；后端全量 307 项通过、1 项按既有条件跳过；
+原 26＋11 deterministic portfolio 全部通过；30 个 P0 replay 变体的 complete success、候选
+Recall@K/Precision@K、下一动作、参数与协议指标均为 1.0；应用创建导入检查通过。未运行
+`live-fixture`、真实模型或 `engine-system`，它们不属于 P0 完成条件；本次没有前端改动，未重复
+运行前端测试。
 
 交给 P1 的输入是上述已验证设施、开发任务、版本化 registry/scorer 和接线限制。
 P1 再选择并实现静态检索配置，先做有上限的 live pilot，依据实测确定 K、正式实验规模与费用。

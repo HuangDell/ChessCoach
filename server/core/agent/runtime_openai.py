@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib
+import json
 from pathlib import Path
 import sys
 import threading
@@ -33,7 +34,13 @@ from server.core.agent.models import (
     ToolPositionReference,
     ToolResult,
 )
-from server.core.agent.policy import POLICY_VERSION, build_model_input
+from server.core.agent.policy import (
+    POLICY_VERSION,
+    AgentResponseValidationError,
+    build_model_input,
+    validate_agent_run_result,
+)
+from server.core.agent.routing import OrchestrationController
 from server.core.agent.runtime import (
     AgentRuntimeAvailability,
     AgentRuntimeFailure,
@@ -175,6 +182,7 @@ class _LocalRunContext:
     request: AgentRunRequest
     tools: Any
     budget: _ToolBudget
+    orchestration: OrchestrationController | None = None
 
 
 def _error_result(error: ToolError) -> str:
@@ -204,6 +212,8 @@ class OpenAIAgentsRuntime:
         endpoint_type: str,
         domain_tools_factory: DomainToolsFactory,
         session_provider: SessionProvider,
+        orchestration_factory: Callable[[AgentRunRequest], OrchestrationController] | None = None,
+        research_model: Any | None = None,
     ) -> None:
         agents = importlib.import_module("agents")
         openai = importlib.import_module("openai")
@@ -212,8 +222,11 @@ class OpenAIAgentsRuntime:
         self._model = model
         self._domain_tools_factory = domain_tools_factory
         self._session_provider = session_provider
+        self._orchestration_factory = orchestration_factory
+        self._research_model = research_model
         self.sdk_version = str(getattr(agents, "__version__", "unknown"))
         self._telemetry: dict[str, AgentRuntimeTelemetry] = {}
+        self._orchestration_traces: dict[str, dict[str, Any]] = {}
         # Explicit values prevent the SDK from reading OPENAI_BASE_URL or another implicit endpoint.
         self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._provider = agents.OpenAIProvider(
@@ -269,6 +282,65 @@ class OpenAIAgentsRuntime:
     def take_telemetry(self, run_id: str) -> AgentRuntimeTelemetry | None:
         return self._telemetry.pop(run_id, None)
 
+    def take_orchestration_trace(self, run_id: str) -> dict[str, Any] | None:
+        return self._orchestration_traces.pop(run_id, None)
+
+    @staticmethod
+    def _record_research_model_response(local: _LocalRunContext, response: Any) -> None:
+        orchestration = local.orchestration
+        snapshot = orchestration.active_snapshot if orchestration is not None else None
+        if orchestration is None or snapshot is None:
+            return
+        for output in getattr(response, "output", ()):
+            if getattr(output, "type", None) != "function_call":
+                continue
+            name = getattr(output, "name", None)
+            if name not in AGENT_TOOL_PERMISSIONS or name in snapshot.candidate_tools:
+                continue
+            raw_arguments = getattr(output, "arguments", "{}")
+            try:
+                arguments = (
+                    json.loads(raw_arguments)
+                    if isinstance(raw_arguments, str)
+                    else raw_arguments
+                )
+            except (TypeError, ValueError):
+                arguments = {"invalid": True}
+            encoded = json.dumps(
+                arguments, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            orchestration.record_intercepted_proposal(
+                name,
+                hashlib.sha256(encoded).hexdigest(),
+                snapshot.decision_id,
+                error_category="outside_snapshot",
+            )
+
+    def _model_for_run(self, local: _LocalRunContext) -> Any:
+        if self._research_model is None:
+            return self._model
+        delegate = self._research_model
+        runtime = self
+
+        class _ResearchModelProxy(self._agents.Model):
+            async def get_response(self, *args: Any, **kwargs: Any) -> Any:
+                response = await delegate.get_response(*args, **kwargs)
+                runtime._record_research_model_response(local, response)
+                return response
+
+            def stream_response(self, *args: Any, **kwargs: Any) -> Any:
+                return delegate.stream_response(*args, **kwargs)
+
+            def get_retry_advice(self, request: Any) -> Any:
+                return delegate.get_retry_advice(request)
+
+            async def _cleanup_on_run_end(self, owner: object) -> None:
+                cleanup = getattr(delegate, "_cleanup_on_run_end", None)
+                if cleanup is not None:
+                    await cleanup(owner)
+
+        return _ResearchModelProxy()
+
     async def _call_tool(
         self,
         context: _LocalRunContext,
@@ -282,7 +354,46 @@ class OpenAIAgentsRuntime:
             context.budget.records[-1] = context.budget.records[-1].model_copy(
                 update={"position_reference": position_reference}
             )
+            if context.orchestration is not None:
+                call_id, _ = await context.orchestration.before_call(
+                    name,
+                    payload,
+                    total_used=context.budget.total,
+                    engine_used=context.budget.engine,
+                )
+                context.orchestration.after_call(
+                    call_id,
+                    name,
+                    payload,
+                    ToolResult[Any](ok=False, error=budget_error),
+                    cache_hit=False,
+                    engine_calls=0,
+                    total_used=context.budget.total,
+                    engine_used=context.budget.engine,
+                )
+                context.orchestration.terminate("budget", reason="total_tool_calls")
             return _error_result(budget_error)
+
+        research_call_id: str | None = None
+        if context.orchestration is not None:
+            research_call_id, routing_error = await context.orchestration.before_call(
+                name,
+                payload,
+                total_used=context.budget.total,
+                engine_used=context.budget.engine,
+            )
+            if routing_error is not None:
+                context.budget.records.append(
+                    ToolCallRecord(
+                        name=name,
+                        permission=AGENT_TOOL_PERMISSIONS[name],
+                        status="error",
+                        duration_ms=0,
+                        position_reference=position_reference,
+                        error_code=routing_error.code,
+                    )
+                )
+                return _error_result(routing_error)
 
         current_position = context.request.model_context.position
         supplied_fen = (
@@ -310,6 +421,17 @@ class OpenAIAgentsRuntime:
                     error_code=error.code,
                 )
             )
+            if context.orchestration is not None and research_call_id is not None:
+                context.orchestration.after_call(
+                    research_call_id,
+                    name,
+                    payload,
+                    ToolResult[Any](ok=False, error=error),
+                    cache_hit=False,
+                    engine_calls=0,
+                    total_used=context.budget.total,
+                    engine_used=context.budget.engine,
+                )
             return _error_result(error)
 
         estimator = getattr(tools, "estimated_engine_calls", None)
@@ -327,6 +449,18 @@ class OpenAIAgentsRuntime:
             context.budget.records[-1] = context.budget.records[-1].model_copy(
                 update={"position_reference": position_reference}
             )
+            if context.orchestration is not None and research_call_id is not None:
+                context.orchestration.after_call(
+                    research_call_id,
+                    name,
+                    payload,
+                    ToolResult[Any](ok=False, error=budget_error),
+                    cache_hit=False,
+                    engine_calls=0,
+                    total_used=context.budget.total,
+                    engine_used=context.budget.engine,
+                )
+                context.orchestration.terminate("budget", reason="engine_tool_calls")
             return _error_result(budget_error)
         started = time.monotonic()
         try:
@@ -364,8 +498,19 @@ class OpenAIAgentsRuntime:
                     error_code=result.error.code if result.error else None,
                 )
             )
+            if context.orchestration is not None and research_call_id is not None:
+                context.orchestration.after_call(
+                    research_call_id,
+                    name,
+                    payload,
+                    result,
+                    cache_hit=cache_hit,
+                    engine_calls=engine_calls,
+                    total_used=context.budget.total,
+                    engine_used=context.budget.engine,
+                )
             return result.model_dump_json()
-        except Exception:
+        except Exception as exc:
             duration_ms = max(0, round((time.monotonic() - started) * 1000))
             error_code = (
                 "position_not_found"
@@ -387,19 +532,34 @@ class OpenAIAgentsRuntime:
                     error_code=error_code,
                 )
             )
-            return _error_result(
-                ToolError(
-                    code=error_code,
-                    message=(
-                        "The saved review position is currently unavailable."
-                        if name == "get_review_context"
-                        else "Personalized training is currently unavailable."
-                        if name in {"get_training_candidates", "create_training_draft"}
-                        else "The requested chess analysis is currently unavailable."
-                    ),
-                    recoverable=True,
-                )
+            error = ToolError(
+                code=error_code,
+                message=(
+                    "The saved review position is currently unavailable."
+                    if name == "get_review_context"
+                    else "Personalized training is currently unavailable."
+                    if name in {"get_training_candidates", "create_training_draft"}
+                    else "The requested chess analysis is currently unavailable."
+                ),
+                recoverable=True,
             )
+            if context.orchestration is not None and research_call_id is not None:
+                context.orchestration.after_call(
+                    research_call_id,
+                    name,
+                    payload,
+                    ToolResult[Any](ok=False, error=error),
+                    cache_hit=False,
+                    engine_calls=reserved_engine_calls,
+                    total_used=context.budget.total,
+                    engine_used=context.budget.engine,
+                    error_category=(
+                        "storage_consistency"
+                        if "Consistency" in type(exc).__name__
+                        else type(exc).__name__
+                    ),
+                )
+            return _error_result(error)
 
     def _invalid_tool_call(
         self,
@@ -424,6 +584,16 @@ class OpenAIAgentsRuntime:
     def _sdk_tools(self, local: _LocalRunContext) -> list[Any]:
         function_tool = self._agents.function_tool
         tools: list[Any] = []
+
+        def is_enabled(name: AgentToolName) -> Any:
+            if local.orchestration is None:
+                return True
+
+            async def enabled(_context: Any, _agent: Any) -> bool:
+                assert local.orchestration is not None
+                return await local.orchestration.is_enabled(name)
+
+            return enabled
 
         if "get_review_context" in local.request.allowed_tools:
             async def get_review_context(
@@ -458,6 +628,7 @@ class OpenAIAgentsRuntime:
                         "Read the exact active game's saved critical-position Engine facts."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("get_review_context"),
                 )
             )
 
@@ -492,6 +663,7 @@ class OpenAIAgentsRuntime:
                         "chooses depth and MultiPV."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("analyze_position"),
                 )
             )
 
@@ -521,6 +693,7 @@ class OpenAIAgentsRuntime:
                         "when possible."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("analyze_move"),
                 )
             )
 
@@ -576,6 +749,7 @@ class OpenAIAgentsRuntime:
                         "recent moves. This tool never retrieves online opening theory."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("lookup_opening"),
                 )
             )
 
@@ -627,6 +801,7 @@ class OpenAIAgentsRuntime:
                         "or puzzle. Use only when personalization is enabled and relevant."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("get_player_profile"),
                 )
             )
 
@@ -687,6 +862,7 @@ class OpenAIAgentsRuntime:
                         "With no explicit focus, only established canonical weaknesses are used."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("get_training_candidates"),
                 )
             )
 
@@ -732,6 +908,7 @@ class OpenAIAgentsRuntime:
                         "and canonical objective must come from this run's successful retrieval."
                     ),
                     strict_mode=True,
+                    is_enabled=is_enabled("create_training_draft"),
                 )
             )
         return tools
@@ -815,11 +992,16 @@ class OpenAIAgentsRuntime:
                     max_total=request.max_total_tool_calls,
                     max_engine=request.max_engine_tool_calls,
                 ),
+                orchestration=(
+                    self._orchestration_factory(request)
+                    if self._orchestration_factory is not None
+                    else None
+                ),
             )
             agent = self._agents.Agent(
                 name="Chess Coach",
                 instructions=build_model_input(request.model_context),
-                model=self._model,
+                model=self._model_for_run(local),
                 tools=self._sdk_tools(local),
                 output_type=AgentResponse,
             )
@@ -848,24 +1030,67 @@ class OpenAIAgentsRuntime:
                 for key in ("requests", "input_tokens", "output_tokens", "total_tokens")
                 if isinstance((value := getattr(usage_source, key, None)), (int, float))
             }
-            return AgentRunResult(
+            run_result = AgentRunResult(
                 response=response,
                 tool_calls=local.budget.records,
                 usage=usage,
             )
+            if local.orchestration is not None:
+                successful_results = getattr(local.tools, "successful_tool_results", None)
+                try:
+                    validate_agent_run_result(
+                        run_result,
+                        request,
+                        successful_tool_results=(
+                            successful_results() if callable(successful_results) else ()
+                        ),
+                    )
+                except AgentResponseValidationError as exc:
+                    local.orchestration.terminate(
+                        "rejected", reason="production_validation"
+                    )
+                    raise AgentRuntimeFailure(
+                        AgentError(
+                            code="invalid_agent_response",
+                            message="Chess Coach Agent returned an ungrounded response.",
+                            recoverable=True,
+                        )
+                    ) from exc
+                local.orchestration.terminate("accepted")
+            return run_result
         except AgentRuntimeFailure:
+            if (
+                local is not None
+                and local.orchestration is not None
+                and local.orchestration.state is not None
+                and local.orchestration.state.terminal_status == "running"
+            ):
+                local.orchestration.terminate("rejected", reason="runtime_failure")
             raise
         except asyncio.CancelledError:
+            if local is not None and local.orchestration is not None:
+                local.orchestration.terminate("cancelled")
             raise
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
+            if (
+                local is not None
+                and local.orchestration is not None
+                and local.orchestration.state is not None
+                and local.orchestration.state.terminal_status == "running"
+            ):
+                local.orchestration.terminate(
+                    "rejected", reason=type(exc).__name__
+                )
             raise self._map_exception(exc) from exc
         finally:
             self._telemetry[request.run_id] = AgentRuntimeTelemetry(
                 tool_calls=list(local.budget.records) if local is not None else [],
                 usage=dict(usage),
             )
+            if local is not None and local.orchestration is not None:
+                self._orchestration_traces[request.run_id] = local.orchestration.trace()
 
 
 def create_openai_runtime(

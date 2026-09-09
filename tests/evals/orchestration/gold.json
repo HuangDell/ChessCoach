@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "scorer_version": 1,
+  "dataset_id": "orchestration-dev-v1",
+  "cases": [
+    {"variant_id":"N01-main","acceptable_paths":[[{"kind":"answer"}]],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"N02-main","acceptable_paths":[[{"kind":"answer"}]],"required_evidence":["review:italian:ply-9"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"N03-main","acceptable_paths":[[{"kind":"answer"}]],"required_evidence":["review:italian:ply-9"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"N04-main","acceptable_paths":[[{"kind":"clarify"}]],"allowed_final_actions":["clarify"],"expected_protocol":"clarified"},
+
+    {"variant_id":"S01-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"get_player_profile","predicates":[{"type":"equals","field":"limit","value":3}]},
+      {"kind":"tool_call","name":"get_training_candidates","predicates":[{"type":"equals","field":"skill_ids","value":["calculation.opponent_forcing_moves"]}]},
+      {"kind":"tool_call","name":"create_training_draft","predicates":[{"type":"reference_subset","field":"position_references"},{"type":"max_count","field":"position_references","value":5}]},
+      {"kind":"answer"}
+    ]],"dependencies":[["get_player_profile","get_training_candidates"],["get_training_candidates","create_training_draft"]],"required_artifacts":["profile","training_candidates","training_draft"],"required_evidence":["training:qg:ply-7"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"S02-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"get_training_candidates"},{"kind":"tool_call","name":"create_training_draft","predicates":[{"type":"reference_subset","field":"position_references"}]},{"kind":"answer"}
+    ]],"dependencies":[["get_training_candidates","create_training_draft"]],"required_artifacts":["training_candidates","training_draft"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"S03-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"get_training_candidates","predicates":[{"type":"equals","field":"exclude_recently_solved","value":true}]},{"kind":"tool_call","name":"create_training_draft"},{"kind":"answer"}
+    ]],"dependencies":[["get_training_candidates","create_training_draft"]],"required_artifacts":["training_candidates","training_draft"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"S04-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"get_review_context","predicates":[{"type":"equals","field":"critical_id","value":"ply-9"}]},{"kind":"answer"}
+    ]],"required_artifacts":["review_facts"],"required_evidence":["review:italian:ply-9"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+
+    {"variant_id":"A01-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"analyze_move","predicates":[{"type":"current_fen","field":"fen_before"},{"type":"legal_uci","field":"move_uci"}]},{"kind":"answer"}
+    ]],"required_artifacts":["move_analysis"],"required_evidence":["move:initial:e2e4"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"A02-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"analyze_move","predicates":[{"type":"current_fen","field":"fen_before"},{"type":"equals","field":"move_uci","value":"d1d5"}]},{"kind":"answer"}
+    ]],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"A03-main","acceptable_paths":[[
+      {"kind":"tool_call","name":"analyze_move","predicates":[{"type":"equals","field":"fen_before","value":"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 1 5"}]},{"kind":"partial"}
+    ]],"allowed_final_actions":["partial"],"expected_protocol":"partial"},
+    {"variant_id":"A04-match","acceptable_paths":[[
+      {"kind":"tool_call","name":"lookup_opening","predicates":[{"type":"current_fen","field":"fen"}]},{"kind":"answer"}
+    ]],"required_artifacts":["opening_metadata"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"A04-mismatch","acceptable_paths":[[
+      {"kind":"tool_call","name":"lookup_opening","predicates":[{"type":"equals","field":"recent_moves_uci","value":["e2e4"]}]},{"kind":"partial"}
+    ]],"allowed_final_actions":["partial"],"expected_protocol":"partial"},
+
+    {"variant_id":"O01-evidence","acceptable_paths":[[{"kind":"tool_call","name":"get_player_profile"},{"kind":"answer"}]],"required_artifacts":["profile"],"required_evidence":["profile:forcing:failure-1"],"required_response_claims":{"fact_tags":["profile_supported"]},"forbidden_response_claims":["insufficient_profile"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O01-empty","acceptable_paths":[[{"kind":"tool_call","name":"get_player_profile"},{"kind":"answer"}]],"required_artifacts":["profile"],"required_response_claims":{"fact_tags":["insufficient_profile"]},"forbidden_response_claims":["profile_supported"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O02-nonempty","acceptable_paths":[[{"kind":"tool_call","name":"get_training_candidates"},{"kind":"tool_call","name":"create_training_draft"},{"kind":"answer"}]],"dependencies":[["get_training_candidates","create_training_draft"]],"required_artifacts":["training_candidates","training_draft"],"required_response_claims":{"fact_tags":["training_draft"]},"forbidden_response_claims":["no_candidates"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O02-empty","acceptable_paths":[[{"kind":"tool_call","name":"get_training_candidates"},{"kind":"answer"}]],"required_artifacts":["training_candidates"],"required_response_claims":{"fact_tags":["no_candidates"]},"forbidden_response_claims":["training_draft"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O03-covered","acceptable_paths":[[{"kind":"tool_call","name":"get_training_candidates","predicates":[{"type":"equals","field":"skill_ids","value":[]}]},{"kind":"tool_call","name":"create_training_draft"},{"kind":"answer"}]],"dependencies":[["get_training_candidates","create_training_draft"]],"required_artifacts":["training_candidates","training_draft"],"required_response_claims":{"fact_tags":["skill_covered"]},"forbidden_response_claims":["skill_uncovered"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O03-uncovered","acceptable_paths":[[{"kind":"tool_call","name":"get_training_candidates","predicates":[{"type":"equals","field":"skill_ids","value":[]}]},{"kind":"answer"}]],"required_artifacts":["training_candidates"],"required_response_claims":{"fact_tags":["skill_uncovered"]},"forbidden_response_claims":["skill_covered"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O04-supported","acceptable_paths":[[{"kind":"tool_call","name":"get_player_profile"},{"kind":"answer"}]],"required_artifacts":["profile"],"required_evidence":["profile:forcing:failure-1"],"required_response_claims":{"fact_tags":["recent_improvement_supported"]},"forbidden_response_claims":["recent_improvement_unknown"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"O04-unsupported","acceptable_paths":[[{"kind":"tool_call","name":"get_player_profile"},{"kind":"answer"}]],"required_artifacts":["profile"],"required_response_claims":{"fact_tags":["recent_improvement_unknown"]},"forbidden_response_claims":["recent_improvement_supported"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+
+    {"variant_id":"R01-main","acceptable_paths":[[{"kind":"tool_call","name":"analyze_position","predicates":[{"type":"current_fen","field":"fen"}]},{"kind":"tool_call","name":"get_review_context"},{"kind":"partial"}]],"dependencies":[["analyze_position","get_review_context"]],"required_artifacts":["review_facts"],"required_evidence":["review:italian:ply-9"],"allowed_final_actions":["partial"],"expected_protocol":"partial"},
+    {"variant_id":"R02-hit","acceptable_paths":[[{"kind":"tool_call","name":"analyze_move","predicates":[{"type":"current_fen","field":"fen_before"}]},{"kind":"answer"}]],"required_artifacts":["move_analysis"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"R02-miss","acceptable_paths":[[{"kind":"tool_call","name":"analyze_move","predicates":[{"type":"current_fen","field":"fen_before"}]},{"kind":"answer"}]],"required_artifacts":["move_analysis"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"R03-main","acceptable_paths":[[{"kind":"tool_call","name":"analyze_move","predicates":[{"type":"current_fen","field":"fen_before"}]},{"kind":"answer"}]],"required_artifacts":["move_analysis"],"allowed_final_actions":["answer"],"expected_protocol":"complete"},
+    {"variant_id":"R04-main","acceptable_paths":[[{"kind":"tool_call","name":"analyze_position"},{"kind":"tool_call","name":"analyze_position"},{"kind":"abort"}]],"required_artifacts":["position_analysis"],"allowed_final_actions":["abort"],"expected_protocol":"aborted"},
+
+    {"variant_id":"X01-main","acceptable_paths":[[{"kind":"tool_call","name":"analyze_position"},{"kind":"abort"}]],"allowed_final_actions":["abort"],"expected_protocol":"aborted"},
+    {"variant_id":"X02-main","acceptable_paths":[[{"kind":"tool_call","name":"analyze_position"},{"kind":"abort"}]],"allowed_final_actions":["abort"],"expected_protocol":"cancelled"},
+    {"variant_id":"X03-main","acceptable_paths":[[{"kind":"tool_call","name":"get_training_candidates"},{"kind":"tool_call","name":"create_training_draft","predicates":[{"type":"reference_subset","field":"position_references"}]},{"kind":"partial"}]],"dependencies":[["get_training_candidates","create_training_draft"]],"required_artifacts":["training_candidates"],"allowed_final_actions":["partial"],"expected_protocol":"partial"},
+    {"variant_id":"X04-main","acceptable_paths":[[{"kind":"tool_call","name":"get_review_context"},{"kind":"abort"}]],"allowed_final_actions":["abort"],"expected_protocol":"aborted"}
+  ]
+}

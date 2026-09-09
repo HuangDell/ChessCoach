@@ -178,5 +178,7 @@ credential 显式生成。详细命令、降级语义和清理规则见 [Operati
 与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。
 
 研究路线见 [Execution-Aware Tool Orchestration 计划](docs/research/execution-aware-tool-orchestration-plan.md)：
-以执行状态驱动的动态工具检索和受控实验为主，Selective Delegation 为条件扩展；目前为研究计划，
-尚未改变上述生产运行路径。
+以执行状态驱动的动态工具检索和受控实验为主，Selective Delegation 为条件扩展。P0 已提供隔离的
+24 任务/30 变体回放、scorer、状态投影和真实 SDK＋fake model 动态 schema 检查；运行方法见
+[P0 eval README](tests/evals/orchestration/README.md)。这些研究注入点仅由显式测试构造启用，尚未
+改变上述生产运行路径，也不代表 live 模型实验结果。

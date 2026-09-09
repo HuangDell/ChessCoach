@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "orchestration-fixtures-v1",
+  "base_fixture_file": "../agent_baseline_v1.json",
+  "base_fixture_sha256": "73fbb88593ccc932916574dde937e1f94c17d4c5fb05b658f6b5e1fc0ee88187",
+  "imported_fixture_ids": [
+    "profile_single_fork",
+    "profile_established",
+    "profile_unavailable",
+    "training_candidates",
+    "training_draft",
+    "italian_review_cached",
+    "initial_e4_cached",
+    "initial_qd5_illegal",
+    "qg_cxd5_engine",
+    "position_timeout"
+  ],
+  "custom_fixtures": {
+    "initial_e4_engine": {
+      "alias_of": "initial_e4_cached",
+      "uses_engine": true,
+      "engine_calls": 1,
+      "cache_hit": false
+    },
+    "training_candidates_broad": {
+      "alias_of": "training_candidates",
+      "request": {"skill_ids": [], "categories": [], "limit": 10}
+    },
+    "training_candidates_broad_uncovered": {
+      "alias_of": "training_candidates",
+      "request": {"skill_ids": [], "categories": [], "limit": 10},
+      "result": {
+        "ok": true,
+        "data": {"candidates": [{
+          "reference": {
+            "game_id": "game-fork-001",
+            "review_side": "white",
+            "critical_id": "ply-11",
+            "ply": 11,
+            "fen": "r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6"
+          },
+          "skill_ids": ["tactics.fork_detection"],
+          "phase": "middlegame",
+          "difficulty": "medium",
+          "attempted": false
+        }]},
+        "evidence_refs": ["training:fork:ply-11"],
+        "error": null
+      },
+      "uses_engine": false,
+      "cache_hit": true
+    },
+    "profile_empty": {
+      "tool": "get_player_profile",
+      "request": {"focus_skill_ids": [], "limit": 3},
+      "result": {
+        "ok": true,
+        "data": {
+          "analyzed_games": 0,
+          "relevant_estimates": [],
+          "training_success_rate": null,
+          "recent": {"games": 0},
+          "lifetime": {"games": 0}
+        },
+        "evidence_refs": [],
+        "error": null
+      },
+      "uses_engine": false,
+      "cache_hit": true
+    },
+    "training_candidates_empty": {
+      "tool": "get_training_candidates",
+      "request": {
+        "skill_ids": ["calculation.opponent_forcing_moves"],
+        "categories": [],
+        "limit": 10
+      },
+      "result": {
+        "ok": true,
+        "data": {"candidates": []},
+        "evidence_refs": [],
+        "error": null
+      },
+      "uses_engine": false,
+      "cache_hit": true
+    },
+    "opening_initial": {
+      "tool": "lookup_opening",
+      "request": {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+      "result": {
+        "ok": true,
+        "data": {
+          "eco": null,
+          "name": "Initial position",
+          "classification": "recognized",
+          "metadata": {"source": "local_fixture"}
+        },
+        "evidence_refs": [],
+        "error": null
+      },
+      "uses_engine": false,
+      "cache_hit": true
+    },
+    "analysis_initial": {
+      "tool": "analyze_position",
+      "request": {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "purpose": "compare_candidates"
+      },
+      "result": {
+        "ok": true,
+        "data": {
+          "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+          "candidates": [
+            {
+              "rank": 1,
+              "move": {"uci": "e2e4", "san": "e4"},
+              "score": {"kind": "cp", "value": 20, "pov": "white"},
+              "win_percent_for_review_side": 52.0,
+              "line_uci": ["e2e4", "e7e5"],
+              "line_san": ["e4", "e5"]
+            }
+          ],
+          "provenance": {
+            "engine_name": "Stockfish",
+            "engine_version": "fixture-17",
+            "depth": 18,
+            "multipv": 1,
+            "analysis_profile_id": "orchestration-p0",
+            "cache_key": null
+          }
+        },
+        "evidence_refs": ["position:initial:analysis"],
+        "error": null
+      },
+      "uses_engine": true,
+      "engine_calls": 1,
+      "cache_hit": false
+    },
+    "analysis_initial_cancel": {
+      "tool": "analyze_position",
+      "request": {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "purpose": "compare_candidates"
+      },
+      "result": {
+        "ok": false,
+        "data": null,
+        "evidence_refs": [],
+        "error": {"code": "engine_timeout", "message": "Cancelled fixture.", "recoverable": true}
+      },
+      "uses_engine": true,
+      "engine_calls": 1,
+      "cache_hit": false,
+      "trigger": "cancel"
+    },
+    "italian_review_storage_error": {
+      "tool": "get_review_context",
+      "request": {
+        "game_id": "game-italian-001",
+        "review_side": "white",
+        "critical_id": "ply-9"
+      },
+      "result": {
+        "ok": false,
+        "data": null,
+        "evidence_refs": [],
+        "error": {"code": "position_not_found", "message": "Inconsistent fixture.", "recoverable": false}
+      },
+      "uses_engine": false,
+      "cache_hit": false,
+      "trigger": "storage_consistency"
+    },
+    "training_draft_stale": {
+      "tool": "create_training_draft",
+      "request": {
+        "title": "Forcing-move scan",
+        "objective_skill_ids": ["calculation.opponent_forcing_moves"],
+        "position_references": [
+          {"game_id":"game-qg-001","review_side":"white","critical_id":"ply-7","ply":7,"fen":"rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4"},
+          {"game_id":"game-italian-001","review_side":"white","critical_id":"ply-9","ply":9,"fen":"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 1 5"}
+        ],
+        "rationale": "Practice checking forcing replies.",
+        "recommended_count": 2
+      },
+      "result": {
+        "ok": false,
+        "data": null,
+        "evidence_refs": [],
+        "error": {"code": "position_not_found", "message": "A selected candidate became stale.", "recoverable": false}
+      },
+      "uses_engine": false,
+      "cache_hit": false
+    }
+  }
+}
