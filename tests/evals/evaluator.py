@@ -177,6 +177,7 @@ def _evaluate_dataset(
                 ),
                 "matched_tools": [call["name"] for call in run["tool_calls"]],
                 "tool_attempt_summaries": run.get("tool_attempt_summaries", []),
+                "runtime_tool_attempts": run.get("runtime_tool_attempts", []),
                 "production_validation_error": run.get("production_validation_error"),
             }
         )
@@ -192,6 +193,7 @@ def diagnose_dataset(dataset: dict[str, Any], observed: dict[str, Any]) -> list[
             "grounded": item["grounded"],
             "grounding_checks": item["grounding_checks"],
             "correct_tool_selection": item["correct_tool_selection"],
+            "runtime_tool_attempts": item["runtime_tool_attempts"],
             "personalization_ok": item["personalization_ok"],
             "task_completed": item["task_completed"],
             "error_code": item["error_code"],

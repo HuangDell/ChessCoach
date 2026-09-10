@@ -106,6 +106,10 @@ policy、response schema、dataset、scorer 版本和 schema 适配器名称/版
 输出与工具参数仍执行原始模型的完整本地校验。旧证书缺少适配器字段时仅视为 `generic` v1；
 切换适配器或升级规则需重跑 live portfolio。DeepSeek 规则尚需真实 endpoint 验证，离线通过不代表厂家认证。
 
+Responses 请求已通过 `text.format.type=json_schema` 和 `strict=true` 要求原生结构化输出，
+不是 Chat Completions 的 `response_format`。policy v4 明确要求完整 JSON、结果复用、预算拒绝后
+停止重试，以及 suggested action 不得作为工具调用；旧 policy 证书需重新运行 live portfolio。
+
 ### 重跑自定义 endpoint 兼容性验证
 
 先安装 Agent extra，再使用与 Web 进程完全相同的 model、base URL 和 data directory 运行 custom
@@ -216,7 +220,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 ```
 
 真实 OpenAI/custom eval 是显式网络操作，不属于默认测试，也不把 credential 作为开发前提。当前
-提交包含 deterministic v2 report；本机 custom endpoint 已通过 policy v3 / response schema v3 /
+提交包含 deterministic v2 report；本机 custom endpoint 曾通过 policy v3 / response schema v3 /
 scorer v4 的新门禁并在本地数据目录签发证书，去敏报告不提交。官方 OpenAI report 仍需对应
 credential 显式生成。详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
 [ADR](docs/adr/)，Agent 需求

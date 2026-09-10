@@ -45,6 +45,10 @@ reproduction:
   tests.backend.test_agent_eval_runner
 ```
 
+Live diagnostics also include `runtime_tool_attempts` (name/status/error_code only), including
+budget rejections recorded before fixture execution when final output parsing fails. These are
+separate from fixture match summaries and do not change the existing quality scoring rules.
+
 ## Portfolio v2
 
 `agent_portfolio_v2.json` imports the ordered 26 v1 case IDs without changing the v1 dataset or

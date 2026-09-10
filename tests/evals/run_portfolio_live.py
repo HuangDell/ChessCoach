@@ -559,7 +559,15 @@ async def _run_cases(
             if progress is not None:
                 elapsed = time.monotonic() - started
                 progress(f"{case_label}: {case_status} ({elapsed:.2f}s)")
-            runtime.take_telemetry(request.run_id)
+            telemetry = runtime.take_telemetry(request.run_id)
+            if telemetry is not None and runs and runs[-1]["case_id"] == case["id"]:
+                # Runtime records include attempts rejected before fixture execution, even
+                # when output parsing fails. Keep fixture matching and scoring separate.
+                runs[-1]["tool_attempt_names"] = [call.name for call in telemetry.tool_calls]
+                runs[-1]["runtime_tool_attempts"] = [
+                    {"name": call.name, "status": call.status, "error_code": call.error_code}
+                    for call in telemetry.tool_calls
+                ]
             await sessions.clear_session(session_id)
     return (
         {

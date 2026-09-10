@@ -69,6 +69,16 @@ def _chess_reference() -> ChessReference:
 
 
 class AgentGroundingContractTests(unittest.TestCase):
+    def test_prompt_requires_json_and_bounded_tool_followups(self) -> None:
+        prompt = build_model_input(_context())
+        for rule in (
+            "one JSON object", "no Markdown code fences",
+            "not callable tools", "Do not repeat an identical query",
+            "Do not retry a budget-rejected call", "only the requested canonical skill",
+            "100 centipawns = 1 pawn",
+        ):
+            self.assertIn(rule, prompt)
+
     def test_prompt_separates_generic_skills_from_personal_evidence(self) -> None:
         context = _context().model_copy(
             update={

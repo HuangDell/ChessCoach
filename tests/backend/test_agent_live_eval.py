@@ -9,6 +9,7 @@ from server import config
 from server.core.agent.models import (
     AGENT_TOOL_PERMISSIONS,
     AgentResponse,
+    AgentError,
     AgentRunResult,
     AnalyzePositionInput,
     ChessReference,
@@ -19,6 +20,7 @@ from server.core.agent.models import (
     ToolCallRecord,
 )
 from server.core.agent.policy import allowed_tools_for
+from server.core.agent.runtime import AgentRuntimeFailure, AgentRuntimeTelemetry
 from tests.evals.evaluator import diagnose_dataset, score_dataset
 from tests.evals.run_portfolio_live import (
     _FixtureTools,
@@ -168,6 +170,43 @@ class _PerfectRuntime:
 
 
 class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_run_preserves_budget_rejections_from_runtime_telemetry(self) -> None:
+        dataset = _load("agent_baseline_v1.json")
+        dataset["cases"] = [dataset["cases"][16]]
+        sessions = _Sessions()
+        tools = {}
+
+        class FailedRuntime:
+            telemetry = None
+
+            async def run(self, request):
+                self.telemetry = AgentRuntimeTelemetry(
+                    tool_calls=[ToolCallRecord(
+                        name="analyze_move", permission="compute",
+                        status="budget_exceeded", duration_ms=0,
+                        error_code="tool_budget_exceeded",
+                    )], usage={},
+                )
+                raise AgentRuntimeFailure(AgentError(
+                    code="invalid_agent_response", message="Invalid output", recoverable=True,
+                ))
+
+            def take_telemetry(self, run_id):
+                telemetry, self.telemetry = self.telemetry, None
+                return telemetry
+
+        runtime = FailedRuntime()
+        observed, _ = await _run_cases(runtime, sessions, dataset, tools)
+        run = observed["runs"][0]
+        self.assertEqual(["analyze_move"], run["tool_attempt_names"])
+        self.assertEqual([{
+            "name": "analyze_move", "status": "budget_exceeded",
+            "error_code": "tool_budget_exceeded",
+        }], run["runtime_tool_attempts"])
+        self.assertEqual(run["runtime_tool_attempts"],
+                         diagnose_dataset(dataset, observed)[0]["runtime_tool_attempts"])
+        self.assertIsNone(runtime.telemetry)
+
     async def test_tool_attempt_diagnostics_are_canonical_and_redacted(self) -> None:
         dataset = _load("agent_baseline_v1.json")
         case = next(

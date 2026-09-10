@@ -21,7 +21,7 @@
   },
   "model": "deterministic-fixtures",
   "observed_runs_id": "agent-portfolio-v2-deterministic-fixtures",
-  "policy_version": 3,
+  "policy_version": 4,
   "response_schema_version": 3,
   "schema_version": 2,
   "scorer_version": 4,
