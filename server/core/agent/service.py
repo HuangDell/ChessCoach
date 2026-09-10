@@ -931,6 +931,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             enabled=config.AGENT_ENABLED,
             model=config.AGENT_MODEL,
             base_url=config.AGENT_BASE_URL,
+            provider=config.AGENT_PROVIDER,
             custom_api_key=config.AGENT_API_KEY,
             openai_api_key=config.OPENAI_API_KEY,
             domain_tools_factory=service.tools_for_runtime,

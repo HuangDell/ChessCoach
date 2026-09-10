@@ -40,6 +40,7 @@ from server.core.agent.runtime_openai import (
     OpenAIAgentsRuntime,
     SQLiteConversationSessionFactory,
 )
+from server.core.agent.schema_adapter import SCHEMA_ADAPTER_VERSION
 from server.core.storage.agent_compatibility import AgentCompatibilityStore, endpoint_fingerprint
 from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
 from server.core.learning.taxonomy import resolve_skill_id
@@ -669,6 +670,7 @@ async def _run(
     base_url: str,
     api_key: str,
     data_dir: str,
+    provider: str = "",
     progress: Callable[[str], None] | None = None,
     trace_base_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, bool]]:
@@ -689,6 +691,7 @@ async def _run(
     tool_instances: dict[str, _FixtureTools] = {}
     runtime = OpenAIAgentsRuntime(
         model=model,
+        provider=provider,
         api_key=api_key,
         base_url=base_url or "https://api.openai.com/v1",
         endpoint_type="custom_responses" if source == "custom" else "openai_responses",
@@ -717,6 +720,8 @@ async def _run(
             static_hardening_observed=static_hardening_observed,
         )
         gates["portfolio_quality"] = _all_quality_gates(report)
+        report["schema_adapter"] = runtime.schema_adapter
+        report["schema_adapter_version"] = SCHEMA_ADAPTER_VERSION
         report["compatibility_gates"] = gates
         report["all_passed"] = all(gates.values())
         if source == "custom":
@@ -735,13 +740,18 @@ def run_live_portfolio(
     api_key: str,
     data_dir: str,
     certificate_data_dir: str,
+    provider: str = "",
     progress: Callable[[str], None] | None = None,
     trace_base_dir: Path | None = None,
 ) -> dict[str, Any]:
+    provider = config.resolve_agent_provider(
+        provider or config.AGENT_PROVIDER, base_url if source == "custom" else ""
+    )
     report, gates = asyncio.run(
         _run(
             source=source,
             model=model,
+            provider=provider,
             base_url=base_url,
             api_key=api_key,
             data_dir=data_dir,
@@ -761,6 +771,8 @@ def run_live_portfolio(
                 policy_version=POLICY_VERSION,
                 response_schema_version=RESPONSE_SCHEMA_VERSION,
                 gate_cases=gates,
+                schema_adapter=provider,
+                schema_adapter_version=SCHEMA_ADAPTER_VERSION,
             )
         )
         if progress is not None:

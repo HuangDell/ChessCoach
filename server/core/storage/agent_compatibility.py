@@ -25,6 +25,8 @@ class CustomResponsesCertificate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     schema_version: Literal[1] = COMPATIBILITY_SCHEMA_VERSION
+    schema_adapter: Literal["openai", "deepseek", "generic"] = "generic"
+    schema_adapter_version: int = Field(default=1, ge=1)
     endpoint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     model: str = Field(min_length=1)
     sdk_version: str = Field(min_length=1)
@@ -62,6 +64,8 @@ class AgentCompatibilityStore:
         sdk_version: str,
         policy_version: int,
         response_schema_version: int,
+        schema_adapter: str = "generic",
+        schema_adapter_version: int = 1,
         dataset_id: str = PORTFOLIO_DATASET_ID,
         scorer_version: int = PORTFOLIO_SCORER_VERSION,
     ) -> bool:
@@ -70,6 +74,8 @@ class AgentCompatibilityStore:
             certificate is not None
             and certificate.all_passed
             and certificate.endpoint_sha256 == endpoint_fingerprint(base_url)
+            and certificate.schema_adapter == schema_adapter
+            and certificate.schema_adapter_version == schema_adapter_version
             and certificate.model == model
             and certificate.sdk_version == sdk_version
             and certificate.policy_version == policy_version
@@ -97,9 +103,13 @@ class AgentCompatibilityStore:
         sdk_version: str,
         policy_version: int,
         response_schema_version: int,
+        schema_adapter: str = "generic",
+        schema_adapter_version: int = 1,
         gate_cases: dict[str, bool],
     ) -> CustomResponsesCertificate:
         return CustomResponsesCertificate(
+            schema_adapter=schema_adapter,
+            schema_adapter_version=schema_adapter_version,
             endpoint_sha256=endpoint_fingerprint(base_url),
             model=model,
             sdk_version=sdk_version,

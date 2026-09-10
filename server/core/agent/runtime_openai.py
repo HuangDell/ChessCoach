@@ -14,6 +14,8 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from server.config import resolve_agent_provider
+from server.core.agent.schema_adapter import SCHEMA_ADAPTER_VERSION, adapt_schema
 from server.core.agent.models import (
     AGENT_TOOL_PERMISSIONS,
     AgentError,
@@ -212,12 +214,16 @@ class OpenAIAgentsRuntime:
         endpoint_type: str,
         domain_tools_factory: DomainToolsFactory,
         session_provider: SessionProvider,
+        provider: str = "",
         orchestration_factory: Callable[[AgentRunRequest], OrchestrationController] | None = None,
         research_model: Any | None = None,
         http_event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
     ) -> None:
         agents = importlib.import_module("agents")
         openai = importlib.import_module("openai")
+        self.schema_adapter = resolve_agent_provider(
+            provider, base_url if endpoint_type == "custom_responses" else ""
+        )
         self._agents = agents
         self._openai = openai
         self._model = model
@@ -917,7 +923,34 @@ class OpenAIAgentsRuntime:
                     is_enabled=is_enabled("create_training_draft"),
                 )
             )
+        if self.schema_adapter == "deepseek":
+            for tool in tools:
+                tool.params_json_schema = adapt_schema(tool.params_json_schema, self.schema_adapter)
         return tools
+
+    def _output_schema(self) -> Any:
+        if self.schema_adapter != "deepseek":
+            return AgentResponse
+        original = self._agents.AgentOutputSchema(AgentResponse)
+        adapted = adapt_schema(original.json_schema(), self.schema_adapter)
+
+        class ProviderOutputSchema(self._agents.AgentOutputSchemaBase):
+            def is_plain_text(self) -> bool:
+                return original.is_plain_text()
+
+            def name(self) -> str:
+                return original.name()
+
+            def json_schema(self) -> dict[str, Any]:
+                return adapted
+
+            def is_strict_json_schema(self) -> bool:
+                return original.is_strict_json_schema()
+
+            def validate_json(self, json_str: str) -> Any:
+                return original.validate_json(json_str)
+
+        return ProviderOutputSchema()
 
     def _map_exception(self, exc: BaseException) -> AgentRuntimeFailure:
         agents = self._agents
@@ -1009,7 +1042,7 @@ class OpenAIAgentsRuntime:
                 instructions=build_model_input(request.model_context),
                 model=self._model_for_run(local),
                 tools=self._sdk_tools(local),
-                output_type=AgentResponse,
+                output_type=self._output_schema(),
             )
             run_config = self._agents.RunConfig(
                 model_provider=self._provider,
@@ -1109,7 +1142,9 @@ def create_openai_runtime(
     domain_tools_factory: DomainToolsFactory,
     session_provider: SessionProvider,
     data_dir: str | None = None,
+    provider: str = "",
 ) -> OpenAIAgentsRuntime | UnavailableAgentRuntime:
+    provider = resolve_agent_provider(provider, base_url)
     endpoint_type = "custom_responses" if base_url else "openai_responses"
     if not enabled:
         return UnavailableAgentRuntime(
@@ -1138,6 +1173,8 @@ def create_openai_runtime(
         or not AgentCompatibilityStore(data_dir).is_compatible(
             base_url=base_url,
             model=model,
+            schema_adapter=provider,
+            schema_adapter_version=SCHEMA_ADAPTER_VERSION,
             sdk_version=AGENTS_SDK_VERSION,
             policy_version=POLICY_VERSION,
             response_schema_version=RESPONSE_SCHEMA_VERSION,
@@ -1175,6 +1212,7 @@ def create_openai_runtime(
             api_key=api_key,
             base_url=base_url or "https://api.openai.com/v1",
             endpoint_type=endpoint_type,
+            provider=provider,
             domain_tools_factory=domain_tools_factory,
             session_provider=session_provider,
         )

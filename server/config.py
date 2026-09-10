@@ -482,6 +482,18 @@ EXPLANATION_LANGUAGE: str = os.environ.get("CHESS_EXPLANATION_LANGUAGE", "zh-CN"
 AGENT_ENABLED: bool = os.environ.get("CHESS_AGENT_ENABLED", "1") != "0"
 AGENT_MODEL: str = os.environ.get("CHESS_AGENT_MODEL", "").strip()
 AGENT_BASE_URL: str = os.environ.get("CHESS_AGENT_BASE_URL", "").strip().rstrip("/")
+# Empty selects the adapter from the effective URL, including eval CLI overrides.
+AGENT_PROVIDER: str = os.environ.get("CHESS_AGENT_PROVIDER", "").strip().lower()
+
+
+def resolve_agent_provider(provider: str, base_url: str) -> str:
+    selected = provider.strip().lower() or ("generic" if base_url else "openai")
+    if selected not in {"openai", "deepseek", "generic"}:
+        raise ValueError("CHESS_AGENT_PROVIDER must be openai, deepseek, or generic")
+    return selected
+
+
+resolve_agent_provider(AGENT_PROVIDER, AGENT_BASE_URL)
 AGENT_API_KEY: str = os.environ.get("CHESS_AGENT_API_KEY", "").strip()
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "").strip()
 AGENT_MAX_TURNS: int = max(1, _parse_int("CHESS_AGENT_MAX_TURNS", 4))

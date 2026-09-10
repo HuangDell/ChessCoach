@@ -102,3 +102,9 @@ Only the 26 cases actually sent through the SDK are included in live endpoint ra
 The 11 deterministic hardening fixtures remain visible as a `static_hardening_reference`, with
 `executed_against_endpoint=false` and `included_in_live_metrics=false`; they are covered by the
 offline portfolio and backend regression suite instead of being relabeled as live observations.
+
+Provider schema rules are selected with `CHESS_AGENT_PROVIDER=openai|deepseek|generic` in both Web
+and live portfolio. With no selection, a custom URL uses generic and the official path uses OpenAI.
+Changing the adapter name/version requires recertification; legacy certificates without those fields
+are valid only for generic v1. DeepSeek schema adaptation remains unverified against a live endpoint
+until the explicit portfolio passes.

@@ -83,6 +83,7 @@ SQLite conversation session 和非流式 bounded runs。response schema v3 要�
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
 | `CHESS_AGENT_ENABLED` | 启用 Agent surface | `1` |
+| `CHESS_AGENT_PROVIDER` | schema 适配规则：`openai` / `deepseek` / `generic` | 无自定义 URL 为 `openai`，否则 `generic` |
 | `CHESS_AGENT_MODEL` | 显式模型显示名/ID | 未设置 |
 | `OPENAI_API_KEY` | 官方 OpenAI Responses credential | 未设置 |
 | `CHESS_AGENT_BASE_URL` | 自定义 Responses-compatible base URL | 官方 OpenAI API |
@@ -96,14 +97,21 @@ SQLite conversation session 和非流式 bounded runs。response schema v3 要�
 官方 OpenAI 路径不需要本地 compatibility certificate。自定义 endpoint 必须先使用相同 runtime、
 生产工具路由、生产预算、生产响应验收、fixture tools、dataset 和 scorer 完整通过 live portfolio；
 证书绑定 endpoint SHA-256 指纹、模型、SDK、
-policy、response schema、dataset 和 scorer 版本。缺失、损坏或不匹配时 capability 返回
+policy、response schema、dataset、scorer 版本和 schema 适配器名称/版本。缺失、损坏或不匹配时 capability 返回
 `agent_endpoint_incompatible`，不会回退到 Chat Completions 或自建 tool loop。
+
+厂家配置只选择 schema 规则，不更改 model、URL、凭据或 Responses 协议。未知厂家值会明确报配置错误。
+`openai` / `generic` 原样传递 SDK schema；`deepseek` v1 展开 `anyOf` 分支的本地 `$ref`，
+移除 `minLength`、`maxLength`、`minItems`、`maxItems`，保留类型、可空性、联合分支和字段限制。
+输出与工具参数仍执行原始模型的完整本地校验。旧证书缺少适配器字段时仅视为 `generic` v1；
+切换适配器或升级规则需重跑 live portfolio。DeepSeek 规则尚需真实 endpoint 验证，离线通过不代表厂家认证。
 
 ### 重跑自定义 endpoint 兼容性验证
 
 先安装 Agent extra，再使用与 Web 进程完全相同的 model、base URL 和 data directory 运行 custom
 live portfolio。runner 会完整读取项目根目录的 `.env`；Shell 中已 export 的同名变量仍优先。
-配置好 `CHESS_AGENT_MODEL`、`CHESS_AGENT_BASE_URL` 和 `CHESS_AGENT_API_KEY` 后运行：
+配置好 `CHESS_AGENT_MODEL`、`CHESS_AGENT_BASE_URL`、`CHESS_AGENT_API_KEY` 和所需的
+`CHESS_AGENT_PROVIDER` 后运行；Web 和 eval 使用相同的厂家配置解析逻辑：
 
 ```bash
 uv sync --extra agent
