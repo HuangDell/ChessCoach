@@ -92,6 +92,7 @@
         </div>
 
         <div class="controls">
+          <button id="free-analysis" type="button" aria-pressed="false">Free analysis</button>
           <div class="ctrl-group">
             <button id="start" class="icon-btn" title="Go to start (↑)" aria-label="Go to start">|◀</button>
             <button id="back" class="icon-btn" title="Previous move (←)" aria-label="Previous move">◀</button>
@@ -241,7 +242,7 @@
             <span id="workflow-count"></span>
           </div>
 
-          <div class="review-tabs" role="tablist" aria-label="Review view">
+          <div id="review-tabs" class="review-tabs" role="tablist" aria-label="Review view">
             <button type="button" id="review-tab-key" class="active" data-view="key" role="tab">Key positions</button>
             <button type="button" id="review-tab-mistakes" data-view="mistakes" role="tab">My mistakes</button>
             <button type="button" id="review-tab-all" data-view="all" role="tab">All moves</button>
@@ -310,8 +311,9 @@
           </article>
 
           <div id="review-empty" class="review-empty">
-            <strong>No game loaded</strong>
-            <span>Open Games and import a PGN to start reviewing.</span>
+            <strong id="review-empty-title">No game loaded</strong>
+            <span id="review-empty-detail">Open Games and import a PGN to start reviewing.</span>
+            <span id="free-analysis-line" class="free-analysis-line" hidden>Start position</span>
           </div>
         </section>
 

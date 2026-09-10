@@ -49,6 +49,10 @@ python -m server.doctor
 从 Games -> Import 粘贴或上传 PGN。分析流程为全盘快速扫描、关键局面选择、MultiPV 深度分析和
 确定性 facts 提取。FEN、合法着重放、评价、分类和训练判定都不依赖模型。
 
+棋盘控制区的 `Free analysis` 会从标准初始局面打开一个临时分析工作区。每步合法着都会获得
+Stockfish 评价，可逐步撤销或整体重置；当前单线路只存在于页面会话，不保存到 Games，也不导出
+PGN。打开或导入棋局会退出该工作区。
+
 复盘页可浏览 Key positions、My mistakes 和 All moves，并进入 Retry 或 Practice。个人训练会复用
 现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical
 observation，再确定性重建 recent/lifetime skill estimate。
@@ -94,6 +98,29 @@ SQLite conversation session 和非流式 bounded runs。response schema v3 要�
 证书绑定 endpoint SHA-256 指纹、模型、SDK、
 policy、response schema、dataset 和 scorer 版本。缺失、损坏或不匹配时 capability 返回
 `agent_endpoint_incompatible`，不会回退到 Chat Completions 或自建 tool loop。
+
+### 重跑自定义 endpoint 兼容性验证
+
+先安装 Agent extra，再使用与 Web 进程完全相同的 model、base URL 和 data directory 运行 custom
+live portfolio。credential 可由 Shell 或项目根目录的 `.env` 提供；不要把真实 key 写入命令历史：
+
+```bash
+uv sync --extra agent
+
+.venv/bin/python -m tests.evals.run_portfolio \
+  --source custom \
+  --model "your-model" \
+  --base-url "https://api.example.com/v1" \
+  --certificate-data-dir "/absolute/path/to/chess-review-coach-data" \
+  --output reports/custom-responses.json
+```
+
+该命令会对 endpoint 运行 26 个 live case，可能产生模型调用费用。仅当报告中的 `all_passed` 为
+`true` 且全部 `compatibility_gates` 为 `true` 时，才会原子写入
+`<DATA_DIR>/agent/compatibility/custom-responses.json`；失败时查看报告的 `compatibility_gates`、
+`metrics` 和 `live_case_diagnostics`，不会签发新证书。验证通过后重启 Web 进程，使其重新加载证书。
+base URL、model、锁定的 Agents SDK、policy、response schema、dataset 或 scorer 任一变化后都必须
+用新配置重跑。
 
 Credential 只由后端读取，不返回浏览器，不写 prompt、conversation、artifact、run log 或 eval
 report。完整 custom 认证命令见 [Operations](docs/operations.md)。
@@ -176,9 +203,3 @@ scorer v4 的新门禁并在本地数据目录签发证书，去敏报告不提�
 credential 显式生成。详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
 [ADR](docs/adr/)，Agent 需求
 与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。
-
-研究路线见 [Execution-Aware Tool Orchestration 计划](docs/research/execution-aware-tool-orchestration-plan.md)：
-以执行状态驱动的动态工具检索和受控实验为主，Selective Delegation 为条件扩展。P0 已提供隔离的
-24 任务/30 变体回放、scorer、状态投影和真实 SDK＋fake model 动态 schema 检查；运行方法见
-[P0 eval README](tests/evals/orchestration/README.md)。这些研究注入点仅由显式测试构造启用，尚未
-改变上述生产运行路径，也不代表 live 模型实验结果。

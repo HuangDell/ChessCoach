@@ -362,6 +362,7 @@ main {
   font-size: 13px;
 }
 .controls button:hover { background: var(--panel2); }
+.controls button.active { border-color: var(--accent); background: #293826; }
 .controls button:disabled { opacity: 0.4; cursor: default; }
 .controls .icon-btn,
 .icon-btn {
@@ -805,6 +806,13 @@ body.retry-mode .board-col { max-height: none; overflow: visible; }
 .review-empty[hidden] { display: none; }
 .review-empty strong { color: var(--text); font-size: 14px; }
 .review-empty span { font-size: 12.5px; }
+.review-empty .free-analysis-line {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.review-empty .free-analysis-line[hidden] { display: none; }
 .movelist-panel[hidden] { display: none; }
 .review-workspace .movelist-panel { margin-bottom: 0; }
 .set-advanced { border-top: 1px solid var(--border, #34322e); padding-top: 10px; }

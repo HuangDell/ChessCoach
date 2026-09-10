@@ -19,6 +19,7 @@ export function createReviewNavigation({
   onNotationHighlight,
   onReviewCursorSync,
   onNavUpdate,
+  onFreeAnalysisLine = () => {},
 }) {
   const chess = board.chess;
   const ground = board.ground;
@@ -39,6 +40,7 @@ export function createReviewNavigation({
     threatArrows: [],
     evalShapes: [],
     boardLastMove: null,
+    freeAnalysis: false,
   };
 
   const engineSearch = createEngineArrowSearch({
@@ -198,6 +200,9 @@ export function createReviewNavigation({
       };
       element.className = "status";
       element.textContent = labels[retrySession.state] || "Retry this position.";
+    } else if (state.freeAnalysis) {
+      element.className = "status";
+      element.innerHTML = `<strong>Free analysis.</strong>${exploreVerdictHtml()}`;
     } else if (state.exploring) {
       element.className = "status away";
       element.innerHTML =
@@ -232,7 +237,7 @@ export function createReviewNavigation({
     const timeline = getTimeline();
     const baseNode = timeline[state.exploreBaseNode];
     return {
-      mode: "exploration",
+      mode: state.freeAnalysis ? "free_analysis" : "exploration",
       basePly: state.exploreBaseNode,
       baseFen: state.exploreBaseFen || (baseNode && baseNode.fen) || chess.fen(),
       explorationMovesUci: history.map((move) =>
@@ -314,7 +319,7 @@ export function createReviewNavigation({
   }
 
   function stepBack() {
-    if (state.exploring) undoOne();
+    if (state.freeAnalysis || state.exploring) undoOne();
     else if (state.cur > 0) gotoNode(state.cur - 1);
   }
 
@@ -347,6 +352,7 @@ export function createReviewNavigation({
       onGraphRender();
       onNotationHighlight();
       onReviewCursorSync();
+      notifyFreeAnalysisLine();
       refreshEngineArrows();
       return;
     }
@@ -360,15 +366,39 @@ export function createReviewNavigation({
     updateStatus();
     onNavUpdate();
     onGraphRender();
-    syncExplore();
+    notifyFreeAnalysisLine();
+    syncExplore(state.exploreGeneration);
     refreshEngineArrows();
   }
 
-  async function syncExplore() {
+  async function syncExplore(requestGeneration) {
+    const fen = chess.fen();
     try {
-      const info = await api.bestMove({ fen: chess.fen() });
+      const info = await api.bestMove({ fen });
+      if (
+        requestGeneration !== state.exploreGeneration ||
+        (!state.freeAnalysis && !state.exploring) ||
+        chess.fen() !== fen
+      ) return;
       setEvalBar(info.side_to_move === "white" ? info.win_percent : 100 - info.win_percent);
     } catch (_) {}
+  }
+
+  function freeAnalysisLine() {
+    const history = chess.history({ verbose: true });
+    if (!history.length) return "Start position";
+    const turns = [];
+    history.forEach((move, index) => {
+      if (index % 2 === 0) turns.push(`${Math.floor(index / 2) + 1}. ${move.san}`);
+      else turns[turns.length - 1] += ` ${move.san}`;
+    });
+    return turns.join(" ");
+  }
+
+  function notifyFreeAnalysisLine() {
+    if (state.freeAnalysis) {
+      onFreeAnalysisLine(freeAnalysisLine(), chess.history().length);
+    }
   }
 
   async function handleMove(orig, dest) {
@@ -414,6 +444,7 @@ export function createReviewNavigation({
     updateStatus();
     onNavUpdate();
     onGraphRender();
+    notifyFreeAnalysisLine();
     setChatContext(chess.fen(), null, null, explorationDetails());
     refreshEngineArrows();
 
@@ -443,6 +474,7 @@ export function createReviewNavigation({
 
   function resetVisualState() {
     state.exploreGeneration += 1;
+    engineSearch.cancel();
     patch({
       currentMistake: -1,
       anchorNode: 0,
@@ -452,7 +484,65 @@ export function createReviewNavigation({
       threatArrows: [],
       boardLastMove: null,
       exploreBaseFen: null,
+      exploreVerdict: null,
+      exploring: false,
+      freeAnalysis: false,
     });
+  }
+
+  function resetFreeAnalysis() {
+    state.exploreGeneration += 1;
+    engineSearch.cancel();
+    chess.reset();
+    patch({
+      cur: 0,
+      anchorNode: 0,
+      currentMistake: -1,
+      currentPrompt: "",
+      exploring: false,
+      exploreBaseNode: 0,
+      exploreBaseFen: chess.fen(),
+      exploreVerdict: null,
+      evalShapes: [],
+      bestArrows: [],
+      threatArrows: [],
+      boardLastMove: null,
+      freeAnalysis: true,
+    });
+    renderBoard();
+    setEvalBar(50);
+    renderVerdict(null);
+    updateStatus();
+    onNavUpdate();
+    onGraphRender();
+    onNotationHighlight();
+    onReviewCursorSync();
+    notifyFreeAnalysisLine();
+    setChatContext(chess.fen(), null, null, { mode: "free_analysis" });
+    refreshEngineArrows();
+  }
+
+  function enterFreeAnalysis() {
+    state.freeAnalysis = true;
+    resetFreeAnalysis();
+  }
+
+  function exitFreeAnalysis() {
+    state.exploreGeneration += 1;
+    engineSearch.cancel();
+    patch({
+      exploring: false,
+      exploreBaseFen: null,
+      exploreVerdict: null,
+      evalShapes: [],
+      bestArrows: [],
+      threatArrows: [],
+      boardLastMove: null,
+      freeAnalysis: false,
+    });
+    renderVerdict(null);
+    updateStatus();
+    onNavUpdate();
   }
 
   return {
@@ -474,6 +564,9 @@ export function createReviewNavigation({
     refreshEngineArrows,
     reviewedMoveNode,
     resetVisualState,
+    enterFreeAnalysis,
+    resetFreeAnalysis,
+    exitFreeAnalysis,
     get orient() { return state.orient; },
     get cur() { return state.cur; },
     get anchorNode() { return state.anchorNode; },
@@ -482,5 +575,7 @@ export function createReviewNavigation({
     get exploreBaseNode() { return state.exploreBaseNode; },
     get bestArrowOn() { return state.bestArrowOn; },
     get threatArrowOn() { return state.threatArrowOn; },
+    get freeAnalysis() { return state.freeAnalysis; },
+    get freePly() { return state.freeAnalysis ? chess.history().length : 0; },
   };
 }

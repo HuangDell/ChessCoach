@@ -161,3 +161,23 @@ test("a superseded poll cannot load ready data for the previous game", async () 
   assert.equal(sessionCalls, 1);
   assert.equal(ready[0].session.game_id, "new-game");
 });
+
+test("cancel stops polling and prevents a late ready response from applying", async () => {
+  const status = deferred();
+  let statusCalls = 0;
+  const { runner, ready } = createHarness({
+    analysisStatus: async () => {
+      statusCalls += 1;
+      return status.promise;
+    },
+  });
+
+  await runner.openGame("old", "white");
+  await waitFor(() => statusCalls === 1);
+  runner.cancel();
+  status.resolve({ status: "ready" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  assert.deepEqual(ready, []);
+  assert.equal(statusCalls, 1);
+});

@@ -16,10 +16,16 @@ export function createAnalysisRunner({
   let operationGeneration = 0;
   let batchInfo = null;
 
-  function beginOperation() {
+  function cancel() {
     stopPolling();
     operationGeneration += 1;
     if (abortController) abortController.abort();
+    abortController = null;
+    batchInfo = null;
+  }
+
+  function beginOperation() {
+    cancel();
     abortController = new AbortController();
     return { generation: operationGeneration, signal: abortController.signal };
   }
@@ -182,5 +188,5 @@ export function createAnalysisRunner({
     startPolling(generation, signal);
   }
 
-  return { openGame, openBatch, startSyncedBatch };
+  return { openGame, openBatch, startSyncedBatch, cancel };
 }

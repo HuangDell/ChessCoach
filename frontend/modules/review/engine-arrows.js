@@ -19,9 +19,8 @@ export function createEngineArrowSearch({
   let generation = 0;
 
   function refresh() {
-    if (abortController) abortController.abort();
+    cancel();
     abortController = new AbortController();
-    generation += 1;
     setBestArrows([]);
     setThreatArrows([]);
     onUpdate();
@@ -29,6 +28,12 @@ export function createEngineArrowSearch({
     const fen = getFen();
     if (isBestEnabled()) deepenBestMoves(fen, currentGeneration, abortController.signal);
     if (isThreatEnabled()) fetchThreats(fen, currentGeneration, abortController.signal);
+  }
+
+  function cancel() {
+    generation += 1;
+    if (abortController) abortController.abort();
+    abortController = null;
   }
 
   async function deepenBestMoves(fen, currentGeneration, signal) {
@@ -68,5 +73,5 @@ export function createEngineArrowSearch({
     }
   }
 
-  return { refresh };
+  return { refresh, cancel };
 }

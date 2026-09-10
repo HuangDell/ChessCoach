@@ -34,6 +34,7 @@ export function createApp() {
     startSyncedBatch: supersedeStartup((...args) => review.startSyncedBatch(...args)),
     setWorkflowState: (...args) => review.setWorkflowState(...args),
     setPendingCritical: (id) => review.setPendingCritical(id),
+    exitFreeAnalysis: supersedeStartup(() => review.exitFreeAnalysis()),
   };
 
   function featurePreferences(config = {}) {
@@ -102,8 +103,7 @@ export function createApp() {
         return;
       }
       if (games.appMode && (await games.maybeAutoload())) return;
-      $("game-meta").textContent =
-        "Waiting to open a game — pick one from the Games panel or paste a PGN.";
+      review.enterFreeAnalysis();
       return;
     }
 
@@ -150,6 +150,7 @@ export function createApp() {
         activateLocalHistory: () => games.activateLocal(),
         loadHistory: (...args) => games.loadHistory(...args),
         openAgentPosition,
+        enterFreeAnalysis: supersedeStartup(() => review.enterFreeAnalysis()),
       },
     });
 

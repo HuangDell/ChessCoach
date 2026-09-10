@@ -36,6 +36,7 @@ export function createGamesImporter({ $, bridge, setMode, isPasteMode }) {
       status.textContent = "Single-game URLs aren't supported. Download or copy the PGN first.";
       return;
     }
+    bridge.review.exitFreeAnalysis();
 
     status.textContent = "Importing PGN…";
     bridge.review.setWorkflowState(

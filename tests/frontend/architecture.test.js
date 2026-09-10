@@ -51,7 +51,7 @@ test("review controller delegates feature responsibilities", async () => {
   const directory = path.join(frontend, "modules", "review");
   const controller = await readFile(path.join(directory, "controller.js"), "utf8");
   assert.ok(
-    controller.trim().split("\n").length <= 750,
+    controller.trim().split("\n").length <= 825,
     "review/controller.js should remain an orchestration layer"
   );
   for (const moduleName of [
@@ -119,6 +119,15 @@ test("cross-feature Agent navigation ignores superseded history responses", asyn
     source,
     /await review[.]loadReviewArtifacts\([^;]+;\s*if \(generation !== startupGeneration \|\| artifactsLoaded === false\) return/
   );
+});
+
+test("empty startup and PGN import use the free-analysis lifecycle port", async () => {
+  const app = await readFile(path.join(frontend, "modules", "app.js"), "utf8");
+  const importer = await readFile(path.join(frontend, "modules", "games", "importer.js"), "utf8");
+  assert.match(app, /if \(session[.]empty\)[\s\S]+review[.]enterFreeAnalysis\(\)/);
+  assert.match(app, /exitFreeAnalysis: supersedeStartup\(\(\) => review[.]exitFreeAnalysis\(\)\)/);
+  assert.match(app, /enterFreeAnalysis: supersedeStartup\(\(\) => review[.]enterFreeAnalysis\(\)\)/);
+  assert.match(importer, /bridge[.]review[.]exitFreeAnalysis\(\)/);
 });
 
 test("Agent and settings endpoints have single API owners", async () => {

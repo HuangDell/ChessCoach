@@ -130,6 +130,34 @@ test("training context follows the puzzle board without claiming review ownershi
   });
 });
 
+test("free analysis context owns only the current FEN", () => {
+  const context = buildReviewAgentContext(snapshot({
+    currentGameId: null,
+    timeline: [],
+    fen: AFTER_E4,
+  }), {
+    mode: "free_analysis",
+    fen: AFTER_E4,
+    explorationMovesUci: ["e2e4"],
+    explorationMovesSan: ["e4"],
+  });
+
+  assert.deepEqual(context, {
+    game_id: null,
+    review_side: null,
+    active_ply: null,
+    active_critical_id: null,
+    activity: "position_analysis",
+    focus_ref: null,
+    position: {
+      fen: AFTER_E4,
+      recent_moves_uci: [],
+      recent_moves_san: [],
+      reference: { fen: AFTER_E4 },
+    },
+  });
+});
+
 test("Agent response references, actions, and tool summary use injected callbacks", async () => {
   const originalDocument = globalThis.document;
   const { $, values } = elements();

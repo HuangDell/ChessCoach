@@ -8,7 +8,12 @@ import { createReviewNavigation } from "../../frontend/modules/review/navigation
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-function createHarness({ evaluate = async () => ({}), timeline: suppliedTimeline, onNavUpdate } = {}) {
+function createHarness({
+  evaluate = async () => ({}),
+  timeline: suppliedTimeline,
+  onNavUpdate,
+  onFreeAnalysisLine,
+} = {}) {
   const elements = new Map();
   const $ = (id) => {
     if (!elements.has(id)) {
@@ -31,6 +36,7 @@ function createHarness({ evaluate = async () => ({}), timeline: suppliedTimeline
   ];
   const boardStates = [];
   const chess = {
+    initialFen: timeline[0]?.fen || "fen-0",
     currentFen: timeline[0]?.fen || "fen-0",
     moves: [],
     fen() { return this.currentFen; },
@@ -44,6 +50,10 @@ function createHarness({ evaluate = async () => ({}), timeline: suppliedTimeline
       const move = this.moves.pop();
       if (move) this.currentFen = move.before;
       return move || null;
+    },
+    reset() {
+      this.currentFen = this.initialFen;
+      this.moves = [];
     },
   };
   const critical = {
@@ -62,15 +72,25 @@ function createHarness({ evaluate = async () => ({}), timeline: suppliedTimeline
       },
       computeDests: () => new Map(),
       isPromotion: () => false,
-      tryMove({ from, to }) {
-        const move = { before: chess.currentFen, from, to, san: `${from}-${to}` };
+      tryMove({ from, to, promotion }) {
+        const sans = { e2e4: "e4", e7e5: "e5", g1f3: "Nf3" };
+        const move = {
+          before: chess.currentFen,
+          from,
+          to,
+          promotion,
+          san: sans[`${from}${to}`] || `${from}-${to}`,
+        };
         chess.moves.push(move);
         chess.currentFen = `after-${from}-${to}`;
         return move;
       },
       turnColor: () => "white",
     },
-    api: { evaluate },
+    api: {
+      evaluate,
+      bestMove: async () => ({ side_to_move: "white", win_percent: 50 }),
+    },
     getTimeline: () => timeline,
     getAnalyzing: () => false,
     getActiveCritical: () => critical,
@@ -84,6 +104,7 @@ function createHarness({ evaluate = async () => ({}), timeline: suppliedTimeline
     onNotationHighlight() {},
     onReviewCursorSync() {},
     onNavUpdate: onNavUpdate || (() => {}),
+    onFreeAnalysisLine,
   });
   navigation.patch({ anchorNode: 2, currentMistake: 0 });
   return { boardStates, chess, navigation };
@@ -124,9 +145,89 @@ test("without an imported game, a move from the initial position can be undone",
   assert.equal(chess.fen(), "fen-0", "a late evaluation must not restore the explored move");
 });
 
+function moveEvaluation(san, overrides = {}) {
+  return {
+    move: {
+      move_san: san,
+      classification: "best",
+      refutation_line_san: [],
+      is_engine_best: true,
+      win_before: 50,
+      win_after: 51,
+      win_swing: 1,
+      eval_after: "+0.10",
+      better_move_san: san,
+      ...overrides,
+    },
+    shapes: [],
+  };
+}
+
+test("free analysis tracks one SAN line and evaluates each move from its prior FEN", async () => {
+  const calls = [];
+  const lines = [];
+  const { chess, navigation } = createHarness({
+    timeline: [],
+    evaluate: async (body) => {
+      calls.push(body);
+      const san = { e2e4: "e4", e7e5: "e5", g1f3: "Nf3" }[body.move];
+      return moveEvaluation(san);
+    },
+    onFreeAnalysisLine: (line, ply) => lines.push({ line, ply }),
+  });
+
+  navigation.enterFreeAnalysis();
+  assert.equal(navigation.freeAnalysis, true);
+  assert.deepEqual(lines.at(-1), { line: "Start position", ply: 0 });
+
+  await navigation.handleMove("e2", "e4");
+  await navigation.handleMove("e7", "e5");
+  await navigation.handleMove("g1", "f3");
+
+  assert.deepEqual(calls, [
+    { fen: "fen-0", move: "e2e4" },
+    { fen: "after-e2-e4", move: "e7e5" },
+    { fen: "after-e7-e5", move: "g1f3" },
+  ]);
+  assert.deepEqual(lines.at(-1), { line: "1. e4 e5 2. Nf3", ply: 3 });
+
+  navigation.stepBack();
+  assert.deepEqual(lines.at(-1), { line: "1. e4 e5", ply: 2 });
+  navigation.stepBack();
+  assert.deepEqual(lines.at(-1), { line: "1. e4", ply: 1 });
+  navigation.resetFreeAnalysis();
+  assert.equal(chess.fen(), "fen-0");
+  assert.deepEqual(lines.at(-1), { line: "Start position", ply: 0 });
+});
+
+test("reset and exit ignore a late free-analysis evaluation", async () => {
+  let resolveEvaluation;
+  const evaluation = new Promise((resolve) => { resolveEvaluation = resolve; });
+  const lines = [];
+  const { chess, navigation } = createHarness({
+    timeline: [],
+    evaluate: () => evaluation,
+    onFreeAnalysisLine: (line) => lines.push(line),
+  });
+
+  navigation.enterFreeAnalysis();
+  const pendingMove = navigation.handleMove("e2", "e4");
+  navigation.resetFreeAnalysis();
+  navigation.exitFreeAnalysis();
+  chess.load("opened-game-fen");
+  resolveEvaluation(moveEvaluation("e4", { classification: "blunder" }));
+  await pendingMove;
+
+  assert.equal(navigation.freeAnalysis, false);
+  assert.equal(chess.fen(), "opened-game-fen");
+  assert.equal(lines.at(-1), "Start position");
+});
+
 test("board controls label key-position navigation explicitly", async () => {
   const html = await readFile(path.join(root, "frontend", "index.html"), "utf8");
   assert.match(html, /id="prev-mistake"[^>]*>‹ Previous key position<\/button>/);
   assert.match(html, /id="next-mistake"[^>]*>Next key position ›<\/button>/);
   assert.doesNotMatch(html, />‹ Key<\/button>|>Key ›<\/button>/);
+  assert.match(html, /id="free-analysis"[^>]*>Free analysis<\/button>/);
+  assert.match(html, /id="free-analysis-line"[^>]*>Start position<\/span>/);
 });

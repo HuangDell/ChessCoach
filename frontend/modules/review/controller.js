@@ -107,6 +107,7 @@ let showThreatsByDefault = false;
     onNotationHighlight: () => notation.highlightCurrent(),
     onReviewCursorSync: syncReviewCursor,
     onNavUpdate: updateNav,
+    onFreeAnalysisLine: renderFreeAnalysisLine,
   });
   const renderBoard = () => navigation.renderBoard();
   const applyEvalBarTheme = () => navigation.applyEvalBarTheme();
@@ -368,15 +369,21 @@ async function selectMistake(i) {
 }
 
 function updateNav() {
-  $("back").disabled = !navigation.exploring && navigation.cur <= 0;
-  $("fwd").disabled = navigation.exploring || navigation.cur >= timeline.length - 1;
+  const freePly = navigation.freePly;
+  $("start").disabled = navigation.freeAnalysis ? freePly === 0 : navigation.cur <= 0;
+  $("back").disabled = navigation.freeAnalysis
+    ? freePly === 0
+    : !navigation.exploring && navigation.cur <= 0;
+  $("fwd").disabled = navigation.freeAnalysis || navigation.exploring || navigation.cur >= timeline.length - 1;
+  $("end").disabled = navigation.freeAnalysis || navigation.cur >= timeline.length - 1;
+  $("reset").disabled = navigation.freeAnalysis && freePly === 0;
   const criticalIndex = criticalPositions.findIndex((item) => item.critical_id === activeCriticalId);
-  $("prev-mistake").disabled = criticalPositions.length
+  $("prev-mistake").disabled = navigation.freeAnalysis || (criticalPositions.length
     ? criticalIndex <= 0
-    : navigation.currentMistake <= 0;
-  $("next-mistake").disabled = criticalPositions.length
+    : navigation.currentMistake <= 0);
+  $("next-mistake").disabled = navigation.freeAnalysis || (criticalPositions.length
     ? criticalIndex < 0 || criticalIndex >= criticalPositions.length - 1
-    : navigation.currentMistake < 0 || navigation.currentMistake >= mistakes.length - 1;
+    : navigation.currentMistake < 0 || navigation.currentMistake >= mistakes.length - 1);
 }
 
 // --- artifact-backed review workspace ----------------------------------
@@ -490,15 +497,81 @@ function setAnalyzingUI(on) {
   progress.setVisible(on);
 }
 
+function setFreeAnalysisUI(on) {
+  const button = $("free-analysis");
+  button.classList.toggle("active", on);
+  button.setAttribute("aria-pressed", String(on));
+  $("review-tabs").hidden = on;
+  $("free-analysis-line").hidden = !on;
+  $("reset").textContent = on ? "Reset" : "↩ Main line";
+  $("reset").title = on ? "Reset to the start position" : "Return to the main line";
+  if (on) {
+    $("review-position-list").hidden = true;
+    $("movelist-panel").hidden = true;
+    $("critical-review").hidden = true;
+  } else {
+    workspaceView.refreshView();
+  }
+}
+
+function renderFreeAnalysisLine(line, ply) {
+  $("review-empty").hidden = false;
+  $("review-empty-title").textContent = "Free analysis";
+  $("review-empty-detail").textContent = "Temporary · not saved";
+  $("free-analysis-line").textContent = line;
+  $("timeline-readout").textContent = ply ? `Ply ${ply}` : "Start position";
+}
+
+function exitFreeAnalysis() {
+  if (!navigation.freeAnalysis) return;
+  navigation.exitFreeAnalysis();
+  setFreeAnalysisUI(false);
+  $("review-empty-title").textContent = "No game loaded";
+  $("review-empty-detail").textContent = "Open Games and import a PGN to start reviewing.";
+  $("game-meta").textContent = "Waiting to open a game…";
+}
+
+function enterFreeAnalysis() {
+  analysis.cancel();
+  analyzing = false;
+  setAnalyzingUI(false);
+  if (retry.session) retry.exit();
+  variation.stop();
+  artifacts.reset();
+  timeline = [];
+  mistakes = [];
+  currentPgn = null;
+  currentGameId = null;
+  currentGameUrl = null;
+  gameWhite = "";
+  gameBlack = "";
+  pendingCriticalId = null;
+  pendingGotoPly = null;
+  $("scoreboard").hidden = true;
+  $("comment").textContent = "";
+  $("verdict").innerHTML = "";
+  coach.reset();
+  chat.contextChanged();
+  renderMoveList();
+  renderMistakeList();
+  setWorkflowState("free_analysis", "Free analysis", "Temporary position workspace.");
+  $("game-meta").textContent = "Free analysis · not saved";
+  updateFlipReviewButton();
+  setFreeAnalysisUI(true);
+  navigation.enterFreeAnalysis();
+}
+
 // Set up the board to navigate a PGN immediately (provisional timeline, no engine yet) and reset
 // per-game UI state. Shared by single-game opens and the first game of a batch upload.
 function beginProvisional(pgn, side, metaText, gameId = null) {
+  exitFreeAnalysis();
   analyzing = true;
   artifacts.reset(gameId);
   variation.stop();
   $("critical-review").hidden = true;
   $("review-empty").hidden = false;
-  $("review-empty").innerHTML = "<strong>Analysis in progress</strong><span>You can navigate the main line while Stockfish works.</span>";
+  $("review-empty-title").textContent = "Analysis in progress";
+  $("review-empty-detail").textContent = "You can navigate the main line while Stockfish works.";
   setWorkflowState("analyzing_scan", "Scanning game", "Waiting for the first measured position count.");
   renderReviewList();
   navigation.resetVisualState();
@@ -611,14 +684,15 @@ function onAnalysisError(msg) {
 
 
   function mount() {
+    $("free-analysis").addEventListener("click", bridge.enterFreeAnalysis);
     $("back").addEventListener("click", stepBack);
     $("fwd").addEventListener("click", stepForward);
-    $("start").addEventListener("click", () => gotoNode(0));
+    $("start").addEventListener("click", () => navigation.freeAnalysis ? navigation.resetFreeAnalysis() : gotoNode(0));
     $("end").addEventListener("click", () => gotoNode(timeline.length - 1));
     $("flip-board").addEventListener("click", flipBoard);
     $("prev-mistake").addEventListener("click", () => selectAdjacentCritical(-1));
     $("next-mistake").addEventListener("click", () => selectAdjacentCritical(1));
-    $("reset").addEventListener("click", returnToReview);
+    $("reset").addEventListener("click", () => navigation.freeAnalysis ? navigation.resetFreeAnalysis() : returnToReview());
     $("flip-review").addEventListener("click", reviewOtherSide);
     $("best-toggle").addEventListener("change", (event) => {
       navigation.patch({ bestArrowOn: event.target.checked });
@@ -664,7 +738,7 @@ function onAnalysisError(msg) {
     }
     if (event.key === "ArrowLeft") { event.preventDefault(); stepBack(); return true; }
     if (event.key === "ArrowRight") { event.preventDefault(); stepForward(); return true; }
-    if (event.key === "ArrowUp") { event.preventDefault(); gotoNode(0); return true; }
+    if (event.key === "ArrowUp") { event.preventDefault(); navigation.freeAnalysis ? navigation.resetFreeAnalysis() : gotoNode(0); return true; }
     if (event.key === "ArrowDown") { event.preventDefault(); gotoNode(timeline.length - 1); return true; }
     if (event.key === " ") { event.preventDefault(); stepForward(); return true; }
     if (event.key === "f" || event.key === "F") { event.preventDefault(); flipBoard(); return true; }
@@ -693,6 +767,8 @@ function onAnalysisError(msg) {
     handleKeydown,
     openGame,
     openBatch,
+    enterFreeAnalysis,
+    exitFreeAnalysis,
     setWorkflowState,
     applySession,
     applyTimeline,
@@ -709,7 +785,8 @@ function onAnalysisError(msg) {
     },
     setAgentTrainingPosition: syncTrainingContext,
     restoreBoard() {
-      if (timeline.length) {
+      if (navigation.freeAnalysis) navigation.resetFreeAnalysis();
+      else if (timeline.length) {
         gotoNode(navigation.cur);
         chat.setContext(buildAgentContext());
       }
