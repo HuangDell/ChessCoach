@@ -1008,7 +1008,6 @@ class AgentError(ContractModel):
         "agent_authentication_failed",
         "agent_rate_limited",
         "agent_provider_error",
-        "agent_endpoint_incompatible",
         "invalid_agent_response",
         "max_turns_exceeded",
     ]

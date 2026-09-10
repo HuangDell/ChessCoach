@@ -29,7 +29,6 @@ _ERROR_STATUS = {
     "invalid_session_context": 400,
     "training_action_unavailable": 409,
     "agent_provider_error": 502,
-    "agent_endpoint_incompatible": 503,
     "invalid_agent_response": 502,
     "max_turns_exceeded": 502,
     "agent_unavailable": 503,

@@ -41,7 +41,6 @@ from server.core.agent.runtime_openai import (
     SQLiteConversationSessionFactory,
 )
 from server.core.agent.schema_adapter import SCHEMA_ADAPTER_VERSION
-from server.core.storage.agent_compatibility import AgentCompatibilityStore, endpoint_fingerprint
 from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
 from server.core.learning.taxonomy import resolve_skill_id
 from tests.evals.evaluator import diagnose_dataset, score_dataset
@@ -596,7 +595,7 @@ async def _run_cases(
     )
 
 
-def _all_quality_gates(report: dict[str, Any]) -> bool:
+def _passes_quality_benchmark(report: dict[str, Any]) -> bool:
     metrics = report["metrics"]
     return bool(
         metrics["grounded_response_rate"]["value"] == 1
@@ -643,7 +642,7 @@ def _build_live_report(
         "runs": len(dataset["cases"]),
     }
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "dataset_id": portfolio["dataset_id"],
         "base_dataset_id": dataset["dataset_id"],
         "observed_runs_id": baseline_observed["observed_runs_id"],
@@ -681,7 +680,7 @@ async def _run(
     provider: str = "",
     progress: Callable[[str], None] | None = None,
     trace_base_dir: Path | None = None,
-) -> tuple[dict[str, Any], dict[str, bool]]:
+) -> dict[str, Any]:
     dataset = _load("agent_baseline_v1.json")
     portfolio = _load("agent_portfolio_v2.json")
     static_hardening_observed = _load("observed_fake_runs_v2.json")
@@ -708,7 +707,7 @@ async def _run(
         http_event_hooks=(trace_writer.event_hooks() if trace_writer is not None else None),
     )
     try:
-        baseline_observed, gates = await _run_cases(
+        baseline_observed, checks = await _run_cases(
             runtime,
             sessions,
             dataset,
@@ -727,14 +726,12 @@ async def _run(
             baseline_observed=baseline_observed,
             static_hardening_observed=static_hardening_observed,
         )
-        gates["portfolio_quality"] = _all_quality_gates(report)
+        checks["portfolio_quality"] = _passes_quality_benchmark(report)
         report["schema_adapter"] = runtime.schema_adapter
         report["schema_adapter_version"] = SCHEMA_ADAPTER_VERSION
-        report["compatibility_gates"] = gates
-        report["all_passed"] = all(gates.values())
-        if source == "custom":
-            report["endpoint_sha256"] = endpoint_fingerprint(base_url)
-        return report, gates
+        report["benchmark_checks"] = checks
+        report["benchmark_passed"] = all(checks.values())
+        return report
     finally:
         await runtime.close()
         sessions.close()
@@ -747,7 +744,6 @@ def run_live_portfolio(
     base_url: str,
     api_key: str,
     data_dir: str,
-    certificate_data_dir: str,
     provider: str = "",
     progress: Callable[[str], None] | None = None,
     trace_base_dir: Path | None = None,
@@ -755,7 +751,7 @@ def run_live_portfolio(
     provider = config.resolve_agent_provider(
         provider or config.AGENT_PROVIDER, base_url if source == "custom" else ""
     )
-    report, gates = asyncio.run(
+    report = asyncio.run(
         _run(
             source=source,
             model=model,
@@ -767,26 +763,6 @@ def run_live_portfolio(
             trace_base_dir=trace_base_dir,
         )
     )
-    if source == "custom" and all(gates.values()):
-        if not certificate_data_dir:
-            raise SystemExit("--certificate-data-dir is required to certify a passing custom eval")
-        store = AgentCompatibilityStore(certificate_data_dir)
-        store.save(
-            store.certificate(
-                base_url=base_url,
-                model=model,
-                sdk_version=AGENTS_SDK_VERSION,
-                policy_version=POLICY_VERSION,
-                response_schema_version=RESPONSE_SCHEMA_VERSION,
-                gate_cases=gates,
-                schema_adapter=provider,
-                schema_adapter_version=SCHEMA_ADAPTER_VERSION,
-            )
-        )
-        if progress is not None:
-            progress(f"Compatibility certificate written to {store.path}.")
-    elif source == "custom" and progress is not None:
-        progress("Compatibility gate failed; no certificate was written.")
     return report
 
 

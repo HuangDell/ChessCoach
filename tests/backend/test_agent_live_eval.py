@@ -24,10 +24,10 @@ from server.core.agent.runtime import AgentRuntimeFailure, AgentRuntimeTelemetry
 from tests.evals.evaluator import diagnose_dataset, score_dataset
 from tests.evals.run_portfolio_live import (
     _FixtureTools,
-    _all_quality_gates,
     _build_live_report,
     _context,
     _observed_response,
+    _passes_quality_benchmark,
     _run_cases,
 )
 
@@ -341,7 +341,7 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
             set(observed["position_fixtures"]),
         )
 
-    async def test_conforming_live_observations_can_pass_every_quality_gate(self) -> None:
+    async def test_conforming_live_observations_pass_the_quality_benchmark(self) -> None:
         dataset = _load("agent_baseline_v1.json")
         observed = _load("observed_fake_runs_v1.json")
         portfolio = _load("agent_portfolio_v2.json")
@@ -350,7 +350,7 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
         sessions = _Sessions()
         runtime = _PerfectRuntime(dataset, observed, tools, sessions)
 
-        live_observed, compatibility = await _run_cases(
+        live_observed, checks = await _run_cases(
             runtime, sessions, dataset, tools  # type: ignore[arg-type]
         )
         baseline = score_dataset(dataset, live_observed)
@@ -366,11 +366,12 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
             static_hardening_observed=hardening,
         )
 
-        self.assertTrue(all(compatibility.values()))
+        self.assertTrue(all(checks.values()))
         self.assertEqual(1.0, baseline["metrics"]["grounded_response_rate"]["value"])
         self.assertEqual(1.0, baseline["metrics"]["task_completion_rate"]["value"])
         self.assertGreater(baseline["metrics"]["illegal_move_claim_rate"]["claims"], 0)
-        self.assertTrue(_all_quality_gates(report))
+        self.assertTrue(_passes_quality_benchmark(report))
+        self.assertEqual(4, report["schema_version"])
         self.assertEqual(26, report["case_count"])
         self.assertEqual(0, report["hardening_case_count"])
         self.assertEqual(11, report["static_hardening_reference_case_count"])

@@ -94,26 +94,24 @@ SQLite conversation session 和非流式 bounded runs。response schema v3 要�
 | `CHESS_AGENT_TIMEOUT` | 单 run wall-clock 秒数 | `120` |
 | `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
 
-官方 OpenAI 路径不需要本地 compatibility certificate。自定义 endpoint 必须先使用相同 runtime、
-生产工具路由、生产预算、生产响应验收、fixture tools、dataset 和 scorer 完整通过 live portfolio；
-证书绑定 endpoint SHA-256 指纹、模型、SDK、
-policy、response schema、dataset、scorer 版本和 schema 适配器名称/版本。缺失、损坏或不匹配时 capability 返回
-`agent_endpoint_incompatible`，不会回退到 Chat Completions 或自建 tool loop。
+官方 OpenAI 和自定义 endpoint 都按当前后端配置直接创建 runtime，不要求本地 compatibility
+certificate。live portfolio 用相同 runtime、生产工具路由、生产预算、生产响应验收、fixture tools、
+dataset 和 scorer 衡量模型表现，但结果不控制 Agent 是否可用。
 
 厂家配置只选择 schema 规则，不更改 model、URL、凭据或 Responses 协议。未知厂家值会明确报配置错误。
 `openai` / `generic` 原样传递 SDK schema；`deepseek` v1 展开 `anyOf` 分支的本地 `$ref`，
 移除 `minLength`、`maxLength`、`minItems`、`maxItems`，保留类型、可空性、联合分支和字段限制。
-输出与工具参数仍执行原始模型的完整本地校验。旧证书缺少适配器字段时仅视为 `generic` v1；
-切换适配器或升级规则需重跑 live portfolio。DeepSeek 规则尚需真实 endpoint 验证，离线通过不代表厂家认证。
+输出与工具参数仍执行原始模型的完整本地校验。切换适配器或升级规则后建议重跑 live portfolio，
+以便比较模型表现。DeepSeek 规则尚需真实 endpoint 评测，离线通过不代表真实 endpoint 的表现。
 
 Responses 请求已通过 `text.format.type=json_schema` 和 `strict=true` 要求原生结构化输出，
 不是 Chat Completions 的 `response_format`。policy v4 明确要求完整 JSON、结果复用、预算拒绝后
-停止重试，以及 suggested action 不得作为工具调用；旧 policy 证书需重新运行 live portfolio。
+停止重试，以及 suggested action 不得作为工具调用。
 
-### 重跑自定义 endpoint 兼容性验证
+### 运行自定义 endpoint 模型 benchmark
 
-先安装 Agent extra，再使用与 Web 进程完全相同的 model、base URL 和 data directory 运行 custom
-live portfolio。runner 会完整读取项目根目录的 `.env`；Shell 中已 export 的同名变量仍优先。
+先安装 Agent extra，再使用与 Web 进程完全相同的 model 和 base URL 运行 custom live portfolio。
+runner 会完整读取项目根目录的 `.env`；Shell 中已 export 的同名变量仍优先。
 配置好 `CHESS_AGENT_MODEL`、`CHESS_AGENT_BASE_URL`、`CHESS_AGENT_API_KEY` 和所需的
 `CHESS_AGENT_PROVIDER` 后运行；Web 和 eval 使用相同的厂家配置解析逻辑：
 
@@ -125,8 +123,7 @@ uv sync --extra agent
   --output reports/custom-responses.json
 ```
 
-证书写入 `CHESSCOACH_DATA_DIR`；未配置时使用与 Web 进程相同的操作系统默认 data directory。
-`--model`、`--base-url` 和 `--certificate-data-dir` 仍可用于临时覆盖配置。
+`--model` 和 `--base-url` 可用于临时覆盖配置。
 运行期间会在终端显示每个 case 的开始、结果、错误码和耗时；JSON 报告仍单独写入 `--output`。
 每个 case 的默认超时为 120 秒，可通过 `.env` 中的 `CHESS_AGENT_TIMEOUT` 调整。
 
@@ -136,16 +133,14 @@ uv sync --extra agent
 因此完整保留模型输入、function-call 往返和模型输出。HTTP header 不属于模型输入输出且可能包含
 Authorization，不写入 trace。可用 `--trace-dir` 修改 trace 根目录。
 
-该命令会对 endpoint 运行 26 个 live case，可能产生模型调用费用。仅当报告中的 `all_passed` 为
-`true` 且全部 `compatibility_gates` 为 `true` 时，才会原子写入
-`<DATA_DIR>/agent/compatibility/custom-responses.json`；失败时查看报告的 `compatibility_gates`、
-`metrics` 和 `live_case_diagnostics`，不会签发新证书。验证通过后重启 Web 进程，使其重新加载证书。
-Web 启动、默认测试和 CI 都不会自动执行这个真实网络验证；首次使用 custom endpoint 时需要显式
-运行一次。之后只要证书仍匹配就不必每次启动都验证；base URL、model、锁定的 Agents SDK、policy、
-response schema、dataset 或 scorer 任一变化后才需要用新配置重跑。
+该命令会对 endpoint 运行 26 个 live case，可能产生模型调用费用。报告中的
+`benchmark_passed`、`benchmark_checks`、`metrics` 和 `live_case_diagnostics` 只用于比较和诊断
+模型，不写入生产数据目录，也不影响 Web 启动或 Agent availability。默认测试和 CI 不会自动执行
+真实网络评测；base URL、model、Agents SDK、policy、response schema、dataset、scorer 或 schema
+adapter 变化后可重跑，以获得可比较的新报告。
 
 Credential 只由后端读取，不返回浏览器，不写 prompt、conversation、artifact、run log 或 eval
-report。完整 custom 认证命令见 [Operations](docs/operations.md)。
+report。完整 benchmark 命令见 [Operations](docs/operations.md)。
 
 ## 其他配置
 
@@ -181,7 +176,6 @@ report。完整 custom 认证命令见 [Operations](docs/operations.md)。
 <DATA_DIR>/agent/conversations.sqlite3
 <DATA_DIR>/agent/sessions/<session_id>.json
 <DATA_DIR>/agent/runs.jsonl
-<DATA_DIR>/agent/compatibility/custom-responses.json
 ```
 
 `analysis.json`、`explanations.json`、history、attempt 和 learning schema 保持兼容。旧 analysis
@@ -205,6 +199,9 @@ Phase 0 的 26 个 case、ID 和 v1 baseline 保持不变；`agent-portfolio-v2`
 reference/action、recent improvement、training diversity/stale source、storage、stale/cancel、
 malformed output 和 custom incompatibility cases。
 
+其中 `custom-incompatibility-037` 是为保持 v2 冻结基线可比性而保留的历史 fixture，不再表示生产
+runtime 有 endpoint 证书准入逻辑。
+
 live endpoint 报告只把实际发送给模型的 26 个 baseline case 计入 live 质量和延迟指标，并额外
 要求所有返回通过生产响应验收。11 个 hardening fake case 仍用于离线确定性回归，但在 live 报告中
 明确标为 static reference，不混入 endpoint 指标，也不声称已由 endpoint 执行。
@@ -220,8 +217,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 ```
 
 真实 OpenAI/custom eval 是显式网络操作，不属于默认测试，也不把 credential 作为开发前提。当前
-提交包含 deterministic v2 report；本机 custom endpoint 曾通过 policy v3 / response schema v3 /
-scorer v4 的新门禁并在本地数据目录签发证书，去敏报告不提交。官方 OpenAI report 仍需对应
-credential 显式生成。详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
+提交包含 deterministic v2 report；live report 需要对应 credential 显式生成，仅作为模型 benchmark。
+详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
 [ADR](docs/adr/)，Agent 需求
 与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。

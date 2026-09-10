@@ -2,7 +2,7 @@
 
 该目录是隔离的离线研究设施，用于验证动态工具候选、执行状态投影和真实 Agents SDK 的
 `FunctionTool.is_enabled` 接线。它不调用真实模型或 Stockfish，不写生产 conversation、run log、
-learning 或个人棋局数据，也不用于签发 custom endpoint compatibility certificate。
+learning 或个人棋局数据，也不影响 custom endpoint 的生产 runtime availability。
 
 ## 运行
 

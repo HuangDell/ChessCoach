@@ -50,6 +50,6 @@ class UnavailableAgentRuntime:
             AgentError(
                 code=code,
                 message=self.availability.reason or "Chess Coach Agent is not available.",
-                recoverable=code not in {"agent_endpoint_incompatible", "agent_authentication_failed"},
+                recoverable=code != "agent_authentication_failed",
             )
         )

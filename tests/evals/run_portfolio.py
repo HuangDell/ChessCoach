@@ -66,7 +66,6 @@ def _run_live(args: argparse.Namespace) -> dict[str, Any]:
             base_url=args.base_url,
             api_key=api_key,
             data_dir=data_dir,
-            certificate_data_dir=args.certificate_data_dir,
             progress=lambda message: print(message, file=sys.stderr, flush=True),
             trace_base_dir=trace_base_dir,
         )
@@ -77,7 +76,6 @@ def main() -> None:
     parser.add_argument("--source", choices=("deterministic", "openai", "custom"), default="deterministic")
     parser.add_argument("--model", default=config.AGENT_MODEL)
     parser.add_argument("--base-url", default=config.AGENT_BASE_URL)
-    parser.add_argument("--certificate-data-dir", default=config.DATA_DIR)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--trace-dir", type=Path)
     args = parser.parse_args()

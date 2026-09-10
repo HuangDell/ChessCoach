@@ -36,7 +36,6 @@ Agent runs are non-streaming and bounded by `CHESS_AGENT_MAX_TURNS`,
   agent/conversations.sqlite3          SDK conversation items
   agent/sessions/*.json                chess checkpoints and summaries
   agent/runs.jsonl                     redacted bounded telemetry
-  agent/compatibility/custom-responses.json
 ```
 
 Run telemetry contains IDs, version metadata, status, stable errors, usage totals, latency, and
@@ -47,7 +46,6 @@ reasoning, or tracebacks. `GET /api/agent/metrics?limit=100` aggregates recent r
 ## Degradation
 
 - Missing Agent SDK/model/key: Agent chat reports `agent_unavailable`.
-- Missing or mismatched custom certificate: `agent_endpoint_incompatible`.
 - Provider auth, rate, timeout, or malformed output: stable typed Agent errors; staged conversation
   is discarded.
 - Missing model configuration never disables Engine Review, history, learning, puzzles, or training.
@@ -56,7 +54,7 @@ reasoning, or tracebacks. `GET /api/agent/metrics?limit=100` aggregates recent r
 - Run-log write failure is internal telemetry degradation and never rolls back a valid conversation
   or business artifact.
 
-## Eval and custom certification
+## Model benchmark
 
 The offline portfolio is reproducible and never reads credentials or user data:
 
@@ -73,7 +71,6 @@ OPENAI_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
 
 CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
   --source custom --model custom-model --base-url http://127.0.0.1:9900/v1 \
-  --certificate-data-dir "$CHESSCOACH_DATA_DIR" \
   --output reports/custom-responses.json
 ```
 
@@ -84,12 +81,11 @@ turn, function-call round trip, retry, and error response in the endpoint's nati
 HTTP headers, including Authorization, are not stored. The trace root can be changed with
 `--trace-dir`; keep these full-context artifacts local.
 
-A custom certificate is written only when the Responses structured-output, function-tool, SQLite
-recent-items, production response validation, and live portfolio quality gates all pass. The live
-runner derives allowed tools and budgets from the same production policy/configuration; dataset
-expectations are used only by the scorer. Reports record an endpoint fingerprint rather than the
-raw custom URL. Changing the URL, model, SDK, policy, response schema, dataset, or scorer invalidates
-the certificate immediately.
+The live runner derives allowed tools and budgets from the same production policy/configuration;
+dataset expectations are used only by the scorer. `benchmark_checks` and `benchmark_passed` report
+structured-output, function-tool, SQLite recent-items, production validation, and portfolio quality
+results. They are diagnostic benchmark fields and do not control runtime availability or write to
+the production data directory.
 
 Live reports include `live_case_diagnostics` with only case IDs and boolean grounding/tool/outcome
 checks. For `grounded_response_rate`, every non-error case is applicable and passes only if its
@@ -105,6 +101,6 @@ offline portfolio and backend regression suite instead of being relabeled as liv
 
 Provider schema rules are selected with `CHESS_AGENT_PROVIDER=openai|deepseek|generic` in both Web
 and live portfolio. With no selection, a custom URL uses generic and the official path uses OpenAI.
-Changing the adapter name/version requires recertification; legacy certificates without those fields
-are valid only for generic v1. DeepSeek schema adaptation remains unverified against a live endpoint
-until the explicit portfolio passes.
+Changing the adapter name/version should be followed by a new live benchmark so reports remain
+comparable. DeepSeek schema adaptation remains unmeasured against a live endpoint until that
+benchmark is run.

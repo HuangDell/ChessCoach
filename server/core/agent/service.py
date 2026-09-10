@@ -936,7 +936,6 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             openai_api_key=config.OPENAI_API_KEY,
             domain_tools_factory=service.tools_for_runtime,
             session_provider=service.session_for_runtime,
-            data_dir=root,
         )
     except Exception as exc:  # optional Agent initialization must not prevent Web startup
         runtime = UnavailableAgentRuntime(

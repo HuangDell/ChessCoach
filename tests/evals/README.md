@@ -56,6 +56,9 @@ report. It adds 11 hardening cases for summary limits, reference/action validati
 improvement, training diversity and stale sources, storage degradation, stale/cancelled runs,
 malformed output, and custom endpoint incompatibility.
 
+The custom incompatibility fixture remains frozen for v2 report comparability. It is historical
+benchmark data and no longer represents a production certificate requirement.
+
 `portfolio_v2.py` aggregates the v1 scores with the hardening observations and adds valid
 reference/action, Engine calls per run, p50/p95/max latency, and degradation correctness.
 `deterministic_report_v2.json` is the committed offline report. Reproduce it without an SDK,
@@ -75,7 +78,6 @@ OPENAI_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
 
 CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
   --source custom --model custom-model --base-url http://127.0.0.1:9900/v1 \
-  --certificate-data-dir "$CHESSCOACH_DATA_DIR" \
   --output reports/custom-responses.json
 ```
 
@@ -86,9 +88,8 @@ multi-turn function calls and retries therefore remain separate native Responses
 headers are not model input and are not recorded because they contain authorization. Use
 `--trace-dir` to override the trace root. `reports/` is gitignored.
 
-Custom mode writes `agent/compatibility/custom-responses.json` only after structured Responses,
-function tools, SQLite recent-items, and every portfolio quality gate pass. Grounded response,
-tool selection, task completion, reference/action validity, and degradation correctness must each
-be 100%; illegal move claims, unnecessary Engine calls, and false personalization must each be 0%.
-The certificate stores an endpoint SHA-256 fingerprint, never the URL. No live report is committed
-until the corresponding credential-backed command has actually run.
+Custom mode records `benchmark_checks` and `benchmark_passed` for structured Responses, function
+tools, SQLite recent-items, production response validation, and portfolio quality. Grounded
+response, tool selection, task completion, reference/action validity, and degradation correctness
+targets remain 100%; illegal move claims, unnecessary Engine calls, and false personalization target
+0%. These results measure model behavior and do not enable or disable the production runtime.

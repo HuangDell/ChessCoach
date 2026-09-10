@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ValidationError
 
 from server.config import resolve_agent_provider
-from server.core.agent.schema_adapter import SCHEMA_ADAPTER_VERSION, adapt_schema
+from server.core.agent.schema_adapter import adapt_schema
 from server.core.agent.models import (
     AGENT_TOOL_PERMISSIONS,
     AgentError,
@@ -37,7 +37,6 @@ from server.core.agent.models import (
     ToolResult,
 )
 from server.core.agent.policy import (
-    POLICY_VERSION,
     AgentResponseValidationError,
     build_model_input,
     validate_agent_run_result,
@@ -50,8 +49,6 @@ from server.core.agent.runtime import (
     UnavailableAgentRuntime,
 )
 from server.core.learning import taxonomy
-from server.core.storage.agent_compatibility import AgentCompatibilityStore
-from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
 
 
 DomainToolsFactory = Callable[[AgentRunRequest], Any]
@@ -1141,7 +1138,6 @@ def create_openai_runtime(
     openai_api_key: str,
     domain_tools_factory: DomainToolsFactory,
     session_provider: SessionProvider,
-    data_dir: str | None = None,
     provider: str = "",
 ) -> OpenAIAgentsRuntime | UnavailableAgentRuntime:
     provider = resolve_agent_provider(provider, base_url)
@@ -1166,31 +1162,6 @@ def create_openai_runtime(
                 endpoint_type,
                 "CHESS_AGENT_MODEL is not configured.",
                 "agent_unavailable",
-            )
-        )
-    if base_url and (
-        not data_dir
-        or not AgentCompatibilityStore(data_dir).is_compatible(
-            base_url=base_url,
-            model=model,
-            schema_adapter=provider,
-            schema_adapter_version=SCHEMA_ADAPTER_VERSION,
-            sdk_version=AGENTS_SDK_VERSION,
-            policy_version=POLICY_VERSION,
-            response_schema_version=RESPONSE_SCHEMA_VERSION,
-        )
-    ):
-        return UnavailableAgentRuntime(
-            AgentRuntimeAvailability(
-                enabled=True,
-                available=False,
-                model=model,
-                endpoint_type=endpoint_type,
-                reason=(
-                    "The custom Responses endpoint has not passed the current local "
-                    "compatibility gate."
-                ),
-                error_code="agent_endpoint_incompatible",
             )
         )
     api_key = custom_api_key if base_url else openai_api_key

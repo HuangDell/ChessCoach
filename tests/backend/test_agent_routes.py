@@ -218,7 +218,6 @@ class AgentRouteTests(unittest.TestCase):
             (AgentError(code="invalid_agent_response", message="invalid output", recoverable=True), 502),
             (AgentError(code="max_turns_exceeded", message="turns", recoverable=True), 502),
             (AgentError(code="agent_unavailable", message="unavailable", recoverable=True), 503),
-            (AgentError(code="agent_endpoint_incompatible", message="incompatible", recoverable=False), 503),
             (AgentError(code="agent_authentication_failed", message="auth", recoverable=True), 503),
             (AgentError(code="agent_rate_limited", message="limited", recoverable=True), 503),
             (AgentError(code="agent_timeout", message="timeout", recoverable=True), 504),
