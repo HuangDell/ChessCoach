@@ -35,7 +35,7 @@ P0–P2 不要求新增模型训练、Vector DB、第二套 Agent runtime、网�
 动态编排首先复用现有工具。P3 不作为 P2 完成标准，也不默认进入生产。
 
 研究计划不覆盖既有 V1 决策。生产行为改变前，应同步对应需求、policy/schema 版本、消费者、
-回归测试和 compatibility gate；新增 specialist 时应更新
+回归测试和模型 benchmark；新增 specialist 时应更新
 [ADR-003](../adr/ADR-003-single-agent-first.md)。
 
 ## 2. 对原建议的修正
@@ -268,7 +268,7 @@ candidate snapshot；执行校验读取本轮 snapshot，不能让每个 `is_ena
 
 ### 9.1 数据分层
 
-1. **现有回归门禁**：原 26＋11 case、ID 和 scorer 保留，不作为新方法调参和泛化结论的全部依据。
+1. **现有回归 benchmark**：原 26＋11 case、ID 和 scorer 保留，不作为新方法调参和泛化结论的全部依据。
 2. **状态回放集**：给每个方法完全相同的 query、前缀和当前观察，比较候选与下一步决策。
 3. **端到端任务集**：方法自行执行、形成轨迹；衡量错误累积与最终行为。
 4. **真实 Engine 系统集**：短 PGN/FEN、固定版本和低深度，验证真实接线；不与 fixture 计时混合。
@@ -382,7 +382,7 @@ session。验证器反馈用于研究评分，不回灌给被测方法；仅可�
 
 | 步骤 | 交付 | 独立验收 |
 | --- | --- | --- |
-| P0.1：任务与评分合同 | 冻结现有基线、7 工具 registry、数据/trace/scorer v1；建立 24 个开发任务与配对状态；实现接受路线、参数和终止评分。 | 人工正反轨迹验证 scorer 敏感度；合法替代路线通过；错误参数、无依据事实、错误停止被识别；现有 26＋11 门禁通过。 |
+| P0.1：任务与评分合同 | 冻结现有基线、7 工具 registry、数据/trace/scorer v1；建立 24 个开发任务与配对状态；实现接受路线、参数和终止评分。 | 人工正反轨迹验证 scorer 敏感度；合法替代路线通过；错误参数、无依据事实、错误停止被识别；现有 26＋11 benchmark 通过。 |
 | P0.2：状态投影与回放 | run-local 状态投影器、纯检索接口、DTO 对齐的 fixture executors、最小研究 runner/manifest。 | 相同事件得到相同状态；失败不新增证据；重复事件不重复计费；投影器及检索输入不能读取未来结果或评分标签。 |
 | P0.3：SDK 动态工具接线 | 用预设候选序列和 fake model 接入现有 SDK；验证每轮刷新、同轮 snapshot、旧调用记录、取消与预算。 | 检查实际模型请求的 schemas；同轮集合一致；越权、预算耗尽及陈旧结果被拦截；响应仍经生产验收。 |
 
@@ -390,7 +390,7 @@ P0 不实现 embedding、planner 或 C/H/D，不以真实模型凭据、live pil
 runner 在 P0 实现 deterministic 轨道；manifest 区分 deterministic、live-fixture、engine-system，
 尚未实现的执行轨道显式拒绝，不能用 fake 结果冒充 live 或真实 Engine 证据。
 
-验收：上述三步全部通过；既有 26＋11 门禁不回归；不触碰个人数据或扩展生产日志。
+验收：上述三步全部通过；既有 26＋11 benchmark 不回归；不触碰个人数据或扩展生产日志。
 若 SDK 接线不成立，保留已通过步骤，提交最小复现、适配设计与限制，P0.3 标为未完成；
 不增加隐藏的第二套 runtime，也不以书面设计代替接线验收。
 
@@ -474,7 +474,7 @@ GRPO；schema 合法奖励不能压过实际任务成功，拒答/无效工具�
 | `server/core/agent/routing.py`（拟增） | 小型 capability 元数据、检索接口、候选 snapshot；不复制 Core 业务规则。 |
 | 现有 `policy.py` / `runtime_openai.py` | 分离授权与相关性，接入 SDK 动态候选、预算、generation 与生产验收。 |
 | 现有 `tools.py` | 继续复用 Core；只在稳定能力确有需要时扩展 adapter。 |
-| `tests/evals/orchestration/`（拟增） | 研究 fixture、manifest、state replay、baselines、scorer 和 runner；独立于现有兼容性证书评分。 |
+| `tests/evals/orchestration/`（拟增） | 研究 fixture、manifest、state replay、baselines、scorer 和 runner；独立于现有模型 benchmark。 |
 | `tests/backend/test_agent_execution_state.py` 等（拟增） | 状态合同、候选动态变化、预算/取消、scorer 与标签隔离回归。 |
 | `docs/research/` | 实验协议、复现差异、报告和来源；不保存个人数据或模型二进制。 |
 
@@ -483,9 +483,8 @@ GRPO；schema 合法奖励不能压过实际任务成功，拒答/无效工具�
 每一步有可运行测试和可审查结果，不同时重写前端与 Agent。
 
 生产配置统一在 `server/config.py` 或既有 settings 边界；研究配置由版本化 manifest 输入。
-研究策略默认不替换生产策略；进入产品后保留回退到现有策略的明确配置。自定义 endpoint 的
-旧证书不能直接证明新 schema/路由能力：按新生产配置重新执行兼容性评测，研究 runner 不签发
-或覆盖生产 certificate。
+研究策略默认不替换生产策略；进入产品后保留回退到现有策略的明确配置。自定义 endpoint 应按
+新生产配置重新执行兼容性 benchmark；研究 runner 也只生成评测结果，不影响生产 runtime。
 
 ## 13. 实验执行预算与统计协议
 
@@ -517,7 +516,7 @@ GRPO；schema 合法奖励不能压过实际任务成功，拒答/无效工具�
 | API/session/storage | 对应 FastAPI 集成测试；取消、陈旧 generation、删除和原子提交。 |
 | Engine/facts/训练判定 | 固定短 PGN/FEN 系统测试；确认 Engine pool 和后台资源关闭，不绑定精确 centipawn。 |
 | 前端（仅实际改动时） | `npm run test:frontend`，继续保留 latest-request/generation 保护。 |
-| live 研究 | 独立 research manifest、fixture 工具、临时 session；不同于系统测试，也不自动代表生产 endpoint 已认证。 |
+| live 研究 | 独立 research manifest、fixture 工具、临时 session；不同于系统测试，也不影响生产 endpoint 的可用性。 |
 
 现有命令：
 

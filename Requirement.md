@@ -149,7 +149,8 @@ Local JSON / JSONL / Cache
 ```
 
 LLM 仅由 FastAPI 后端通过 API 调用。浏览器不直接访问模型，也不保存模型密钥；自定义 Responses
-endpoint 必须通过本地 compatibility gate，失败时不得回退到其他 transport。
+endpoint 按后端配置直接接入，live compatibility suite 仅作为模型 benchmark，运行失败时不得回退
+到其他 transport。
 
 ## 7. 统一数据产物
 

@@ -2,7 +2,7 @@
 
 **日期：** 2026-09-08；P0 完成于 2026-09-09
 
-**状态：** Implemented；离线 fixture 与 SDK fake-model 门禁已完成，未运行 live 模型实验
+**状态：** Implemented；离线 fixture 与 SDK fake-model 测试已完成，未运行 live 模型实验
 **上级计划：** [研究分析与实施计划](execution-aware-tool-orchestration-plan.md)  
 **前置约束：** [README](../../README.md)、[Agent 共享设计](../requirements/agent/README.md)、
 [现有 Eval](../../tests/evals/README.md)、[开发约定](../../AGENTS.md)
@@ -25,7 +25,7 @@ P0 按任务与评分合同、状态投影与回放、SDK 动态工具接线三�
 P0 的预设候选序列只用于接线测试，不命名为 D，也不产生方法优劣结论。
 
 P0 不实现 embedding、planner、依赖图训练、压力工具库、多 Agent 或第二套 runtime。
-不调整前端、生产默认路由、生产预算、个人 artifact 或兼容性证书。
+不调整前端、生产默认路由、生产预算、个人 artifact 或模型 benchmark。
 本研究 P0 与既有已完成的 [Agent Phase 0](../requirements/agent/phase-0-contracts-and-baseline.md)
 是不同阶段，研究数据集和 scorer 独立版本化。
 
@@ -38,7 +38,7 @@ P0 不实现 embedding、planner、依赖图训练、压力工具库、多 Agent
 | [runtime_openai.py](../../server/core/agent/runtime_openai.py) | 扩展 `_LocalRunContext` 的研究注入点；复用工具装配、预算与实际 Engine 计数，不自写模型循环。 |
 | [tools.py](../../server/core/agent/tools.py) | fixture 对齐 `execute`、执行元数据及成功结果合同；合法性、reference 和训练规则继续由现有 Core 确定。 |
 | [sessions.py](../../server/core/agent/sessions.py) | 复用 generation guard 和隔离 conversation session，验证取消后无旧结果提交。 |
-| [run_portfolio_live.py](../../tests/evals/run_portfolio_live.py) | 参考既有 fixture executor 和生产验收接线；研究 runner 不复用其签发 certificate 的执行入口。 |
+| [run_portfolio_live.py](../../tests/evals/run_portfolio_live.py) | 参考既有 fixture executor 和生产验收接线；研究 runner 保持独立 benchmark 入口。 |
 
 实现文件按职责最小拆分：
 
@@ -117,7 +117,7 @@ scorer 接受运行记录与独立 gold，输出逐状态诊断及任务结果�
 - 每个任务有可接受轨迹；每类至少有一个只改变关键错误的负例，scorer 能拒绝该负例。
 - 覆盖错误参数、缺失证据、提前停止、虚假成功、合法替代顺序和正确澄清。
 - O02 配对的可接受下一动作确实不同；grounding 分支不计入 routing 配对结果。
-- 原有 dataset、scorer 与 deterministic 26＋11 门禁通过。
+- 原有 dataset、scorer 与 deterministic 26＋11 benchmark 通过。
 
 未通过数据/评分验收前不进入 SDK 接线；先修正合同，避免用 runtime 行为反向定义正确答案。
 
@@ -272,7 +272,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 
 | 提交单元 | 预计工作量 | 可审查证据 / 进入下一步条件 |
 | --- | --- | --- |
-| P0.1 | 1.5–2 人日 | registry 和数据版本、24 任务及 gold、scorer 正反例报告、原门禁结果。 |
+| P0.1 | 1.5–2 人日 | registry 和数据版本、24 任务及 gold、scorer 正反例报告、原 benchmark 结果。 |
 | P0.2 | 1.5–2 人日 | 状态转换测试、标签隔离测试、fixture 回放及 manifest/trace 示例、临时数据隔离结果。 |
 | P0.3 | 1–2 人日 | 真实 SDK 的 fake-model 请求记录、动态/取消/预算测试、默认路径及必要集成回归。 |
 
@@ -285,8 +285,8 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 - [x] P0.2：状态回放、参数匹配、错误/资源投影、标签与个人数据隔离通过验收。
 - [x] P0.3：真实 SDK＋fake model 的逐轮 schemas、snapshot、历史、取消和预算检查实际通过。
 - [x] 运行产物可追溯到版本与 manifest；失败/拦截/中断均保留，无未来标签输入。
-- [x] 生产响应验收仍生效，现有 26＋11 门禁和后端相关回归通过，资源已关闭。
-- [x] 生产默认路径、去敏日志、个人 artifact 与 certificate 未被研究入口扩展。
+- [x] 生产响应验收仍生效，现有 26＋11 benchmark 和后端相关回归通过，资源已关闭。
+- [x] 生产默认路径、去敏日志和个人 artifact 未被研究入口扩展。
 - [x] 交付真实复现命令、已知限制和未运行测试；不把 fake 数据解释为 live 质量或费用。
 
 2026-09-09 的完成验证：P0 专项 19 项测试通过；后端全量 307 项通过、1 项按既有条件跳过；
