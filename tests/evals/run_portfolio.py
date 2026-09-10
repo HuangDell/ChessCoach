@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
+import sys
 import tempfile
 from typing import Any
 
+from server import config
 from server.core.agent.policy import POLICY_VERSION
 from server.core.agent.runtime_openai import AGENTS_SDK_VERSION
 from server.core.storage.agent_runs import RESPONSE_SCHEMA_VERSION
@@ -44,15 +45,20 @@ def _run_live(args: argparse.Namespace) -> dict[str, Any]:
     from tests.evals.run_portfolio_live import run_live_portfolio
 
     api_key = (
-        os.environ.get("OPENAI_API_KEY", "")
+        config.OPENAI_API_KEY
         if args.source == "openai"
-        else os.environ.get("CHESS_AGENT_API_KEY", "")
+        else config.AGENT_API_KEY
     )
     if not api_key:
         variable = "OPENAI_API_KEY" if args.source == "openai" else "CHESS_AGENT_API_KEY"
         raise SystemExit(f"{variable} is required for an explicit {args.source} eval")
     if args.source == "custom" and not args.base_url:
         raise SystemExit("--base-url is required for a custom endpoint eval")
+    trace_base_dir = args.trace_dir or (
+        args.output.parent / f"{args.output.stem}-traces"
+        if args.output
+        else Path("reports") / f"{args.source}-responses-traces"
+    )
     with tempfile.TemporaryDirectory(prefix="chesscoach-agent-live-eval-") as data_dir:
         return run_live_portfolio(
             source=args.source,
@@ -61,16 +67,19 @@ def _run_live(args: argparse.Namespace) -> dict[str, Any]:
             api_key=api_key,
             data_dir=data_dir,
             certificate_data_dir=args.certificate_data_dir,
+            progress=lambda message: print(message, file=sys.stderr, flush=True),
+            trace_base_dir=trace_base_dir,
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=("deterministic", "openai", "custom"), default="deterministic")
-    parser.add_argument("--model", default=os.environ.get("CHESS_AGENT_MODEL", ""))
-    parser.add_argument("--base-url", default=os.environ.get("CHESS_AGENT_BASE_URL", ""))
-    parser.add_argument("--certificate-data-dir", default=os.environ.get("CHESSCOACH_DATA_DIR", ""))
+    parser.add_argument("--model", default=config.AGENT_MODEL)
+    parser.add_argument("--base-url", default=config.AGENT_BASE_URL)
+    parser.add_argument("--certificate-data-dir", default=config.DATA_DIR)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--trace-dir", type=Path)
     args = parser.parse_args()
     if args.source != "deterministic" and not args.model:
         raise SystemExit("--model or CHESS_AGENT_MODEL is required for a live eval")

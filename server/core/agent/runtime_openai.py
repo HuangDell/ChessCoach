@@ -214,6 +214,7 @@ class OpenAIAgentsRuntime:
         session_provider: SessionProvider,
         orchestration_factory: Callable[[AgentRunRequest], OrchestrationController] | None = None,
         research_model: Any | None = None,
+        http_event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
     ) -> None:
         agents = importlib.import_module("agents")
         openai = importlib.import_module("openai")
@@ -228,7 +229,12 @@ class OpenAIAgentsRuntime:
         self._telemetry: dict[str, AgentRuntimeTelemetry] = {}
         self._orchestration_traces: dict[str, dict[str, Any]] = {}
         # Explicit values prevent the SDK from reading OPENAI_BASE_URL or another implicit endpoint.
-        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+        client_options: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+        if http_event_hooks is not None:
+            client_options["http_client"] = openai.DefaultAsyncHttpxClient(
+                event_hooks=http_event_hooks
+            )
+        self._client = openai.AsyncOpenAI(**client_options)
         self._provider = agents.OpenAIProvider(
             openai_client=self._client,
             use_responses=True,

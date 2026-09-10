@@ -77,6 +77,13 @@ CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
   --output reports/custom-responses.json
 ```
 
+For every live run, raw Responses request and response bodies are stored unchanged in
+`reports/<report-name>-traces/<run-timestamp>/<case-id>/` as ordered `NNN-request.json` and
+`NNN-response.json` pairs. This is separate from the aggregate report and preserves every model
+turn, function-call round trip, retry, and error response in the endpoint's native JSON structure.
+HTTP headers, including Authorization, are not stored. The trace root can be changed with
+`--trace-dir`; keep these full-context artifacts local.
+
 A custom certificate is written only when the Responses structured-output, function-tool, SQLite
 recent-items, production response validation, and live portfolio quality gates all pass. The live
 runner derives allowed tools and budgets from the same production policy/configuration; dataset

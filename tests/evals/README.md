@@ -62,8 +62,8 @@ credential, network, user data, or Engine process:
 ```
 
 Live modes are explicit. They create a temporary data directory and run the fixed v1 cases through
-the production `OpenAIAgentsRuntime` with fixture tools. Reports never contain a credential, prompt,
-raw base URL, reasoning, or user data:
+the production `OpenAIAgentsRuntime` with fixture tools. Aggregate reports never contain a
+credential, prompt, raw base URL, reasoning, or user data:
 
 ```bash
 OPENAI_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
@@ -74,6 +74,13 @@ CHESS_AGENT_API_KEY=... .venv/bin/python -m tests.evals.run_portfolio \
   --certificate-data-dir "$CHESSCOACH_DATA_DIR" \
   --output reports/custom-responses.json
 ```
+
+Each live run also writes an unmodified raw trace under
+`reports/<report-name>-traces/<run-timestamp>/<case-id>/`. Every Responses call produces a paired
+`NNN-request.json` and `NNN-response.json` containing the exact HTTP body bytes sent and received;
+multi-turn function calls and retries therefore remain separate native Responses payloads. Request
+headers are not model input and are not recorded because they contain authorization. Use
+`--trace-dir` to override the trace root. `reports/` is gitignored.
 
 Custom mode writes `agent/compatibility/custom-responses.json` only after structured Responses,
 function tools, SQLite recent-items, and every portfolio quality gate pass. Grounded response,

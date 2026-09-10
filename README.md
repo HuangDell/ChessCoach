@@ -102,25 +102,35 @@ policy、response schema、dataset 和 scorer 版本。缺失、损坏或不匹�
 ### 重跑自定义 endpoint 兼容性验证
 
 先安装 Agent extra，再使用与 Web 进程完全相同的 model、base URL 和 data directory 运行 custom
-live portfolio。credential 可由 Shell 或项目根目录的 `.env` 提供；不要把真实 key 写入命令历史：
+live portfolio。runner 会完整读取项目根目录的 `.env`；Shell 中已 export 的同名变量仍优先。
+配置好 `CHESS_AGENT_MODEL`、`CHESS_AGENT_BASE_URL` 和 `CHESS_AGENT_API_KEY` 后运行：
 
 ```bash
 uv sync --extra agent
 
 .venv/bin/python -m tests.evals.run_portfolio \
   --source custom \
-  --model "your-model" \
-  --base-url "https://api.example.com/v1" \
-  --certificate-data-dir "/absolute/path/to/chess-review-coach-data" \
   --output reports/custom-responses.json
 ```
+
+证书写入 `CHESSCOACH_DATA_DIR`；未配置时使用与 Web 进程相同的操作系统默认 data directory。
+`--model`、`--base-url` 和 `--certificate-data-dir` 仍可用于临时覆盖配置。
+运行期间会在终端显示每个 case 的开始、结果、错误码和耗时；JSON 报告仍单独写入 `--output`。
+每个 case 的默认超时为 120 秒，可通过 `.env` 中的 `CHESS_AGENT_TIMEOUT` 调整。
+
+每次 live eval 还会把每个 case 的所有 Responses 调用按顺序写入
+`reports/custom-responses-traces/<run-timestamp>/<case-id>/`。`NNN-request.json` 和
+`NNN-response.json` 分别是实际传输的原始 HTTP request/response body bytes，不解析、不重组字段，
+因此完整保留模型输入、function-call 往返和模型输出。HTTP header 不属于模型输入输出且可能包含
+Authorization，不写入 trace。可用 `--trace-dir` 修改 trace 根目录。
 
 该命令会对 endpoint 运行 26 个 live case，可能产生模型调用费用。仅当报告中的 `all_passed` 为
 `true` 且全部 `compatibility_gates` 为 `true` 时，才会原子写入
 `<DATA_DIR>/agent/compatibility/custom-responses.json`；失败时查看报告的 `compatibility_gates`、
 `metrics` 和 `live_case_diagnostics`，不会签发新证书。验证通过后重启 Web 进程，使其重新加载证书。
-base URL、model、锁定的 Agents SDK、policy、response schema、dataset 或 scorer 任一变化后都必须
-用新配置重跑。
+Web 启动、默认测试和 CI 都不会自动执行这个真实网络验证；首次使用 custom endpoint 时需要显式
+运行一次。之后只要证书仍匹配就不必每次启动都验证；base URL、model、锁定的 Agents SDK、policy、
+response schema、dataset 或 scorer 任一变化后才需要用新配置重跑。
 
 Credential 只由后端读取，不返回浏览器，不写 prompt、conversation、artifact、run log 或 eval
 report。完整 custom 认证命令见 [Operations](docs/operations.md)。

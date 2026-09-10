@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import time
-from typing import Any
+from typing import Any, Callable
 
 from server import config
 from server.core.agent.models import (
@@ -57,6 +57,48 @@ _TOOL_RESULT_TYPES: dict[str, type[Any]] = {
     "get_training_candidates": GetTrainingCandidatesResult,
     "create_training_draft": TrainingDraft,
 }
+
+
+class _RawResponsesTraceWriter:
+    """Persist exact Responses request and response bodies for explicit live evals."""
+
+    def __init__(
+        self,
+        base_dir: Path,
+        progress: Callable[[str], None] | None = None,
+    ) -> None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        self.run_dir = base_dir / timestamp
+        self.run_dir.mkdir(parents=True, exist_ok=False)
+        self._case_dir: Path | None = None
+        self._call_index = 0
+        self._response_paths: dict[int, Path] = {}
+        if progress is not None:
+            progress(f"Raw model traces will be written to {self.run_dir}.")
+
+    def begin_case(self, index: int, case_id: str) -> None:
+        self._case_dir = self.run_dir / f"{index + 1:03d}-{case_id}"
+        self._case_dir.mkdir(parents=True, exist_ok=False)
+        self._call_index = 0
+
+    async def on_request(self, request: Any) -> None:
+        if self._case_dir is None:
+            raise RuntimeError("A trace case must be selected before a model request")
+        self._call_index += 1
+        prefix = f"{self._call_index:03d}"
+        body = await request.aread()
+        (self._case_dir / f"{prefix}-request.json").write_bytes(body)
+        self._response_paths[id(request)] = self._case_dir / f"{prefix}-response.json"
+
+    async def on_response(self, response: Any) -> None:
+        path = self._response_paths.pop(id(response.request), None)
+        if path is None:
+            raise RuntimeError("A model response was received without its traced request")
+        body = await response.aread()
+        path.write_bytes(body)
+
+    def event_hooks(self) -> dict[str, list[Callable[..., Any]]]:
+        return {"request": [self.on_request], "response": [self.on_response]}
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -405,6 +447,8 @@ async def _run_cases(
     sessions: SQLiteConversationSessionFactory,
     dataset: dict[str, Any],
     tool_instances: dict[str, _FixtureTools],
+    progress: Callable[[str], None] | None = None,
+    trace_writer: _RawResponsesTraceWriter | None = None,
 ) -> tuple[dict[str, Any], dict[str, bool]]:
     runs: list[dict[str, Any]] = []
     structured_output = True
@@ -415,7 +459,13 @@ async def _run_cases(
     production_validation_successes = 0
     production_validation_applicable = 0
     positions = dataset["fixtures"]["positions"]
+    case_count = len(dataset["cases"])
     for index, case in enumerate(dataset["cases"]):
+        if trace_writer is not None:
+            trace_writer.begin_case(index, case["id"])
+        case_label = f"[{index + 1}/{case_count}] {case['id']}"
+        if progress is not None:
+            progress(f"{case_label}: running")
         session_id = f"live-eval-{index:03d}"
         tools = _FixtureTools(case, dataset["fixtures"]["tool_results"])
         tool_instances[session_id] = tools
@@ -443,8 +493,10 @@ async def _run_cases(
         expected_function = bool(case["expected"]["tools"]["required_calls"])
         any_expected_function_tool = any_expected_function_tool or expected_function
         started = time.monotonic()
+        case_status = "failed"
         try:
             if case["input"].get("agent_available") is False:
+                case_status = "agent_unavailable"
                 runs.append(
                     {
                         "case_id": case["id"],
@@ -470,6 +522,7 @@ async def _run_cases(
                 successful_tool_results=tools.successful_tool_results(),
             )
             production_validation_successes += 1
+            case_status = "ok"
             response = result.response
             runs.append(
                 {
@@ -485,6 +538,7 @@ async def _run_cases(
             error_code = (
                 exc.error.code if isinstance(exc, AgentRuntimeFailure) else "invalid_agent_response"
             )
+            case_status = error_code
             if isinstance(exc, AgentRuntimeFailure):
                 structured_output = structured_output and error_code != "invalid_agent_response"
             runs.append(
@@ -501,6 +555,9 @@ async def _run_cases(
                 }
             )
         finally:
+            if progress is not None:
+                elapsed = time.monotonic() - started
+                progress(f"{case_label}: {case_status} ({elapsed:.2f}s)")
             runtime.take_telemetry(request.run_id)
             await sessions.clear_session(session_id)
     return (
@@ -606,11 +663,28 @@ def _build_live_report(
 
 
 async def _run(
-    *, source: str, model: str, base_url: str, api_key: str, data_dir: str
+    *,
+    source: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    data_dir: str,
+    progress: Callable[[str], None] | None = None,
+    trace_base_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, bool]]:
     dataset = _load("agent_baseline_v1.json")
     portfolio = _load("agent_portfolio_v2.json")
     static_hardening_observed = _load("observed_fake_runs_v2.json")
+    if progress is not None:
+        progress(
+            f"Running {len(dataset['cases'])} live cases "
+            f"({config.AGENT_TIMEOUT}s timeout per case)."
+        )
+    trace_writer = (
+        _RawResponsesTraceWriter(trace_base_dir, progress)
+        if trace_base_dir is not None
+        else None
+    )
     sessions = SQLiteConversationSessionFactory(data_dir)
     tool_instances: dict[str, _FixtureTools] = {}
     runtime = OpenAIAgentsRuntime(
@@ -620,9 +694,17 @@ async def _run(
         endpoint_type="custom_responses" if source == "custom" else "openai_responses",
         domain_tools_factory=lambda request: tool_instances[request.session_id],
         session_provider=sessions.get_session,
+        http_event_hooks=(trace_writer.event_hooks() if trace_writer is not None else None),
     )
     try:
-        baseline_observed, gates = await _run_cases(runtime, sessions, dataset, tool_instances)
+        baseline_observed, gates = await _run_cases(
+            runtime,
+            sessions,
+            dataset,
+            tool_instances,
+            progress,
+            trace_writer,
+        )
         report = _build_live_report(
             source=source,
             model=model,
@@ -653,6 +735,8 @@ def run_live_portfolio(
     api_key: str,
     data_dir: str,
     certificate_data_dir: str,
+    progress: Callable[[str], None] | None = None,
+    trace_base_dir: Path | None = None,
 ) -> dict[str, Any]:
     report, gates = asyncio.run(
         _run(
@@ -661,6 +745,8 @@ def run_live_portfolio(
             base_url=base_url,
             api_key=api_key,
             data_dir=data_dir,
+            progress=progress,
+            trace_base_dir=trace_base_dir,
         )
     )
     if source == "custom" and all(gates.values()):
@@ -677,6 +763,10 @@ def run_live_portfolio(
                 gate_cases=gates,
             )
         )
+        if progress is not None:
+            progress(f"Compatibility certificate written to {store.path}.")
+    elif source == "custom" and progress is not None:
+        progress("Compatibility gate failed; no certificate was written.")
     return report
 
 
