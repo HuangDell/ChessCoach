@@ -17,7 +17,7 @@
     <link rel="stylesheet" href="/vendor/chessground.cburnett.css" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="history-hidden">
     <header>
       <h1>
         Chess Review Coach
@@ -43,7 +43,7 @@
       <button id="settings-toggle" class="hist-toggle" title="Settings"
         aria-label="Settings">⚙ Settings</button>
       <button id="history-toggle" class="hist-toggle" title="Show / hide the games panel"
-        aria-label="Toggle games panel">☰ Games</button>
+        aria-label="Toggle games panel" aria-controls="history-col" aria-expanded="false">☰ Games</button>
     </header>
 
     <!-- Setup self-check banner (filled by checkSetup() from /api/doctor): shown only when a Web
@@ -61,7 +61,6 @@
 
     <main>
       <section class="board-col">
-        <div id="scoreboard" class="scoreboard" hidden></div>
         <div class="board-wrap">
           <div id="evalbar"><div id="evalbar-fill"></div></div>
           <div id="board" class="cg-wrap"></div>
@@ -100,18 +99,6 @@
           </label>
           <button id="flip-review" type="button" hidden
             title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Review other side</button>
-        </div>
-
-        <div id="timeline-meta" class="timeline-meta" aria-hidden="true" hidden>
-          <span>White win chance</span>
-          <span id="timeline-readout">Start position</span>
-        </div>
-        <div id="graph-wrap" hidden>
-          <svg id="graph" preserveAspectRatio="none"></svg>
-          <div id="analysis-progress" hidden>
-            <div id="analysis-progress-label">Analyzing…</div>
-            <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
-          </div>
         </div>
 
         <div id="status" class="status"></div>
@@ -230,17 +217,29 @@
         <div class="grip"><span></span><span></span><span></span></div>
       </div>
 
-      <aside class="side-col">
+      <aside class="navigation-col">
         <section id="review-workspace" class="review-workspace">
           <div id="workflow-status" class="workflow-status" data-state="empty" aria-live="polite">
             <span class="workflow-dot"></span>
             <div class="workflow-copy">
               <strong id="workflow-label">Import a PGN to begin</strong>
               <span id="workflow-detail">Engine review stays available even without AI.</span>
-              <div id="workflow-analysis" class="workflow-analysis" hidden></div>
             </div>
             <span id="workflow-count"></span>
           </div>
+
+        <div id="scoreboard" class="scoreboard" hidden></div>
+        <div id="timeline-meta" class="timeline-meta" aria-hidden="true" hidden>
+          <span>White win chance</span>
+          <span id="timeline-readout">Start position</span>
+        </div>
+        <div id="graph-wrap" hidden>
+          <svg id="graph" preserveAspectRatio="none"></svg>
+          <div id="analysis-progress" hidden>
+            <div id="analysis-progress-label">Analyzing…</div>
+            <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
+          </div>
+        </div>
 
           <div id="review-tabs" class="review-tabs" role="tablist" aria-label="Review view">
             <button type="button" id="review-tab-key" class="active" data-view="key" role="tab">Key positions</button>
@@ -260,7 +259,27 @@
             <ol id="movelist" class="movelist compact"></ol>
           </section>
 
-          <article id="critical-review" class="critical-review" hidden>
+          <div id="review-empty" class="review-empty">
+            <strong id="review-empty-title">No game loaded</strong>
+            <span id="review-empty-detail">Open Games and import a PGN to start reviewing.</span>
+            <span id="free-analysis-line" class="free-analysis-line" hidden>Start position</span>
+            <button type="button" id="review-import" class="review-import" aria-controls="paste-form">Import PGN <span aria-hidden="true">↗</span></button>
+          </div>
+        </section>
+
+        <div class="legacy-review" hidden>
+        <!-- Per-move feedback: the mistake explanation (#comment) + technical verdict (#verdict),
+             between Moves and Mistakes. Both update as you step through the moves. -->
+        <div id="comment" class="comment"></div>
+        <div id="verdict" class="verdict"></div>
+        <h2>Mistakes</h2>
+        <ol id="mistakes" class="mistakes"></ol>
+        </div>
+      </aside>
+
+      <aside class="side-col" aria-label="Analysis">
+        <h2>Analysis</h2>
+          <div id="critical-review" class="critical-review" hidden>
             <header class="critical-head">
               <div>
                 <div class="critical-kicker">
@@ -294,6 +313,14 @@
               </div>
             </section>
 
+          </div>
+        <div id="analysis-tabs" class="analysis-tabs" role="tablist" aria-label="Analysis source">
+          <button id="analysis-tab-engine" type="button" role="tab" aria-controls="analysis-engine" aria-selected="true">Engine</button>
+          <button id="analysis-tab-coach" type="button" role="tab" aria-controls="analysis-coach" aria-selected="false" tabindex="-1">AI Coach</button>
+        </div>
+        <section id="analysis-engine" role="tabpanel" aria-labelledby="analysis-tab-engine">
+          <div id="workflow-analysis" class="workflow-analysis" hidden></div>
+          <div id="engine-position-content" hidden>
             <div id="explanation-content" class="explanation-content"></div>
 
             <div id="variation-controls" class="variation-controls" hidden>
@@ -305,27 +332,16 @@
             <div id="explanation-action" class="explanation-action">
               <button type="button" id="retry-critical" class="review-secondary">↻ Retry</button>
               <button type="button" id="train-critical" class="review-secondary">Practice</button>
-              <button type="button" id="generate-explanation">Generate AI explanation</button>
-              <span id="explanation-status" class="muted"></span>
             </div>
-          </article>
-
-          <div id="review-empty" class="review-empty">
-            <strong id="review-empty-title">No game loaded</strong>
-            <span id="review-empty-detail">Open Games and import a PGN to start reviewing.</span>
-            <span id="free-analysis-line" class="free-analysis-line" hidden>Start position</span>
-            <button type="button" id="review-import" class="review-import" aria-controls="paste-form">Import PGN <span aria-hidden="true">↗</span></button>
           </div>
+          <p id="analysis-empty" class="muted">Open a game or move a piece to analyze a position.</p>
         </section>
-
-        <div class="legacy-review" hidden>
-        <!-- Per-move feedback: the mistake explanation (#comment) + technical verdict (#verdict),
-             between Moves and Mistakes. Both update as you step through the moves. -->
-        <div id="comment" class="comment"></div>
-        <div id="verdict" class="verdict"></div>
-        <h2>Mistakes</h2>
-        <ol id="mistakes" class="mistakes"></ol>
-        </div>
+        <section id="analysis-coach" role="tabpanel" aria-labelledby="analysis-tab-coach" hidden>
+          <div id="ai-explanation-content" class="explanation-content">Select a key position for an AI explanation, or ask Coach about the board.</div>
+          <div id="ai-explanation-action" hidden>
+            <button type="button" id="generate-explanation">Generate AI explanation</button>
+            <span id="explanation-status" class="muted"></span>
+          </div>
         <div class="chat-panel">
           <h2>Ask Coach</h2>
           <div id="chat-messages" class="chat-messages"></div>
@@ -335,9 +351,10 @@
             <button type="submit" id="chat-send" aria-label="Send" title="Send">→</button>
           </form>
         </div>
+        </section>
       </aside>
 
-      <aside class="history-col" id="history-col">
+      <aside class="history-col" id="history-col" inert>
         <div class="hist-head">
           <h2>Games</h2>
           <button id="history-collapse" class="hist-x" title="Hide panel" aria-label="Hide panel">×</button>

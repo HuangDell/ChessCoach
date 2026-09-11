@@ -233,22 +233,30 @@ test("board controls label key-position navigation explicitly", async () => {
   assert.match(html, /id="free-analysis-line"[^>]*>Start position<\/span>/);
 });
 
-test("board controls stay directly above the win-chance timeline", async () => {
+test("win-chance timeline belongs to navigation beside the board", async () => {
   const html = await readFile(path.join(root, "frontend", "index.html"), "utf8");
   const board = html.indexOf('<div class="board-wrap">');
   const controls = html.indexOf('<div class="controls">', board);
-  const timeline = html.indexOf('<div id="timeline-meta"', board);
-  const graph = html.indexOf('<div id="graph-wrap"', board);
+  const timeline = html.indexOf('<div id="timeline-meta"');
+  const graph = html.indexOf('<div id="graph-wrap"');
 
   assert.ok(board >= 0);
   assert.ok(controls > board);
-  assert.ok(timeline > controls);
+  assert.ok(timeline >= 0);
   assert.ok(graph > timeline);
+  const navigation = html.indexOf('<aside class="navigation-col">');
+  const analysis = html.indexOf('<aside class="side-col"');
+  assert.ok(graph > navigation && graph < analysis);
+  assert.ok(html.indexOf('id="critical-review"') > analysis);
+  assert.ok(html.indexOf('id="chat-form"') > analysis);
+  for (const id of ["timeline-meta", "timeline-readout", "graph-wrap", "graph", "analysis-progress"]) {
+    assert.equal(html.split(`id="${id}"`).length - 1, 1, `${id} must remain unique`);
+  }
 });
 
-test("wide-screen Games column expands into remaining horizontal space", async () => {
+test("Games is a drawer on wide screens too", async () => {
   const css = await readFile(path.join(root, "frontend", "styles.css"), "utf8");
-  assert.match(css, /\.history-col\s*\{[^}]*flex:\s*1 1 280px;[^}]*min-width:\s*280px;/s);
+  assert.match(css, /\.history-col\s*\{\s*position: fixed;/);
 });
 
 test("win-chance timeline stays hidden until a game timeline exists", () => {

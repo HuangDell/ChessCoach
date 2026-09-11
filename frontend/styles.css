@@ -24,7 +24,7 @@
      instead of tucking underneath. */
   --header-h: 64px;
   /* Full width of the board column = eval bar (20) + its gap (8) + the board. The win graph and
-     the other under-board panels span this so their right edge lines up with the board's. */
+     the other board-column panels span this so their right edge lines up with the board's. */
   --col-width: calc(var(--board-size) + 28px);
 }
 
@@ -282,7 +282,7 @@ main {
 #graph-wrap {
   position: relative;
   width: var(--col-width);
-  height: 90px;
+  height: 72px;
   background: #14130f;
   border-radius: 5px;
   overflow: hidden;
@@ -292,6 +292,7 @@ main {
 .timeline-meta {
   width: var(--col-width);
   min-height: 18px;
+  margin-bottom: -4px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1867,4 +1868,52 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
 
 @media (max-width: 900px) {
   .puzzle-rail { flex-basis: auto; width: 100%; }
+}
+
+/* Review: board → navigation → current-position analysis. Games is always a drawer. */
+body:not(.puzzle-mode) main {
+  display: grid;
+  grid-template-columns: calc(var(--col-width) + 12px) 300px minmax(340px, 1fr);
+}
+.navigation-col { min-width: 0; position: sticky; top: var(--header-h); }
+.navigation-col .review-workspace { max-height: calc(100dvh - var(--header-h) - 24px); }
+.navigation-col .review-workspace > * { flex-shrink: 0; }
+.navigation-col .review-position-list,
+.navigation-col .movelist-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.navigation-col .movelist { max-height: none; }
+.navigation-col #graph-wrap { width: 100%; height: 72px; }
+.navigation-col .timeline-meta, .navigation-col .scoreboard { width: 100%; max-width: 100%; }
+.side-col { width: auto; min-width: 0; }
+.side-col [hidden], .navigation-col [hidden] { display: none !important; }
+.analysis-tabs { display: flex; gap: 6px; margin: 12px 0; }
+.analysis-tabs button { flex: 1; padding: 10px; border: 1px solid #45413b; border-radius: 5px; background: var(--panel); color: var(--text); cursor: pointer; }
+.analysis-tabs [aria-selected="true"] { border-color: var(--accent); background: #303c25; }
+#analysis-engine, #analysis-coach { min-width: 0; overflow-wrap: anywhere; }
+#ai-explanation-action { margin: 12px 0; }
+.history-col {
+  position: fixed; top: 0; right: 0; z-index: 95;
+  width: min(340px, 88vw); min-width: 0; height: 100dvh;
+  margin: 0; padding: 16px 16px 24px; background: var(--panel);
+  border-left: 1px solid #000; box-shadow: -10px 0 30px #0008; overflow-y: auto;
+}
+body.history-hidden .history-col { display: none; }
+body.retry-mode #analysis-tabs,
+body.retry-mode #analysis-engine,
+body.retry-mode #analysis-coach,
+body.puzzle-mode .navigation-col { display: none !important; }
+@media (min-width: 1401px) {
+  :root { --board-default: min(68vh, 660px, calc(100vw - 768px)); }
+}
+@media (min-width: 901px) and (max-width: 1400px) {
+  body:not(.puzzle-mode) main { grid-template-columns: calc(var(--col-width) + 12px) minmax(340px, 1fr); }
+  body:not(.puzzle-mode) .board-col { grid-column: 1; grid-row: 1 / 3; }
+  .navigation-col, .side-col { grid-column: 2; position: static; }
+  .navigation-col .review-workspace { max-height: none; }
+  .navigation-col .review-position-list { max-height: none; overflow: visible; }
+}
+@media (max-width: 900px) {
+  body:not(.puzzle-mode) main { display: flex; }
+  .navigation-col, .side-col { width: 100%; position: static; }
+  .navigation-col .review-workspace { max-height: none; }
+  .navigation-col .review-position-list { max-height: none; overflow: visible; }
 }

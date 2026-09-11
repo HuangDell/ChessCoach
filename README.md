@@ -54,7 +54,13 @@ python -m server.doctor
 导出 PGN。可点击工作区中的 `Import PGN` 直接展开 Games 导入表单，粘贴或上传棋局；仅展开
 表单会保留当前自由分析，打开或导入棋局会退出该工作区。
 
-复盘页可浏览 Key positions、My mistakes 和 All moves，并进入 Retry 或 Practice。个人训练会复用
+复盘页按棋盘、棋局导航、Analysis 排列。导航栏集中展示对局摘要、胜率图和 Key positions、
+My mistakes、All moves；Games 始终通过顶部按钮打开抽屉，打开棋局后自动关闭。Analysis 默认
+展示 Engine，可切换到 AI Coach 查看结构化讲解和对话；页签选择在本次页面会话保留，切换不会
+发起模型请求或清除聊天草稿。Retry 临时替换分析页签，退出后恢复原选择。
+
+超过 1400px 时三栏并排；901–1400px 时导航和 Analysis 排在棋盘右侧；900px 及以下依次纵向排列。
+棋盘仍可拖动分隔条缩放。复盘中可进入 Retry 或 Practice。个人训练会复用
 现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical
 observation，再确定性重建 recent/lifetime skill estimate。
 

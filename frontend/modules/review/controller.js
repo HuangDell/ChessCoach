@@ -1,3 +1,4 @@
+import { createAnalysisTabs } from "./analysis-tabs.js";
 import { agentApi } from "../api/agent.js";
 import { reviewApi } from "../api/review.js";
 import { byId, clamp } from "../core/dom.js";
@@ -390,15 +391,7 @@ function updateNav() {
 
 // --- artifact-backed review workspace ----------------------------------
 function setWorkflowState(state, label, detail = "", count = "") {
-  const box = $("workflow-status");
-  if (!box) return;
-  box.dataset.state = state;
-  $("workflow-label").textContent = label;
-  $("workflow-detail").textContent = detail;
-  $("workflow-count").textContent = count;
-  const analysis = $("workflow-analysis");
-  analysis.hidden = true;
-  analysis.textContent = "";
+  workspaceView.renderWorkflow(state, label, detail, count);
 }
 
 function selectEngineMove(ply) {
@@ -687,6 +680,7 @@ function onAnalysisError(msg) {
 
 
   function mount() {
+    createAnalysisTabs($).mount();
     $("review-import").addEventListener("click", () => bridge.openImport());
     $("back").addEventListener("click", stepBack);
     $("fwd").addEventListener("click", stepForward);

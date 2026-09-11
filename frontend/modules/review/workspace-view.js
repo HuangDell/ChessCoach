@@ -146,6 +146,8 @@ export function createWorkspaceView({
       (item) => Number(item.ply) === snapshot.reviewedMoveNode + 1
     );
     if (!move) return;
+    $("engine-position-content").hidden = false;
+    $("analysis-empty").hidden = true;
     $("review-empty").hidden = true;
     $("critical-review").hidden = false;
     $("critical-class").className = `review-class ${move.classification || ""}`;
@@ -163,6 +165,8 @@ export function createWorkspaceView({
       `the move lost ${Number(move.win_percent_loss || 0).toFixed(1)} percentage points for the mover.</div></section>` +
       `<section class="explanation-section"><h3>Better move</h3><p><strong>${escapeHtml(best.san || "—")}</strong></p></section>` +
       variationBlockHtml(move.best_pv || { uci: [], san: [] }, "best", "Best line", "");
+    $("ai-explanation-content").textContent = "Structured explanations are available for key positions. You can ask Coach about this move below.";
+    $("ai-explanation-action").hidden = true;
     $("explanation-action").hidden = true;
     $("variation-controls").hidden = true;
   }
@@ -177,6 +181,8 @@ export function createWorkspaceView({
       critical.facts && critical.facts.primary_category,
       ...((critical.facts && critical.facts.secondary_categories) || []),
     ].filter(Boolean);
+    $("engine-position-content").hidden = false;
+    $("analysis-empty").hidden = true;
     $("review-empty").hidden = true;
     $("critical-review").hidden = false;
     $("critical-class").className = `review-class ${critical.classification || ""}`;
@@ -199,7 +205,11 @@ export function createWorkspaceView({
       html += `<section class="explanation-section"><h3>Error category</h3><div class="category-row">${[explanation.primary_category, ...explanation.secondary_categories].filter(Boolean).map((item) => `<span class="category-chip">${escapeHtml(categoryLabel(item))}</span>`).join("") || '<span class="muted">Uncategorized</span>'}</div></section>`;
       html += `<section class="explanation-section"><h3>Transferable principle</h3><p>${escapeHtml(explanation.transferable_principle)}</p></section>`;
       html += `<section class="explanation-section"><h3>Next-time checklist</h3><ul class="explanation-list">${explanation.next_time_checklist.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
-    } else {
+    }
+    $("ai-explanation-content").innerHTML = html || "No AI explanation yet. Generate an explanation or ask Coach below.";
+    $("ai-explanation-action").hidden = false;
+    html = "";
+    {
       html += `<div class="engine-fallback"><strong>Engine review is ready.</strong> AI explanation is optional; every statement below comes from the stored analysis and deterministic facts.</div>`;
       html += `<section class="explanation-section"><h3>You played</h3><p><strong>${escapeHtml(reviewMoveLabel(critical))}</strong></p></section>`;
       html += `<section class="explanation-section"><h3>Core problem</h3><p>${factsProblemHtml(critical)}</p></section>`;
@@ -239,6 +249,7 @@ export function createWorkspaceView({
 
     const analysis = $("workflow-analysis");
     analysis.hidden = false;
+    $("analysis-empty").hidden = true;
     if (verdict === "pending" || verdict.error) {
       const result = verdict === "pending" ? "Evaluating…" : "Couldn't evaluate that move.";
       analysis.innerHTML =
@@ -266,7 +277,27 @@ export function createWorkspaceView({
       `<span class="workflow-eval">White win chance ${whiteBefore}% → ${whiteAfter}% · ${bestMove}</span>`;
   }
 
+  function renderWorkflow(state, label, detail, count) {
+  const box = $("workflow-status");
+  if (!box) return;
+  box.dataset.state = state;
+  $("workflow-label").textContent = label;
+  $("workflow-detail").textContent = detail;
+  $("workflow-count").textContent = count;
+  if (["empty", "free_analysis", "analyzing_scan", "error"].includes(state)) {
+    $("engine-position-content").hidden = true;
+    $("analysis-empty").hidden = false;
+    $("analysis-empty").textContent = detail || label;
+    $("ai-explanation-content").textContent = "Select a key position for an AI explanation, or ask Coach about the board.";
+    $("ai-explanation-action").hidden = true;
+  }
+  const analysis = $("workflow-analysis");
+  analysis.hidden = true;
+  analysis.textContent = "";
+  }
+
   return {
+    renderWorkflow,
     setView,
     refreshView() { setView(view); },
     renderList,

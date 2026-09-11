@@ -4,33 +4,25 @@ export function createBoardLayoutController(board) {
   const $ = byId;
   const ground = board.ground;
 
-const HISTORY_DRAWER_MAX = 1400;
-function historyIsDrawer() {
-  return window.innerWidth <= HISTORY_DRAWER_MAX;
+function setHistoryOpen(open, restoreFocus = false) {
+  document.body.classList.toggle("history-hidden", !open);
+  $("history-col").inert = !open;
+  $("history-toggle").setAttribute("aria-expanded", String(open));
+  if (open) $("history-collapse").focus();
+  else if (restoreFocus) $("history-toggle").focus();
 }
 function closeHistoryDrawer() {
-  if (historyIsDrawer()) document.body.classList.add("history-hidden");
+  setHistoryOpen(false, $("history-col").contains(document.activeElement));
 }
-
 function toggleHistory() {
-  document.body.classList.toggle("history-hidden");
+  setHistoryOpen(document.body.classList.contains("history-hidden"), true);
 }
-
-function showHistory() {
-  document.body.classList.remove("history-hidden");
-}
-
-// Keep the drawer state sane when the window crosses the 1400px breakpoint. Without this, the
-// `history-hidden` class is whatever it was last set to (e.g. never set, if the page loaded wide),
-// so shrinking below 1400 can leave the panel stuck open as a fixed drawer overlaying the board —
-// and the open drawer covers the ☰ Games button, so toggling it looks like nothing happens.
-// Entering drawer mode → start closed (☰ Games opens it); back to wide → show the column.
-let wasDrawer = historyIsDrawer();
-window.addEventListener("resize", () => {
-  const now = historyIsDrawer();
-  if (now === wasDrawer) return;
-  wasDrawer = now;
-  document.body.classList.toggle("history-hidden", now);
+function showHistory() { setHistoryOpen(true); }
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.body.classList.contains("history-hidden")) {
+    event.preventDefault();
+    setHistoryOpen(false, true);
+  }
 });
 
 // --- board resizing (the iPad-style drag handle, #col-resizer) ------------------------------
@@ -40,19 +32,16 @@ window.addEventListener("resize", () => {
 const BOARD_SIZE_KEY = "chessBoardSize";
 let boardSizeUser = null; // px override, or null = use the responsive default
 
-// Looser than the default's 660px / 48vw caps (the user asked for less restriction) but still
-// leaves the analysis column (and the Games column, when it's not a drawer) enough room.
+// Reserve navigation and Analysis widths; Games is always an overlay.
 function boardSizeBounds() {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const PAD = 40; // main's left+right padding
-  const GAP = 24; // main's column gap
   const puzzle = document.body.classList.contains("puzzle-mode");
-  const SIDE_MIN = 280; // keep the analysis column / puzzle rail usable
-  const EVALBAR = puzzle ? 0 : 28; // eval bar + its gap (col-width = board-size + 28); hidden in puzzle mode
-  // The Games column only exists in analysis mode above the drawer breakpoint.
-  const historyCol = !puzzle && vw > HISTORY_DRAWER_MAX ? 280 + GAP : 0;
-  const maxByWidth = vw - PAD - GAP - SIDE_MIN - historyCol - EVALBAR;
+  const stacked = vw <= 900;
+  const padding = stacked ? 28 : 40;
+  const evaluation = puzzle ? 0 : 28;
+  const columns = stacked ? 0 : puzzle ? 304 : vw > 1400 ? 688 : 364;
+  const maxByWidth = vw - padding - columns - evaluation - 12;
   const maxByHeight = Math.round(vh * 0.92);
   const min = 240;
   const max = Math.max(min, Math.min(maxByWidth, maxByHeight));
