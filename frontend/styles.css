@@ -287,6 +287,7 @@ main {
   border-radius: 5px;
   overflow: hidden;
 }
+.timeline-meta[hidden], #graph-wrap[hidden] { display: none; }
 #graph { width: 100%; height: 100%; display: block; cursor: pointer; }
 .timeline-meta {
   width: var(--col-width);
@@ -1035,7 +1036,7 @@ body.retry-mode .board-col { max-height: none; overflow: visible; }
 }
 .hist-toggle:hover { background: var(--panel2); }
 
-.history-col { flex: 0 0 auto; width: 280px; }
+.history-col { flex: 1 1 280px; min-width: 280px; }
 body.history-hidden .history-col { display: none; }
 /* Highlight the whole Games panel while a .pgn file is dragged over it (drop to analyze). */
 .history-col.drag-over {

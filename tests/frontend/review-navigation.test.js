@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createReviewGraph } from "../../frontend/modules/review/graph.js";
 import { createReviewNavigation } from "../../frontend/modules/review/navigation.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -230,4 +231,59 @@ test("board controls label key-position navigation explicitly", async () => {
   assert.doesNotMatch(html, />‹ Key<\/button>|>Key ›<\/button>/);
   assert.doesNotMatch(html, /id="free-analysis"/);
   assert.match(html, /id="free-analysis-line"[^>]*>Start position<\/span>/);
+});
+
+test("board controls stay directly above the win-chance timeline", async () => {
+  const html = await readFile(path.join(root, "frontend", "index.html"), "utf8");
+  const board = html.indexOf('<div class="board-wrap">');
+  const controls = html.indexOf('<div class="controls">', board);
+  const timeline = html.indexOf('<div id="timeline-meta"', board);
+  const graph = html.indexOf('<div id="graph-wrap"', board);
+
+  assert.ok(board >= 0);
+  assert.ok(controls > board);
+  assert.ok(timeline > controls);
+  assert.ok(graph > timeline);
+});
+
+test("wide-screen Games column expands into remaining horizontal space", async () => {
+  const css = await readFile(path.join(root, "frontend", "styles.css"), "utf8");
+  assert.match(css, /\.history-col\s*\{[^}]*flex:\s*1 1 280px;[^}]*min-width:\s*280px;/s);
+});
+
+test("win-chance timeline stays hidden until a game timeline exists", () => {
+  const elements = {
+    graph: { innerHTML: "stale", setAttribute() {} },
+    "graph-wrap": { toggleAttribute(name, force) { this[name] = force; } },
+    "timeline-meta": { toggleAttribute(name, force) { this[name] = force; } },
+    "timeline-readout": { textContent: "" },
+  };
+  let timeline = [];
+  const graph = createReviewGraph({
+    $: (id) => elements[id],
+    getSnapshot: () => ({
+      timeline,
+      cur: 0,
+      orient: "white",
+      engineReview: null,
+      criticalPositions: [],
+    }),
+    onGotoNode() {},
+    onSelectCritical() {},
+    onSelectMistake() {},
+  });
+
+  graph.render();
+  assert.equal(elements["timeline-meta"].hidden, true);
+  assert.equal(elements["graph-wrap"].hidden, true);
+  assert.equal(elements.graph.innerHTML, "");
+
+  timeline = [
+    { node: 0, win_white: null },
+    { node: 1, win_white: null },
+  ];
+  graph.render();
+  assert.equal(elements["timeline-meta"].hidden, false);
+  assert.equal(elements["graph-wrap"].hidden, false);
+  assert.match(elements.graph.innerHTML, /analyzing/);
 });

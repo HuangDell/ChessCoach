@@ -79,18 +79,6 @@
           <button type="button" id="pz-review-next" title="Next move (→)">›</button>
         </div>
 
-        <div class="timeline-meta" aria-hidden="true">
-          <span>White win chance</span>
-          <span id="timeline-readout">Start position</span>
-        </div>
-        <div id="graph-wrap">
-          <svg id="graph" preserveAspectRatio="none"></svg>
-          <div id="analysis-progress" hidden>
-            <div id="analysis-progress-label">Analyzing…</div>
-            <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
-          </div>
-        </div>
-
         <div class="controls">
           <div class="ctrl-group">
             <button id="start" class="icon-btn" title="Go to start (↑)" aria-label="Go to start">|◀</button>
@@ -112,6 +100,18 @@
           </label>
           <button id="flip-review" type="button" hidden
             title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Review other side</button>
+        </div>
+
+        <div id="timeline-meta" class="timeline-meta" aria-hidden="true" hidden>
+          <span>White win chance</span>
+          <span id="timeline-readout">Start position</span>
+        </div>
+        <div id="graph-wrap" hidden>
+          <svg id="graph" preserveAspectRatio="none"></svg>
+          <div id="analysis-progress" hidden>
+            <div id="analysis-progress-label">Analyzing…</div>
+            <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
+          </div>
         </div>
 
         <div id="status" class="status"></div>

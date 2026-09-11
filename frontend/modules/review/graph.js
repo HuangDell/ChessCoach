@@ -33,8 +33,11 @@ export function createReviewGraph({ $, getSnapshot, onGotoNode, onSelectCritical
     const { timeline, cur, orient, engineReview, criticalPositions } = snapshot;
     const svg = $("graph");
     const count = timeline.length;
+    const visible = count >= 2;
+    $("timeline-meta").toggleAttribute("hidden", !visible);
+    $("graph-wrap").toggleAttribute("hidden", !visible);
     updateReadout(snapshot);
-    if (count < 2) {
+    if (!visible) {
       svg.innerHTML = "";
       return;
     }
