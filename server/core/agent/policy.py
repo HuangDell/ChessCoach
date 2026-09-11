@@ -18,6 +18,7 @@ from server.core.agent.models import (
     GetPlayerProfileResult,
     GetReviewContextResult,
     GetTrainingCandidatesResult,
+    LearningMemoryItem,
     LookupOpeningResult,
     ModelVisibleContext,
     PositionReference,
@@ -538,7 +539,13 @@ def _validate_grounding_claims(
             for estimate in estimates
             if personal.skill_id in (None, estimate.skill_id)
             and personal.status in (None, estimate.status)
-            and personal.distinct_games in (None, estimate.distinct_games)
+            and personal.distinct_games
+            in (
+                None,
+                estimate.window_games
+                if isinstance(estimate, LearningMemoryItem)
+                else estimate.distinct_games,
+            )
         ]
         if not matching:
             raise AgentResponseValidationError(
