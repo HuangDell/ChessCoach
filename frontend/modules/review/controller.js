@@ -708,6 +708,7 @@ function onAnalysisError(msg) {
     $("critical-next").addEventListener("click", () => selectAdjacentCritical(1, true));
     $("train-critical").addEventListener("click", trainActiveCritical);
     $("generate-explanation").addEventListener("click", generateReviewExplanations);
+    $("generate-explanations-all").addEventListener("click", () => artifacts.generateExplanations({ all: true }));
     $("variation-play").addEventListener("click", variation.toggle);
     $("variation-mainline").addEventListener("click", returnToReview);
     chat.mount();

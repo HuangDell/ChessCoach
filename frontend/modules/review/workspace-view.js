@@ -206,7 +206,7 @@ export function createWorkspaceView({
       html += `<section class="explanation-section"><h3>Transferable principle</h3><p>${escapeHtml(explanation.transferable_principle)}</p></section>`;
       html += `<section class="explanation-section"><h3>Next-time checklist</h3><ul class="explanation-list">${explanation.next_time_checklist.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
     }
-    $("ai-explanation-content").innerHTML = html || "No AI explanation yet. Generate an explanation or ask Coach below.";
+    $("ai-explanation-content").innerHTML = html || "Get a saved explanation of this position, or ask a question below.";
     $("ai-explanation-action").hidden = false;
     html = "";
     {
@@ -223,10 +223,15 @@ export function createWorkspaceView({
     $("explanation-action").hidden = false;
     $("generate-explanation").textContent = explanation
       ? "Regenerate this explanation"
-      : "Generate AI explanations";
+      : "Explain this position";
+    const missing = snapshot.criticalPositions.filter((item) =>
+      !(snapshot.explanationArtifact?.positions || []).some((saved) => saved.critical_id === item.critical_id)
+    ).length;
+    $("generate-explanations-all").textContent = `Explain remaining key positions (${missing})`;
+    $("generate-explanations-all").hidden = missing === 0;
     $("explanation-status").textContent = explanation
-      ? `${snapshot.explanationArtifact.provider} · ${snapshot.explanationArtifact.model} · ${snapshot.explanationArtifact.language}`
-      : "Engine review remains available if generation fails.";
+      ? "Saved with this game."
+      : "";
     wireVariationLinks();
   }
 

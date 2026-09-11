@@ -228,6 +228,7 @@ main {
   user-select: none;
   z-index: 40; /* below the header (90) and the slide-in drawer (95) */
 }
+.col-resizer::before { content: ""; position: absolute; width: 1px; height: 100%; background: var(--panel2); z-index: -1; }
 .col-resizer .grip {
   display: flex;
   flex-direction: column;
@@ -250,7 +251,7 @@ main {
 .col-resizer:hover .grip,
 .col-resizer:focus-visible .grip,
 .col-resizer.dragging .grip {
-  background: var(--accent);
+  background: #625d55;
 }
 .col-resizer:hover .grip span,
 .col-resizer:focus-visible .grip span,
@@ -600,7 +601,12 @@ main {
   padding: 1px 1px 4px;
   min-height: 0;
   scrollbar-width: thin;
+  scrollbar-color: #625d55 var(--bg);
 }
+.review-position-list::-webkit-scrollbar { width: 8px; height: 8px; }
+.review-position-list::-webkit-scrollbar-track { background: var(--bg); }
+.review-position-list::-webkit-scrollbar-thumb { background: #625d55; border-radius: 8px; }
+.review-position-list::-webkit-scrollbar-thumb:hover { background: #81796e; }
 .review-position-list:empty { display: none; }
 .position-item {
   flex: 0 0 154px;
@@ -1873,7 +1879,7 @@ body.puzzle-mode .board-col { overflow: visible; max-height: none; }
 /* Review: board → navigation → current-position analysis. Games is always a drawer. */
 body:not(.puzzle-mode) main {
   display: grid;
-  grid-template-columns: calc(var(--col-width) + 12px) 300px minmax(340px, 1fr);
+  grid-template-columns: calc(var(--col-width) + 12px) var(--navigation-user, 400px) minmax(380px, 1fr);
 }
 .navigation-col { min-width: 0; position: sticky; top: var(--header-h); }
 .navigation-col .review-workspace { max-height: calc(100dvh - var(--header-h) - 24px); }
@@ -1889,7 +1895,10 @@ body:not(.puzzle-mode) main {
 .analysis-tabs button { flex: 1; padding: 10px; border: 1px solid #45413b; border-radius: 5px; background: var(--panel); color: var(--text); cursor: pointer; }
 .analysis-tabs [aria-selected="true"] { border-color: var(--accent); background: #303c25; }
 #analysis-engine, #analysis-coach { min-width: 0; overflow-wrap: anywhere; }
-#ai-explanation-action { margin: 12px 0; }
+#ai-explanation-action { margin: 12px 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+#generate-explanations-all { background: transparent; color: var(--muted); }
+#explanation-status { flex-basis: 100%; font-size: 12px; }
+#navigation-resizer { display: none; }
 .history-col {
   position: fixed; top: 0; right: 0; z-index: 95;
   width: min(340px, 88vw); min-width: 0; height: 100dvh;
@@ -1902,7 +1911,11 @@ body.retry-mode #analysis-engine,
 body.retry-mode #analysis-coach,
 body.puzzle-mode .navigation-col { display: none !important; }
 @media (min-width: 1401px) {
-  :root { --board-default: min(68vh, 660px, calc(100vw - 768px)); }
+  :root { --board-default: min(68vh, 660px, calc(100vw - 908px)); }
+  body:not(.puzzle-mode) #navigation-resizer { display: flex; }
+  .navigation-col .review-workspace { height: calc(100dvh - var(--header-h) - 40px); }
+  .navigation-col .review-position-list { flex-direction: column; overflow-x: hidden; scrollbar-gutter: stable; }
+  .navigation-col .position-item { flex: 0 0 auto; width: 100%; min-height: 68px; }
 }
 @media (min-width: 901px) and (max-width: 1400px) {
   body:not(.puzzle-mode) main { grid-template-columns: calc(var(--col-width) + 12px) minmax(340px, 1fr); }

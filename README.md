@@ -60,11 +60,16 @@ My mistakes、All moves；Games 始终通过顶部按钮打开抽屉，打开棋
 发起模型请求或清除聊天草稿。Retry 临时替换分析页签，退出后恢复原选择。
 
 超过 1400px 时三栏并排；901–1400px 时导航和 Analysis 排在棋盘右侧；900px 及以下依次纵向排列。
-棋盘仍可拖动分隔条缩放。复盘中可进入 Retry 或 Practice。个人训练会复用
+桌面三栏的导航默认约 400px，关键局面使用纵向列表和暗色滚动条。两处分隔条可拖动或用左右
+方向键调整相邻栏宽度，并在本机记忆；双击棋盘分隔条恢复整体默认，双击导航分隔条恢复导航
+默认宽度。窗口变窄时会限制宽度，纵向布局不显示分隔条。复盘中可进入 Retry 或 Practice。个人训练会复用
 现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical
 observation，再确定性重建 recent/lifetime skill estimate。
 
-`Generate AI explanation` 使用独立的 bounded OpenAI-compatible API provider，结果通过 schema、
+AI Coach 中的 `Explain this position` 只生成当前局面的讲解；次级入口
+`Explain remaining key positions (N)` 明确批量生成尚未讲解的关键局面，已有讲解可单独重新生成。
+讲解保存到棋局，Ask Coach 用于继续追问或探索。打开页签不会自动发起模型请求。
+讲解使用独立的 bounded OpenAI-compatible API provider，结果通过 schema、
 权威着法/分类和 evidence 校验后写入 `explanations.json`。它不进入 Agent loop，也不复用 Agent
 credential：
 

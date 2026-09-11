@@ -24,6 +24,7 @@ export function createReviewArtifacts({
     generation += 1;
     busy = false;
     $("generate-explanation").disabled = false;
+    $("generate-explanations-all").disabled = false;
     setState({
       currentGameId: gameId,
       engineReview: null,
@@ -33,21 +34,22 @@ export function createReviewArtifacts({
     });
   }
 
-  async function generateExplanations() {
+  async function generateExplanations({ all = false } = {}) {
     let snapshot = getSnapshot();
     const critical = snapshot.activeCritical;
     if (!snapshot.currentGameId || !critical || busy) return;
     const currentExists = !!explanationFor(snapshot, critical.critical_id);
-    const targets = currentExists
-      ? [critical]
-      : snapshot.criticalPositions.filter(
+    const targets = all
+      ? snapshot.criticalPositions.filter(
           (item) => !explanationFor(snapshot, item.critical_id)
-        );
+        )
+      : [critical];
     if (!targets.length) return;
     const token = ++generation;
     busy = true;
     const button = $("generate-explanation");
     button.disabled = true;
+    $("generate-explanations-all").disabled = true;
     let failures = 0;
     for (let index = 0; index < targets.length; index += 1) {
       if (token !== generation) return;
@@ -62,12 +64,13 @@ export function createReviewArtifacts({
         const data = await api.generateExplanations(snapshot.currentGameId, {
           review_side: snapshot.player,
           critical_id: targets[index].critical_id,
-          force: currentExists,
+          force: !all && currentExists,
         });
         if (token !== generation) return;
         if (data.error) throw new Error(apiErrorMessage(data.error, "Explanation failed."));
         setState({ explanationArtifact: data.artifact || getSnapshot().explanationArtifact });
       } catch (error) {
+        if (token !== generation) return;
         failures += 1;
         $("explanation-status").textContent = error.message || "Explanation failed.";
       }
@@ -76,6 +79,7 @@ export function createReviewArtifacts({
     if (token !== generation) return;
     busy = false;
     button.disabled = false;
+    $("generate-explanations-all").disabled = false;
     snapshot = getSnapshot();
     const ready = ((snapshot.explanationArtifact && snapshot.explanationArtifact.positions) || []).length;
     const total = snapshot.criticalPositions.length;
@@ -85,7 +89,7 @@ export function createReviewArtifacts({
       failures
         ? "Retry from any key position; Engine facts are unaffected."
         : `${ready} grounded explanations available.`,
-      `${ready} / ${total}`
+      `Explanations ${ready} / ${total}`
     );
     renderCritical(getSnapshot().activeCritical);
   }
@@ -151,7 +155,7 @@ export function createReviewArtifacts({
       total
         ? `${total} key positions · AI explanations are optional.`
         : "No critical positions were selected.",
-      total ? `${ready} / ${total}` : ""
+      ""
     );
     $("review-empty").hidden = !!snapshot.criticalPositions.length;
     $("critical-review").hidden = !snapshot.criticalPositions.length;

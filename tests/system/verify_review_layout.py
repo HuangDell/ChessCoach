@@ -31,6 +31,7 @@ def main():
                         route.fulfill(json={'empty': True, 'enabled': False, 'online': True, 'games': [], 'agent': {'available': False}})
                     page.route('**/api/**', mock)
                     page.goto(f'http://127.0.0.1:{server.server_port}', wait_until='networkidle')
+                    assert not errors, errors
                     page.locator('#firstrun').evaluate('(el) => el.hidden = true')
                     assert page.locator('#analysis-engine').is_visible()
                     assert not page.locator('#analysis-coach').is_visible()
@@ -55,7 +56,8 @@ def main():
                       window.fixture = {view,snapshot,critical};
                       createReviewGraph({$,getSnapshot:()=>snapshot,onGotoNode(){},onSelectCritical(){},onSelectMistake(){}}).render();
                       view.renderCritical(critical);
-                      $('review-position-list').innerHTML = '<button>Position</button>'.repeat(60);
+                      snapshot.criticalPositions = Array.from({length: 30}, (_, i) => ({...critical, critical_id:`p${i+1}`, ply:i+1}));
+                      view.renderList();
                     }''')
                     graph = page.locator('#graph-wrap').bounding_box()
                     assert round(graph['height']) == 72, graph
@@ -64,6 +66,46 @@ def main():
                     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                     ids = page.locator('[id]').evaluate_all('(els) => els.map(el => el.id)')
                     assert len(ids) == len(set(ids))
+                    if width > 1400:
+                        nav = page.locator('.navigation-col')
+                        board = page.locator('#board')
+                        side = page.locator('.side-col')
+                        assert abs(nav.bounding_box()['width'] - 400) <= 1
+                        assert page.locator('#review-position-list').evaluate('el => el.scrollHeight > el.clientHeight && el.scrollWidth <= el.clientWidth')
+                        assert page.locator('#review-position-list').evaluate('el => getComputedStyle(el).scrollbarColor') != 'auto'
+                        board_before = board.bounding_box()['width']
+                        handle = page.locator('#navigation-resizer')
+                        box = handle.bounding_box()
+                        page.mouse.move(box['x'] + box['width']/2, box['y'] + 80)
+                        page.mouse.down()
+                        page.mouse.move(box['x'] + box['width']/2 + 60, box['y'] + 80, steps=5)
+                        page.mouse.up()
+                        assert nav.bounding_box()['width'] > 400
+                        assert abs(board.bounding_box()['width'] - board_before) <= 1
+                        assert page.evaluate("Number(localStorage.getItem('chessNavigationSize')) > 400")
+                        handle.press('ArrowLeft')
+                        nav_before = nav.bounding_box()['width']
+                        side_before = side.bounding_box()['width']
+                        page.locator('#col-resizer').press('ArrowRight')
+                        assert abs(board.bounding_box()['width'] - board_before - 24) <= 1
+                        assert abs(nav.bounding_box()['width'] - nav_before + 24) <= 1
+                        assert abs(side.bounding_box()['width'] - side_before) <= 1
+                        # Clamp both boundaries; resizing cannot collapse navigation or analysis.
+                        for _ in range(35):
+                            page.locator('#col-resizer').press('ArrowRight')
+                        assert nav.bounding_box()['width'] >= 319
+                        for _ in range(35):
+                            handle.press('ArrowRight')
+                        assert side.bounding_box()['width'] >= 379
+                        page.set_viewport_size({'width': 1280, 'height': height})
+                        assert not handle.is_visible()
+                        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                        page.set_viewport_size({'width': width, 'height': height})
+                        page.locator('#col-resizer').dblclick()
+                        assert abs(nav.bounding_box()['width'] - 400) <= 1
+                        assert page.evaluate("localStorage.getItem('chessNavigationSize') === null")
+                    else:
+                        assert not page.locator('#navigation-resizer').is_visible()
                     count = len(requests)
                     page.locator('#analysis-tab-coach').click()
                     page.locator('#chat-input').fill('keep my draft')

@@ -217,6 +217,11 @@
         <div class="grip"><span></span><span></span><span></span></div>
       </div>
 
+      <div id="navigation-resizer" class="col-resizer" role="separator" aria-orientation="vertical"
+        aria-label="Resize navigation — drag, or double-click to reset" tabindex="0"
+        title="Drag to resize navigation · double-click to reset">
+        <div class="grip"><span></span><span></span><span></span></div>
+      </div>
       <aside class="navigation-col">
         <section id="review-workspace" class="review-workspace">
           <div id="workflow-status" class="workflow-status" data-state="empty" aria-live="polite">
@@ -337,13 +342,15 @@
           <p id="analysis-empty" class="muted">Open a game or move a piece to analyze a position.</p>
         </section>
         <section id="analysis-coach" role="tabpanel" aria-labelledby="analysis-tab-coach" hidden>
+          <h2>Current position explanation</h2>
           <div id="ai-explanation-content" class="explanation-content">Select a key position for an AI explanation, or ask Coach about the board.</div>
           <div id="ai-explanation-action" hidden>
-            <button type="button" id="generate-explanation">Generate AI explanation</button>
+            <button type="button" id="generate-explanation" class="review-secondary">Explain this position</button>
+            <button type="button" id="generate-explanations-all" class="review-secondary">Explain remaining key positions</button>
             <span id="explanation-status" class="muted"></span>
           </div>
         <div class="chat-panel">
-          <h2>Ask Coach</h2>
+          <h2>Ask Coach · follow up or explore</h2>
           <div id="chat-messages" class="chat-messages"></div>
           <form id="chat-form" class="chat-form">
             <input id="chat-input" type="text" autocomplete="off"

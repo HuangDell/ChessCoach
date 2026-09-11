@@ -31,6 +31,28 @@ window.addEventListener("keydown", (event) => {
 // user's chosen px in localStorage and re-clamp it on every apply, so it never overflows the row.
 const BOARD_SIZE_KEY = "chessBoardSize";
 let boardSizeUser = null; // px override, or null = use the responsive default
+const NAVIGATION_SIZE_KEY = "chessNavigationSize";
+let navigationSizeUser = null;
+
+function threeColumns() {
+  return window.innerWidth > 1400 && !document.body.classList.contains("puzzle-mode");
+}
+
+function applyNavigationSize() {
+  const root = document.documentElement;
+  if (!threeColumns()) {
+    root.style.removeProperty("--navigation-user");
+    return;
+  }
+  const boardWidth = document.querySelector(".board-col").getBoundingClientRect().width;
+  const max = Math.max(320, window.innerWidth - 40 - 48 - boardWidth - 380);
+  const width = Math.round(Math.max(320, Math.min(max, navigationSizeUser ?? 400)));
+  root.style.setProperty("--navigation-user", width + "px");
+  const separator = $("navigation-resizer");
+  separator.setAttribute("aria-valuemin", "320");
+  separator.setAttribute("aria-valuemax", String(Math.floor(max)));
+  separator.setAttribute("aria-valuenow", String(width));
+}
 
 // Reserve navigation and Analysis widths; Games is always an overlay.
 function boardSizeBounds() {
@@ -40,7 +62,7 @@ function boardSizeBounds() {
   const stacked = vw <= 900;
   const padding = stacked ? 28 : 40;
   const evaluation = puzzle ? 0 : 28;
-  const columns = stacked ? 0 : puzzle ? 304 : vw > 1400 ? 688 : 364;
+  const columns = stacked ? 0 : puzzle ? 304 : vw > 1400 ? 748 : 364;
   const maxByWidth = vw - padding - columns - evaluation - 12;
   const maxByHeight = Math.round(vh * 0.92);
   const min = 240;
@@ -74,6 +96,14 @@ function positionResizer() {
   if (getComputedStyle(rez).display === "none") return;
   const right = col.getBoundingClientRect().right; // viewport coords == fixed-position origin
   rez.style.left = Math.round(right + RESIZER_GAP) + "px";
+  if (threeColumns()) {
+    const navRight = document.querySelector(".navigation-col").getBoundingClientRect().right;
+    $("navigation-resizer").style.left = Math.round(navRight + RESIZER_GAP) + "px";
+  }
+  const bounds = boardSizeBounds();
+  rez.setAttribute("aria-valuemin", String(bounds.min));
+  rez.setAttribute("aria-valuemax", String(bounds.max));
+  rez.setAttribute("aria-valuenow", String(Math.round($("board").getBoundingClientRect().width)));
 }
 
 function applyBoardSize() {
@@ -86,6 +116,7 @@ function applyBoardSize() {
     root.style.setProperty("--board-user", boardSizeUser + "px");
   }
   scheduleBoardRedraw();
+  applyNavigationSize();
   positionResizer();
 }
 
@@ -106,21 +137,27 @@ function observeBoardLayout() {
   }
   // The panel's own width changes independently of the board when its scrollbar gutter appears or
   // the eval bar is hidden (puzzle mode) — reposition the handle for those too.
-  if (col) new ResizeObserver(() => positionResizer()).observe(col);
+  if (col) new ResizeObserver(() => { applyNavigationSize(); positionResizer(); }).observe(col);
+  const navigation = document.querySelector(".navigation-col");
+  if (navigation) new ResizeObserver(positionResizer).observe(navigation);
 }
 
 function restoreBoardSize() {
   try {
     const v = parseInt(localStorage.getItem(BOARD_SIZE_KEY) || "", 10);
     if (Number.isFinite(v) && v > 0) boardSizeUser = v;
+    const nav = parseInt(localStorage.getItem(NAVIGATION_SIZE_KEY) || "", 10);
+    if (Number.isFinite(nav) && nav > 0) navigationSizeUser = nav;
   } catch (_) {}
   applyBoardSize();
 }
 
 function resetBoardSize() {
   boardSizeUser = null;
+  navigationSizeUser = null;
   try {
     localStorage.removeItem(BOARD_SIZE_KEY);
+    localStorage.removeItem(NAVIGATION_SIZE_KEY);
   } catch (_) {}
   applyBoardSize();
 }
@@ -132,17 +169,31 @@ function persistBoardSize() {
   } catch (_) {}
 }
 
-function initBoardResizer() {
-  const rez = $("col-resizer");
+function initBoardResizer(id = "col-resizer") {
+  const rez = $(id);
+  const isNavigation = id === "navigation-resizer";
   if (!rez) return;
   let startX = 0;
   let startSize = 0;
   let dragging = false;
+  let startNavigation = 0;
+  const update = (delta) => {
+    if (isNavigation) {
+      navigationSizeUser = startNavigation + delta;
+      applyNavigationSize();
+      navigationSizeUser = document.querySelector(".navigation-col").getBoundingClientRect().width;
+      positionResizer();
+    } else {
+      const bounds = boardSizeBounds();
+      const max = threeColumns() ? Math.min(bounds.max, startSize + startNavigation - 320) : bounds.max;
+      boardSizeUser = Math.max(bounds.min, Math.min(max, startSize + delta));
+      if (threeColumns()) navigationSizeUser = startNavigation - (boardSizeUser - startSize);
+      applyBoardSize();
+    }
+  };
   const onMove = (e) => {
     if (!dragging) return;
-    // Board is on the left, so dragging right (positive delta) grows it.
-    boardSizeUser = startSize + (e.clientX - startX);
-    applyBoardSize();
+    update(e.clientX - startX);
   };
   const onUp = () => {
     if (!dragging) return;
@@ -151,36 +202,50 @@ function initBoardResizer() {
     document.body.style.userSelect = "";
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
     persistBoardSize();
+    try {
+      if (navigationSizeUser != null) localStorage.setItem(NAVIGATION_SIZE_KEY, String(navigationSizeUser));
+    } catch (_) {}
   };
   rez.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
     e.preventDefault();
     dragging = true;
     startX = e.clientX;
     // Start from whatever the board is actually rendered at (works whether or not an override is set).
     startSize = Math.round($("board").getBoundingClientRect().width);
+    startNavigation = document.querySelector(".navigation-col").getBoundingClientRect().width;
     rez.classList.add("dragging");
     document.body.style.userSelect = "none";
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   });
   // Double-click resets to the responsive default.
-  rez.addEventListener("dblclick", resetBoardSize);
+  rez.addEventListener("dblclick", () => {
+    if (!isNavigation) return resetBoardSize();
+    navigationSizeUser = null;
+    try { localStorage.removeItem(NAVIGATION_SIZE_KEY); } catch (_) {}
+    applyNavigationSize();
+    positionResizer();
+  });
   // Keyboard nudge for accessibility (handle is focusable).
   rez.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
-    const base = boardSizeUser == null ? Math.round($("board").getBoundingClientRect().width) : boardSizeUser;
-    boardSizeUser = base + (e.key === "ArrowRight" ? 24 : -24);
-    applyBoardSize();
-    persistBoardSize();
+    startSize = Math.round($("board").getBoundingClientRect().width);
+    startNavigation = document.querySelector(".navigation-col").getBoundingClientRect().width;
+    update(e.key === "ArrowRight" ? 24 : -24);
+    dragging = true;
+    onUp();
   });
   // Re-clamp a fixed board size when the window changes (so it can't overflow a now-smaller window).
   // With no override the responsive board still changes size, so always re-place the handle (and the
   // ResizeObserver redraws the pieces); with an override, re-clamp too.
   window.addEventListener("resize", () => {
-    if (boardSizeUser != null) applyBoardSize();
-    else positionResizer();
+    onUp();
+    applyBoardSize();
   });
 }
 
@@ -190,6 +255,7 @@ function initBoardResizer() {
       closeHistoryDrawer();
       restoreBoardSize();
       initBoardResizer();
+      initBoardResizer("navigation-resizer");
       observeBoardLayout();
       positionResizer();
     },
@@ -198,7 +264,7 @@ function initBoardResizer() {
     showHistory,
     positionResizer,
     modeChanged() {
-      if (boardSizeUser != null) applyBoardSize();
+      applyBoardSize();
       requestAnimationFrame(() => {
         board.redraw();
         positionResizer();
