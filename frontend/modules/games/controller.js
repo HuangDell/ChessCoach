@@ -240,6 +240,11 @@ export function createGamesController({ bridge }) {
 
   return {
     mount,
+    openImport() {
+      bridge.showHistory();
+      setMode("paste");
+      $("paste-pgn").focus();
+    },
     loadHistory: library.loadHistory,
     refreshProfile: insights.load,
     maybeAutoload,

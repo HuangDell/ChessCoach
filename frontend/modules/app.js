@@ -145,6 +145,7 @@ export function createApp() {
       bridge: {
         trainPuzzle: (options) => puzzles.train(options),
         closeHistory: () => layout.closeHistoryDrawer(),
+        openImport: () => games.openImport(),
         isLocalHistory: () => games.isLocalHistory(),
         activateLocalHistory: () => games.activateLocal(),
         loadHistory: (...args) => games.loadHistory(...args),
@@ -183,6 +184,7 @@ export function createApp() {
           train: (...args) => puzzles.train(...args),
         },
         toggleHistory: () => layout.toggleHistory(),
+        showHistory: () => layout.showHistory(),
       },
     });
 

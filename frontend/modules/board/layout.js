@@ -16,6 +16,10 @@ function toggleHistory() {
   document.body.classList.toggle("history-hidden");
 }
 
+function showHistory() {
+  document.body.classList.remove("history-hidden");
+}
+
 // Keep the drawer state sane when the window crosses the 1400px breakpoint. Without this, the
 // `history-hidden` class is whatever it was last set to (e.g. never set, if the page loaded wide),
 // so shrinking below 1400 can leave the panel stuck open as a fixed drawer overlaying the board —
@@ -202,6 +206,7 @@ function initBoardResizer() {
     },
     closeHistoryDrawer,
     toggleHistory,
+    showHistory,
     positionResizer,
     modeChanged() {
       if (boardSizeUser != null) applyBoardSize();
@@ -212,4 +217,3 @@ function initBoardResizer() {
     },
   };
 }
-

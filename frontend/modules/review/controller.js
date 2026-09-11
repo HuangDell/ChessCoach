@@ -687,6 +687,7 @@ function onAnalysisError(msg) {
 
 
   function mount() {
+    $("review-import").addEventListener("click", () => bridge.openImport());
     $("back").addEventListener("click", stepBack);
     $("fwd").addEventListener("click", stepForward);
     $("start").addEventListener("click", () => navigation.freeAnalysis ? navigation.resetFreeAnalysis() : gotoNode(0));

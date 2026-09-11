@@ -51,7 +51,8 @@ python -m server.doctor
 
 未载入棋局时，直接在标准初始局面移动棋子会自动进入 `Free analysis` 临时工作区。每步合法着都会
 获得 Stockfish 评价，可逐步撤销或整体重置；当前单线路只存在于页面会话，不保存到 Games，也不
-导出 PGN。打开或导入棋局会退出该工作区。
+导出 PGN。可点击工作区中的 `Import PGN` 直接展开 Games 导入表单，粘贴或上传棋局；仅展开
+表单会保留当前自由分析，打开或导入棋局会退出该工作区。
 
 复盘页可浏览 Key positions、My mistakes 和 All moves，并进入 Retry 或 Practice。个人训练会复用
 现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical

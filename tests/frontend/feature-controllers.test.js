@@ -4,6 +4,7 @@ import test from "node:test";
 import { gamesApi } from "../../frontend/modules/api/games.js";
 import { puzzleApi } from "../../frontend/modules/api/puzzles.js";
 import { createGamesLibrary } from "../../frontend/modules/games/library.js";
+import { createGamesController } from "../../frontend/modules/games/controller.js";
 import { createPuzzleController } from "../../frontend/modules/puzzles/controller.js";
 import { createPuzzleBoardView } from "../../frontend/modules/puzzles/board-view.js";
 import { createPuzzleStorm } from "../../frontend/modules/puzzles/storm.js";
@@ -77,6 +78,32 @@ function memoryStorage() {
     setItem: (key, value) => values.set(key, String(value)),
   };
 }
+
+test("opening PGN import reveals and focuses the existing form without leaving free analysis", () => {
+  const originalDocument = globalThis.document;
+  const { $ } = elementLookup();
+  globalThis.document = { getElementById: $ };
+  let opened = 0;
+  let focused = 0;
+  $("paste-pgn").value = "1. e4 e5 *";
+  $("paste-pgn").focus = () => { focused += 1; };
+  try {
+    const games = createGamesController({ bridge: {
+      showHistory: () => { opened += 1; },
+      review: { exitFreeAnalysis: () => assert.fail("Opening the form must preserve the board") },
+    } });
+    games.openImport();
+    games.openImport();
+    assert.equal(opened, 2);
+    assert.equal(focused, 2);
+    assert.equal($("paste-form").style.display, "flex");
+    assert.equal($("mode-paste").classList.contains("active"), true);
+    assert.equal($("history-list").style.display, "none");
+    assert.equal($("paste-pgn").value, "1. e4 e5 *");
+  } finally {
+    globalThis.document = originalDocument;
+  }
+});
 
 test("variation playback reports every rendered board position", () => {
   const originalDocument = globalThis.document;
