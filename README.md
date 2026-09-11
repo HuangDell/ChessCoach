@@ -133,8 +133,12 @@ dataset 和 scorer 衡量模型表现，但结果不控制 Agent 是否可用。
 以便比较模型表现。DeepSeek 规则尚需真实 endpoint 评测，离线通过不代表真实 endpoint 的表现。
 
 Responses 请求已通过 `text.format.type=json_schema` 和 `strict=true` 要求原生结构化输出，
-不是 Chat Completions 的 `response_format`。policy v4 明确要求完整 JSON、结果复用、预算拒绝后
+不是 Chat Completions 的 `response_format`。policy v5 明确要求完整 JSON、结果复用、预算拒绝后
 停止重试，以及 suggested action 不得作为工具调用。
+
+Agent instructions 仅包含固定规则；每轮在最近历史之后追加服务端 developer context 快照和用户
+问题。最新快照覆盖旧局面、证据引用和个性化状态，旧快照不作为当前棋盘事实。快照随 SDK session
+一起保存，仍共享最近 12 items 的窗口；摘要只提取 user/assistant 消息。
 
 ### 运行自定义 endpoint 模型 benchmark
 
@@ -220,6 +224,14 @@ run log 只记录 version、run/session/generation、去敏 task/activity、mode
 status/error、latency 和 tool 摘要。位置只保存 game/critical reference 或 FEN fingerprint；不保存
 完整 prompt、FEN、PV、base URL、credential、reasoning 或 traceback。清理 runs 不会触碰 session、
 learning、棋局、解释、attempt 或 Engine cache。
+
+usage 新增可选 `input_cache_hit_tokens` / `input_cache_miss_tokens`，来自 SDK 的
+`input_tokens_details.cached_tokens` 及输入总数之差。旧记录或无缓存明细时字段缺省，不视为零命中。
+`GET /api/agent/metrics` 的 `input_cache` 返回有明细的记录数、hit/miss token 合计和加权
+`hit_rate`（0–1；无可统计输入时为 null），与 `tools.cache_hits` 的 Engine/tool 缓存分开。
+SDK 可能将 Provider 未报告的 cached_tokens 默认成 0；这些值是 SDK 报告口径，不是独立账单核验。
+run record schema v1 保留，新增可选字段默认 null；response schema v4 不变。
+优化前对照数据见 [缓存基线](docs/agent-cache-baseline-2026-09-11.md)。
 
 ## Eval 与验证
 

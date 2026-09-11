@@ -19,7 +19,7 @@ from server.core.agent.models import (
 )
 from server.core.agent.policy import (
     AgentResponseValidationError,
-    build_model_input,
+    build_agent_instructions,
     validate_agent_response,
 )
 
@@ -71,7 +71,7 @@ def _chess_reference() -> ChessReference:
 
 class AgentGroundingContractTests(unittest.TestCase):
     def test_prompt_requires_json_and_bounded_tool_followups(self) -> None:
-        prompt = build_model_input(_context())
+        prompt = build_agent_instructions()
         for rule in (
             "one JSON object", "no Markdown code fences",
             "not callable tools", "Do not repeat an identical query",
@@ -81,17 +81,7 @@ class AgentGroundingContractTests(unittest.TestCase):
             self.assertIn(rule, prompt)
 
     def test_prompt_separates_generic_skills_from_personal_evidence(self) -> None:
-        context = _context().model_copy(
-            update={
-                "task": TaskContext(
-                    activity="conversation",
-                    personalization_enabled=True,
-                ),
-                "position": None,
-            }
-        )
-
-        model_input = build_model_input(context)
+        model_input = build_agent_instructions()
 
         self.assertIn("Never emit it for a generic chess concept", model_input)
         self.assertIn("training objective", model_input)

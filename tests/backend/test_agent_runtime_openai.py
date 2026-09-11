@@ -159,7 +159,10 @@ class _FakeAgents:
                 raise _FakeAgents.runner_error
             await kwargs["session"].add_items(
                 [
-                    {"role": "user", "content": input_value},
+                    *(
+                        [{"role": "user", "content": input_value}]
+                        if isinstance(input_value, str) else input_value
+                    ),
                     {"role": "assistant", "content": _RunResult.final_output.text},
                 ]
             )
@@ -294,7 +297,7 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(12, run_config.session_settings.limit)
             self.assertEqual(1, run_config.tool_execution.max_function_tool_concurrency)
             self.assertEqual([], await backing.get_session(state.session_id).get_items())
-            self.assertEqual(2, len(guarded.staged_items))
+            self.assertEqual(3, len(guarded.staged_items))
 
     async def test_provider_timeout_and_incompatible_endpoint_map_to_typed_errors(self) -> None:
         with patch(

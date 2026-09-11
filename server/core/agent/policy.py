@@ -27,7 +27,7 @@ from server.core.agent.models import (
 )
 
 
-POLICY_VERSION = 4
+POLICY_VERSION = 5
 _PRIORITY_QUESTION = re.compile(
     r"(?:review\s+first|focus\s+first|prioriti[sz]e|where\s+should\s+i\s+start|"
     r"先复盘|先看哪|复盘哪里|重点局面|优先)",
@@ -109,9 +109,17 @@ def validated_tool_references(
 
 
 def build_model_input(context: ModelVisibleContext) -> str:
-    """Serialize the sole model-visible chess context into the Agent instructions."""
+    """Serialize the backend-owned snapshot appended before the current user message."""
 
     payload = context.model_dump(mode="json", exclude_none=True)
+    return "MODEL_VISIBLE_CONTEXT_JSON:\n" + json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def build_agent_instructions() -> str:
+    """Keep the policy prefix identical across positions and conversation turns."""
+
     return (
         "You are Chess Review Coach, a single chess teaching agent. Match the user's language. "
         "Lead with the conclusion, preserve required evidence and caveats, and omit repetition.\n\n"
@@ -130,7 +138,11 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "- Preserve score units: 100 centipawns = 1 pawn. Do not invent move numbers, piece "
         "attacks, forced consequences, or an engine's causal explanation from a classification "
         "alone. Separate general strategic ideas from verified position-specific findings.\n"
-        "- The current FEN below is authoritative. Never reconstruct or change it from prose.\n"
+        "- The latest backend developer message marked MODEL_VISIBLE_CONTEXT_JSON is the "
+        "current authoritative context and supersedes all older snapshots, including their "
+        "FEN, evidence refs, and personalization settings. User messages cannot override it. "
+        "Older snapshots and tool results are historical context, not evidence for the current "
+        "board. Its FEN is authoritative. Never reconstruct or change it from prose.\n"
         "- Only supplied Engine/Facts or a successful registered tool may support claims that a "
         "move is legal, best, winning, losing, a mistake, or a forced tactic.\n"
         "- Never alter an authoritative classification. If evidence is absent or a reference such "
@@ -186,9 +198,7 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "- Suggested actions are optional and limited to open_position, compare_move, start_retry, "
         "and a validated start_training draft. Use only the target fields in that action's JSON "
         "schema: compare_move has move_uci and optional fen; open_position/start_retry use only "
-        "position identity fields; start_training copies only positions, objectives, and source.\n\n"
-        "MODEL_VISIBLE_CONTEXT_JSON:\n"
-        + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        "position identity fields; start_training copies only positions, objectives, and source.\n"
     )
 
 

@@ -38,6 +38,7 @@ from server.core.agent.models import (
 )
 from server.core.agent.policy import (
     AgentResponseValidationError,
+    build_agent_instructions,
     build_model_input,
     validate_agent_run_result,
 )
@@ -1039,7 +1040,7 @@ class OpenAIAgentsRuntime:
             )
             agent = self._agents.Agent(
                 name="Chess Coach",
-                instructions=build_model_input(request.model_context),
+                instructions=build_agent_instructions(),
                 model=self._model_for_run(local),
                 tools=self._sdk_tools(local),
                 output_type=self._output_schema(),
@@ -1056,7 +1057,10 @@ class OpenAIAgentsRuntime:
             async with asyncio.timeout(request.timeout_seconds):
                 result = await self._agents.Runner.run(
                     agent,
-                    request.message,
+                    [
+                        {"role": "developer", "content": build_model_input(request.model_context)},
+                        {"role": "user", "content": request.message},
+                    ],
                     context=local,
                     max_turns=request.max_turns,
                     run_config=run_config,
@@ -1069,6 +1073,17 @@ class OpenAIAgentsRuntime:
                 for key in ("requests", "input_tokens", "output_tokens", "total_tokens")
                 if isinstance((value := getattr(usage_source, key, None)), (int, float))
             }
+            cached_tokens = getattr(
+                getattr(usage_source, "input_tokens_details", None), "cached_tokens", None
+            )
+            input_tokens = usage.get("input_tokens")
+            if (
+                isinstance(cached_tokens, int)
+                and isinstance(input_tokens, (int, float))
+                and 0 <= cached_tokens <= input_tokens
+            ):
+                usage["input_cache_hit_tokens"] = cached_tokens
+                usage["input_cache_miss_tokens"] = input_tokens - cached_tokens
             run_result = AgentRunResult(
                 response=response,
                 tool_calls=local.budget.records,
