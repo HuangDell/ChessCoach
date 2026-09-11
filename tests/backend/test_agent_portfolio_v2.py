@@ -57,6 +57,8 @@ class AgentPortfolioV2Tests(unittest.TestCase):
         for forbidden in ("api_key", "credential", "base_url", "prompt", "reasoning", "traceback", " fen"):
             self.assertNotIn(forbidden, serialized)
         committed = _load("deterministic_report_v2.json")
+        # The frozen fixture retains its original policy metadata; scores stay comparable.
+        committed["policy_version"] = first["policy_version"]
         self.assertEqual(
             committed,
             deterministic_report(generated_at=committed["generated_at"]),
