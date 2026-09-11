@@ -11,17 +11,17 @@
     "hardening_cases": 11,
     "baseline_scorer": 1,
     "policy": 3,
-    "response_schema": 3,
+    "response_schema": 4,
     "openai_agents_sdk": "0.22.0"
   },
   "sha256": {
     "agent_baseline_v1.json": "73fbb88593ccc932916574dde937e1f94c17d4c5fb05b658f6b5e1fc0ee88187",
     "agent_portfolio_v2.json": "9f2aa74b9dede5cb99ee03e7b2e60b77150139cbaf840e9622c8ed00f7aaffe2",
-    "evaluator.py": "953f79aff8656b77649f73ca2bfcbbc016d99281ac5588d7c8bee5fde4cac606",
+    "evaluator.py": "a732b41f362efa11a54f804cae07309ebaaeb227fd9f0f9b0ccf92412c2983de",
     "portfolio_v2.py": "176753c8e2bf4b1b318a47c958df102b257f59a5964fd193f7f4b688d0b83f1e",
     "observed_fake_runs_v1.json": "e6a019aeb734ae8bc010bbf56b817e37a4fce31c26b1619adafd1e31050655eb",
     "observed_fake_runs_v2.json": "e72ac9fe2ccbc7589d2d0779581971a2d713c1218e9ceb72cabef71538537b69",
     "baseline_report.json": "fd2b67e93a62197f9d970289882b6749f86c43ecbbc84a31bd567579f6b8b740",
-    "deterministic_report_v2.json": "a1ddce2ca5b8e65ecfbc7d0636b5489bfe667de4b3fed98b2db9c3c027615d0f"
+    "deterministic_report_v2.json": "557815935fb9f5120a6bb4054b94874dd28729f2488dfc0d018c4634743e0712"
   }
 }

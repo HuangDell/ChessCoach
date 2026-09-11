@@ -215,9 +215,12 @@ class OpenAIAgentsRuntime:
         orchestration_factory: Callable[[AgentRunRequest], OrchestrationController] | None = None,
         research_model: Any | None = None,
         http_event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
+        debug: bool = False,
     ) -> None:
         agents = importlib.import_module("agents")
         openai = importlib.import_module("openai")
+        if debug:
+            agents.enable_verbose_stdout_logging()
         self.schema_adapter = resolve_agent_provider(
             provider, base_url if endpoint_type == "custom_responses" else ""
         )
@@ -1139,6 +1142,7 @@ def create_openai_runtime(
     domain_tools_factory: DomainToolsFactory,
     session_provider: SessionProvider,
     provider: str = "",
+    debug: bool = False,
 ) -> OpenAIAgentsRuntime | UnavailableAgentRuntime:
     provider = resolve_agent_provider(provider, base_url)
     endpoint_type = "custom_responses" if base_url else "openai_responses"
@@ -1186,6 +1190,7 @@ def create_openai_runtime(
             provider=provider,
             domain_tools_factory=domain_tools_factory,
             session_provider=session_provider,
+            debug=debug,
         )
     except (ImportError, ModuleNotFoundError):
         return UnavailableAgentRuntime(

@@ -501,6 +501,9 @@ AGENT_MAX_TOOL_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_TOOL_CALLS", 6))
 AGENT_MAX_ENGINE_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_ENGINE_CALLS", 2))
 AGENT_TIMEOUT: int = max(1, _parse_int("CHESS_AGENT_TIMEOUT", 120))
 AGENT_RUN_MAX_RECORDS: int = max(1, _parse_int("CHESS_AGENT_RUN_MAX_RECORDS", 1000))
+# Emit Agent SDK activity and local grounding rejection reasons to the terminal. Model and tool
+# payloads remain redacted unless the SDK's explicit OPENAI_AGENTS_DONT_LOG_* flags are disabled.
+AGENT_DEBUG: bool = os.environ.get("CHESS_AGENT_DEBUG", "0") == "1"
 
 # --- Puzzle mode (server.core.puzzles / puzzle_rating) ------------------------------------------
 # A tactical trainer built on the same board, Engine, and DATA_DIR substrate. Puzzles

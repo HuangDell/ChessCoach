@@ -822,16 +822,31 @@ class AgentFactualClaims(ContractModel):
     )
     resolved_move_uci: str | None = None
     legal: bool | None = None
-    classification: str | None = None
+    classification: str | None = Field(
+        default=None,
+        description="Authoritative Engine move classification; never opening recognition.",
+    )
     best_move_uci: str | None = None
     score_pov: ReviewSide | None = None
+    opening_eco: str | None = Field(
+        default=None,
+        description="Exact ECO code from a successful lookup_opening result.",
+    )
+    opening_name: str | None = Field(
+        default=None,
+        description="Exact opening name from a successful lookup_opening result.",
+    )
+    opening_recognition: Literal["recognized", "unrecognized"] | None = Field(
+        default=None,
+        description="Recognition status from a successful lookup_opening result.",
+    )
 
     @field_validator("move_uci", "resolved_move_uci", "best_move_uci")
     @classmethod
     def _valid_optional_uci(cls, value: str | None) -> str | None:
         return None if value is None else _validate_uci(value)
 
-    @field_validator("move_san", "classification")
+    @field_validator("move_san", "classification", "opening_eco", "opening_name")
     @classmethod
     def _valid_optional_claim_text(cls, value: str | None) -> str | None:
         return _non_empty_optional(value, label="grounding claim")

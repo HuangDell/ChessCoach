@@ -75,7 +75,7 @@ CLI。模型失败不会修改 `analysis.json`，也不会影响 Engine Review�
 ## Agent 配置
 
 Agent 使用后端 Responses API、一个 Chess Coach Agent、typed function tools、structured output、
-SQLite conversation session 和非流式 bounded runs。response schema v3 要求模型把正文中的关键
+SQLite conversation session 和非流式 bounded runs。response schema v4 要求模型把正文中的关键
 棋类事实、个性化声明、合法性声明和降级状态镜像到 `grounding`；后端再用当前 FEN、Engine facts
 和本次成功工具结果确定性校验。`suggested_actions` 直接使用按 action kind 区分的窄 JSON schema，
 例如 `compare_move` 只能返回 `move_uci` 和可选 `fen`；未经验证的模型输出不会作为成功响应提交。
@@ -93,6 +93,17 @@ SQLite conversation session 和非流式 bounded runs。response schema v3 要�
 | `CHESS_AGENT_MAX_ENGINE_CALLS` | 单 run 最大 Engine 工具调用 | `2` |
 | `CHESS_AGENT_TIMEOUT` | 单 run wall-clock 秒数 | `120` |
 | `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
+| `CHESS_AGENT_DEBUG` | 在终端输出 Agent SDK 活动和 grounding 拒绝原因 | `0` |
+
+调试 Agent 对话时可运行：
+
+```bash
+CHESS_WEB_OPEN=0 CHESS_AGENT_DEBUG=1 uv run python -m server.web.runner
+```
+
+该模式默认隐藏模型和工具正文。若需要在本机终端查看完整模型输入、结构化输出和工具参数，可额外
+设置 `OPENAI_AGENTS_DONT_LOG_MODEL_DATA=0` 与 `OPENAI_AGENTS_DONT_LOG_TOOL_DATA=0`。这些输出会
+包含棋局、对话和个性化上下文，不应重定向到会被提交或共享的文件。
 
 官方 OpenAI 和自定义 endpoint 都按当前后端配置直接创建 runtime，不要求本地 compatibility
 certificate。live portfolio 用相同 runtime、生产工具路由、生产预算、生产响应验收、fixture tools、

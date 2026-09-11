@@ -17,7 +17,7 @@ from server.core.agent.models import AgentActivity, ToolCallRecord
 
 
 RUN_RECORD_SCHEMA_VERSION = 1
-RESPONSE_SCHEMA_VERSION = 3
+RESPONSE_SCHEMA_VERSION = 4
 _PROCESS_LOCK = threading.RLock()
 
 RunStatus = Literal[

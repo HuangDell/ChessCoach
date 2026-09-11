@@ -119,6 +119,7 @@ class _FakeAgents:
     last_agent = None
     last_run = None
     runner_error: BaseException | None = None
+    verbose_logging_enabled = False
 
     class MaxTurnsExceeded(Exception):
         pass
@@ -169,6 +170,10 @@ class _FakeAgents:
         function._test_tool_options = kwargs
         return function
 
+    @staticmethod
+    def enable_verbose_stdout_logging() -> None:
+        _FakeAgents.verbose_logging_enabled = True
+
 
 class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
     def test_explicit_canonical_focus_takes_precedence_over_redundant_categories(self) -> None:
@@ -189,6 +194,24 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
         _FakeAgents.last_agent = None
         _FakeAgents.last_run = None
         _FakeAgents.runner_error = None
+        _FakeAgents.verbose_logging_enabled = False
+
+    def test_debug_enables_sdk_verbose_logging(self) -> None:
+        with patch(
+            "server.core.agent.runtime_openai.importlib.import_module",
+            side_effect=self._imports,
+        ):
+            OpenAIAgentsRuntime(
+                model="gpt-test",
+                api_key="secret",
+                base_url="https://api.openai.com/v1",
+                endpoint_type="openai_responses",
+                domain_tools_factory=lambda _request: object(),
+                session_provider=lambda _session_id: object(),
+                debug=True,
+            )
+
+        self.assertTrue(_FakeAgents.verbose_logging_enabled)
 
     @staticmethod
     def _imports(name: str):

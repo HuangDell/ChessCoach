@@ -18,6 +18,7 @@ from server.core.agent.models import (
     GetPlayerProfileResult,
     GetReviewContextResult,
     GetTrainingCandidatesResult,
+    LookupOpeningResult,
     ModelVisibleContext,
     PositionReference,
     SuggestedAction,
@@ -220,8 +221,11 @@ def build_model_input(context: ModelVisibleContext) -> str:
         "- Training candidates/drafts may support objective skill references, but their count, "
         "source games, or repeated skill_ids never prove a user weakness/status/distinct_games. "
         "Without profile/memory evidence, keep every personalization_claims field null.\n"
-        "- Mirror every material position, move, classification, score-POV, and personalization "
-        "statement from the answer in the structured grounding fields. Include each exact position "
+        "- Mirror every material position, move, Engine move classification, opening ECO/name/"
+        "recognition, score-POV, and personalization statement from the answer in the structured "
+        "grounding fields. Use claims.classification only for Engine move classifications; use "
+        "claims.opening_eco, opening_name, and opening_recognition for lookup_opening results. "
+        "Include each exact position "
         "reference and evidence_ref actually used; never include an unused or invented one. Mark "
         "uncertainty true only when missing context, tool failure, or tool budget leaves the answer "
         "materially unresolved. Routine caveats, or a supported conclusion that profile evidence "
@@ -392,6 +396,7 @@ def _validate_grounding_claims(
     response: AgentResponse,
     context: ModelVisibleContext,
     *,
+    tool_calls: Sequence[ToolCallRecord],
     validated_tool_references: Sequence[ChessReference],
     successful_tool_results: Sequence[object],
 ) -> None:
@@ -489,6 +494,37 @@ def _validate_grounding_claims(
         raise AgentResponseValidationError(
             "Agent score POV is not present in authoritative facts."
         )
+
+    opening_values = (
+        claims.opening_eco,
+        claims.opening_name,
+        claims.opening_recognition,
+    )
+    if any(value is not None for value in opening_values):
+        matching_openings = [
+            result
+            for result in successful_tool_results
+            if isinstance(result, LookupOpeningResult)
+            and claims.opening_eco in (None, result.eco)
+            and claims.opening_name in (None, result.name)
+            and claims.opening_recognition in (None, result.classification)
+        ]
+        if not matching_openings:
+            raise AgentResponseValidationError(
+                "Agent opening claim does not match the successful opening lookup."
+            )
+        opening_evidence = {
+            evidence_ref
+            for call in tool_calls
+            if call.name == "lookup_opening" and call.status == "ok"
+            for evidence_ref in call.evidence_refs
+        }
+        if any(
+            result.classification == "recognized" for result in matching_openings
+        ) and not set(response.evidence_refs).intersection(opening_evidence):
+            raise AgentResponseValidationError(
+                "Recognized opening claims require evidence from lookup_opening."
+            )
 
     personal = grounding.personalization_claims
     personal_values = (personal.skill_id, personal.status, personal.distinct_games)
@@ -656,6 +692,7 @@ def validate_agent_response(
     _validate_grounding_claims(
         response,
         context,
+        tool_calls=tool_calls,
         validated_tool_references=validated_tool_references,
         successful_tool_results=successful_tool_results,
     )

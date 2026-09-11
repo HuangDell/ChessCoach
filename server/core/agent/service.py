@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import Callable
 import inspect
 import json
+import logging
 import time
 from typing import Any
 
@@ -77,6 +78,9 @@ from server.core.storage.agent_runs import (
     RunStatus,
     utc_now,
 )
+
+
+logger = logging.getLogger("openai.agents.chesscoach")
 
 
 ToolsFactory = Callable[[ResolvedContextBundle], AgentTools]
@@ -726,9 +730,14 @@ class ChessAgentService:
                 status = "timeout"
                 error_code = "agent_timeout"
                 raise
-            except AgentResponseValidationError:
+            except AgentResponseValidationError as exc:
                 status = "invalid_output"
                 error_code = "invalid_agent_response"
+                logger.debug(
+                    "Agent run %s rejected by grounding validation: %s",
+                    run_request.run_id,
+                    exc,
+                )
                 raise
             except AgentRuntimeFailure as exc:
                 error_code = exc.error.code
@@ -936,6 +945,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             openai_api_key=config.OPENAI_API_KEY,
             domain_tools_factory=service.tools_for_runtime,
             session_provider=service.session_for_runtime,
+            debug=config.AGENT_DEBUG,
         )
     except Exception as exc:  # optional Agent initialization must not prevent Web startup
         runtime = UnavailableAgentRuntime(

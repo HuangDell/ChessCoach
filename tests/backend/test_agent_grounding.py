@@ -8,6 +8,7 @@ from server.core.agent.models import (
     AgentResponse,
     ChessReference,
     EngineFactsContext,
+    LookupOpeningResult,
     ModelVisibleContext,
     MoveReference,
     OpenPositionAction,
@@ -95,6 +96,94 @@ class AgentGroundingContractTests(unittest.TestCase):
         self.assertIn("Never emit it for a generic chess concept", model_input)
         self.assertIn("training objective", model_input)
         self.assertIn("never prove a user weakness/status/distinct_games", model_input)
+        self.assertIn("opening_recognition", model_input)
+
+    def test_opening_claims_match_the_successful_lookup(self) -> None:
+        opening = LookupOpeningResult(
+            eco="C50",
+            name="Italian Game",
+            classification="recognized",
+        )
+        call = ToolCallRecord(
+            name="lookup_opening",
+            permission="read",
+            status="ok",
+            duration_ms=1,
+            evidence_refs=["opening:italian"],
+        )
+        response = AgentResponse(
+            text="This is the Italian Game (C50).",
+            evidence_refs=["opening:italian"],
+            grounding={
+                "claims": {
+                    "opening_eco": "C50",
+                    "opening_name": "Italian Game",
+                    "opening_recognition": "recognized",
+                }
+            },
+        )
+
+        self.assertEqual(
+            response,
+            validate_agent_response(
+                response,
+                _context(),
+                [call],
+                successful_tool_results=[opening],
+            ),
+        )
+
+        changed = response.model_copy(deep=True)
+        changed.grounding.claims.opening_name = "Sicilian Defense"
+        with self.assertRaisesRegex(
+            AgentResponseValidationError, "does not match the successful opening lookup"
+        ):
+            validate_agent_response(
+                changed,
+                _context(),
+                [call],
+                successful_tool_results=[opening],
+            )
+
+        wrong_evidence = response.model_copy(
+            update={"evidence_refs": [EVIDENCE_REF]},
+            deep=True,
+        )
+        with self.assertRaisesRegex(
+            AgentResponseValidationError, "require evidence from lookup_opening"
+        ):
+            validate_agent_response(
+                wrong_evidence,
+                _context(with_facts=True),
+                [call],
+                successful_tool_results=[opening],
+            )
+
+        unknown = AgentResponse(
+            text="The local opening book does not recognize this position.",
+            grounding={"claims": {"opening_recognition": "unrecognized"}},
+        )
+        self.assertEqual(
+            unknown,
+            validate_agent_response(
+                unknown,
+                _context(),
+                [],
+                successful_tool_results=[LookupOpeningResult()],
+            ),
+        )
+
+    def test_opening_recognition_is_not_an_engine_move_classification(self) -> None:
+        response = AgentResponse(
+            text="The opening is recognized.",
+            evidence_refs=[EVIDENCE_REF],
+            grounding={"claims": {"classification": "recognized"}},
+        )
+
+        with self.assertRaisesRegex(
+            AgentResponseValidationError, "classification is not present"
+        ):
+            validate_agent_response(response, _context(with_facts=True), [])
 
     def test_open_position_accepts_the_owned_checkpoint_identity_without_facts(self) -> None:
         reference = _reference()

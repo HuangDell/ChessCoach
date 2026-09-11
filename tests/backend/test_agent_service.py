@@ -260,6 +260,12 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
         }
 
+        expected_reasons = {
+            "evidence": "cites evidence outside this run",
+            "reference": "references an unowned chess position",
+            "action": "does not match a successful draft",
+        }
+
         for label, response in invalid_responses.items():
             async def run(request: AgentRunRequest, value: AgentResponse = response) -> AgentRunResult:
                 await self.service.session_for_runtime(request.session_id).add_items(
@@ -269,12 +275,14 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
             with self.subTest(case=label):
                 self.runtime.handler = run
-                with self.assertRaises(AgentServiceFailure) as raised:
-                    await self.service.send_message(
-                        self.session.session_id,
-                        AgentMessageRequest(message="Explain this.", expected_generation=0),
-                    )
+                with self.assertLogs("openai.agents.chesscoach", level="DEBUG") as logs:
+                    with self.assertRaises(AgentServiceFailure) as raised:
+                        await self.service.send_message(
+                            self.session.session_id,
+                            AgentMessageRequest(message="Explain this.", expected_generation=0),
+                        )
                 self.assertEqual("invalid_agent_response", raised.exception.error.code)
+                self.assertIn(expected_reasons[label], "\n".join(logs.output))
                 self.assertEqual([], await self.conversation_items())
 
         self.assertEqual(3, len(self.runs.read()))

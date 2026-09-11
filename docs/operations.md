@@ -23,6 +23,12 @@ Agent runs are non-streaming and bounded by `CHESS_AGENT_MAX_TURNS`,
 `CHESS_AGENT_MAX_TOOL_CALLS`, `CHESS_AGENT_MAX_ENGINE_CALLS`, and `CHESS_AGENT_TIMEOUT`.
 `CHESS_AGENT_RUN_MAX_RECORDS` bounds the run log and defaults to 1000.
 
+Set `CHESS_AGENT_DEBUG=1` to print SDK activity and the exact local grounding validation failure to
+the terminal. Model and tool payloads stay redacted by default. For a controlled local reproduction,
+also set `OPENAI_AGENTS_DONT_LOG_MODEL_DATA=0` and `OPENAI_AGENTS_DONT_LOG_TOOL_DATA=0` to include the
+full model request, structured response, and tool data; those logs can contain personal chess and
+conversation context.
+
 ## Data layout
 
 ```text
