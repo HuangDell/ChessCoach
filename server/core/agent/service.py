@@ -24,6 +24,7 @@ from server.core.agent.context import (
     ResolvedContextBundle,
 )
 from server.core.agent.models import (
+    AGENT_TOOL_PERMISSIONS,
     AgentError,
     AgentMessageRequest,
     AgentMessageResponse,
@@ -44,7 +45,6 @@ from server.core.agent.models import (
 )
 from server.core.agent.policy import (
     AgentResponseValidationError,
-    allowed_tools_for,
     is_follow_up_reference_request,
     is_review_priority_request,
     is_training_planning_request,
@@ -580,6 +580,7 @@ class ChessAgentService:
             bundle,
             request.message,
             review_loader=tools.get_review_context,
+            live_analysis_loader=tools.load_live_analysis,
         )
         if is_training_planning_request(request.message):
             model_context = model_context.model_copy(
@@ -664,7 +665,7 @@ class ChessAgentService:
             expected_generation=request.expected_generation,
             message=request.message,
             model_context=model_context,
-            allowed_tools=allowed_tools_for(request.message, model_context),
+            allowed_tools=list(AGENT_TOOL_PERMISSIONS),
             max_turns=self.max_turns,
             max_total_tool_calls=self.max_total_tool_calls,
             max_engine_tool_calls=self.max_engine_tool_calls,

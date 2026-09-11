@@ -34,7 +34,7 @@ P0 不实现 embedding、planner、依赖图训练、压力工具库、多 Agent
 | 现有位置 | P0 复用方式与需要验证的边界 |
 | --- | --- |
 | [models.py](../../server/core/agent/models.py) | 复用 7 工具名称、权限、输入/结果 DTO、`ToolResult`、`AgentResponse`；不复制棋类 schema。 |
-| [policy.py](../../server/core/agent/policy.py) | 保留 `allowed_tools_for` 作为 R0；复用 `validate_agent_run_result`。其当前只检查 run 固定允许集合，研究另加逐轮 snapshot 检查。 |
+| [policy.py](../../server/core/agent/policy.py) | R0 fixture 保留旧工具集合；生产已移除 `allowed_tools_for`，继续复用 `validate_agent_run_result`。研究另加逐轮 snapshot 检查。 |
 | [runtime_openai.py](../../server/core/agent/runtime_openai.py) | 扩展 `_LocalRunContext` 的研究注入点；复用工具装配、预算与实际 Engine 计数，不自写模型循环。 |
 | [tools.py](../../server/core/agent/tools.py) | fixture 对齐 `execute`、执行元数据及成功结果合同；合法性、reference 和训练规则继续由现有 Core 确定。 |
 | [sessions.py](../../server/core/agent/sessions.py) | 复用 generation guard 和隔离 conversation session，验证取消后无旧结果提交。 |
@@ -161,7 +161,7 @@ cache hit、Engine 实际调用数、失败调用与未知使用量分别表示�
 
 ### 4.2 授权与候选接口
 
-保留生产 R0 的 `allowed_tools_for`；研究方法共享确定性授权集合 `P_t`，由个性化开关、
+冻结研究 R0 的旧工具集合；研究方法共享确定性授权集合 `P_t`，由个性化开关、
 checkpoint scope、reference ownership、资源与当前可验证前置条件计算。query 相关性不作为
 研究方法的共同权限上界。引用和训练业务判断调用现有检查，不复制一套领域规则。
 

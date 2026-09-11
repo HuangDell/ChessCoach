@@ -77,6 +77,25 @@ def active_artifact(artifact: dict[str, Any] | None = None) -> ActiveReviewArtif
 
 
 class AgentReviewToolTests(unittest.IsolatedAsyncioTestCase):
+    def test_live_analysis_reference_resolves_only_matching_server_result(self) -> None:
+        result = structured(
+            START_FEN,
+            [(25, None, ["e2e4", "e7e5"], 52.0)],
+            depth=22,
+            multipv=3,
+        )
+        tools = AgentTools(line_plies=2)
+
+        with patch("server.core.agent.tools.lines.get_live_analysis", return_value=result):
+            loaded = tools.load_live_analysis(START_FEN, result.cache_key)
+            mismatched = tools.load_live_analysis(AFTER_E4_FEN, result.cache_key)
+
+        self.assertIsNotNone(loaded)
+        assert loaded is not None and loaded.data is not None
+        self.assertEqual("e2e4", loaded.data.candidates[0].move.uci)
+        self.assertEqual(["e2e4", "e7e5"], loaded.data.candidates[0].line_uci)
+        self.assertIsNone(mismatched)
+
     async def test_get_review_context_is_owned_bounded_and_engine_free(self) -> None:
         provider = RecordingProvider()
         tools = AgentTools(
@@ -277,6 +296,8 @@ class AgentPositionToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((), result.lines)
         self.assertEqual(0, result.engine_call_count)
         self.assertEqual("python-chess", result.engine_name)
+        lines.remember_live_analysis(result)
+        self.assertEqual(result, lines.get_live_analysis(result.cache_key))
         self.assertEqual(
             0,
             AgentTools().estimated_engine_calls(

@@ -186,26 +186,33 @@ def best_moves(body: BestMovesBody) -> JSONResponse:
         return JSONResponse({"error": f"Invalid FEN: {exc}"}, status_code=400)
 
     depth = body.depth or config.DEFAULT_DEPTH
-    info = lines.engine_line(body.fen, depth=depth, multipv=max(1, body.multipv))
-    src = info.get("lines") or [
-        {
-            "line_uci": info["line_uci"],
-            "line_san": info["line_san"],
-            "win_percent": info["win_percent"],
-            "eval": info["eval"],
-        }
-    ]
+    analysis = lines.remember_live_analysis(
+        lines.structured_analysis(
+            body.fen,
+            depth=depth,
+            multipv=max(1, body.multipv),
+        )
+    )
+    board = chess.Board(body.fen)
     moves = [
         {
-            "uci": ln["line_uci"][0],
-            "san": ln["line_san"][0] if ln.get("line_san") else None,
-            "win_percent": ln["win_percent"],
-            "eval": ln["eval"],
+            "uci": candidate.pv_uci[0],
+            "san": san_line[0] if san_line else None,
+            "win_percent": round(candidate.win_percent, 1),
+            "eval": lines.eval_str(candidate.cp, candidate.mate),
         }
-        for ln in src
-        if ln.get("line_uci")
+        for candidate in analysis.lines
+        if candidate.pv_uci
+        for san_line in [lines.pv_to_san(board, list(candidate.pv_uci))]
     ]
-    return JSONResponse({"side_to_move": info["side_to_move"], "depth": depth, "moves": moves})
+    return JSONResponse(
+        {
+            "side_to_move": "white" if board.turn == chess.WHITE else "black",
+            "depth": depth,
+            "moves": moves,
+            "analysis_ref": analysis.cache_key,
+        }
+    )
 
 
 @router.post("/threats")

@@ -130,11 +130,13 @@ test("training context follows the puzzle board without claiming review ownershi
   });
 });
 
-test("free analysis context owns only the current FEN", () => {
+test("free analysis context carries only the server live-analysis reference", () => {
+  const analysisRef = "a".repeat(64);
   const context = buildReviewAgentContext(snapshot({
     currentGameId: null,
     timeline: [],
     fen: AFTER_E4,
+    liveAnalysisRef: analysisRef,
   }), {
     mode: "free_analysis",
     fen: AFTER_E4,
@@ -153,9 +155,53 @@ test("free analysis context owns only the current FEN", () => {
       fen: AFTER_E4,
       recent_moves_uci: [],
       recent_moves_san: [],
+      live_analysis_ref: analysisRef,
       reference: { fen: AFTER_E4 },
     },
   });
+});
+
+test("saved review contexts ignore live best-moves references", () => {
+  const context = buildReviewAgentContext(snapshot({ liveAnalysisRef: "a".repeat(64) }));
+  assert.equal(context.position.live_analysis_ref, undefined);
+  assert.equal(context.active_critical_id, "ply-1");
+});
+
+test("deferred live analysis is synced on the next question", async () => {
+  const originalDocument = globalThis.document;
+  const { $ } = elements();
+  globalThis.document = { createElement: () => new FakeElement() };
+  const updates = [];
+  const chat = createReviewChat({
+    $,
+    sessionStore: memoryStorage(),
+    agentApi: {
+      createSession: async () => ({ session: { session_id: "free", generation: 0 } }),
+      updateContext: async (id, body) => {
+        updates.push(body);
+        return { session: { session_id: id, generation: 1 } };
+      },
+      sendMessage: async (id, body) => ({
+        session: { session_id: id, generation: body.expected_generation },
+        response: { text: "Use the cached candidate." },
+        tool_calls: [],
+      }),
+    },
+  });
+  try {
+    chat.mount();
+    chat.deferContext(buildReviewAgentContext(snapshot({
+      currentGameId: null,
+      timeline: [],
+      liveAnalysisRef: "c".repeat(64),
+    })));
+    assert.equal(updates.length, 0);
+    $("chat-input").value = "What should I play?";
+    await $("chat-form").emit("submit", { preventDefault() {} });
+    assert.equal(updates[0].position.live_analysis_ref, "c".repeat(64));
+  } finally {
+    globalThis.document = originalDocument;
+  }
 });
 
 test("Agent response references, actions, and tool summary use injected callbacks", async () => {

@@ -8,7 +8,17 @@ import chess
 
 from server import config
 from server.core.agent.context import ChessContextBuilder, ChessContextError
-from server.core.agent.models import AgentSessionState, PositionContext, PositionReference
+from server.core.agent.models import (
+    AgentSessionState,
+    AnalyzePositionResult,
+    CandidateLine,
+    EngineProvenance,
+    EngineScore,
+    MoveReference,
+    PositionContext,
+    PositionReference,
+    ToolResult,
+)
 from server.core.agent.tools import ActiveReviewArtifact, AgentTools
 from server.core.importers.pgn import ImportedGame
 from server.core.storage import games
@@ -239,6 +249,60 @@ class AgentContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(facts.facts.get("motifs", [])), 5)
         self.assertLessEqual(len(facts.facts.get("classification_evidence", [])), 8)
         self.assertNotIn("candidates", facts.facts)
+
+    async def test_free_analysis_reuses_verified_live_candidates(self) -> None:
+        analysis_ref = "a" * 64
+        position = PositionContext(
+            fen=START_FEN,
+            recent_moves_uci=[],
+            recent_moves_san=[],
+            live_analysis_ref=analysis_ref,
+            reference=PositionReference(fen=START_FEN),
+        )
+        state = session_state(
+            active_game_id=None,
+            review_side=None,
+            active_ply=None,
+            active_critical_id=None,
+            activity="position_analysis",
+            position=position,
+        )
+        candidate = CandidateLine(
+            rank=1,
+            move=MoveReference(uci="e2e4", san="e4"),
+            score=EngineScore(kind="cp", value=25, pov="white"),
+            win_percent_for_review_side=None,
+            line_uci=["e2e4", "e7e5"],
+            line_san=["e4", "e5"],
+        )
+        result = AnalyzePositionResult(
+            fen=START_FEN,
+            candidates=[candidate],
+            provenance=EngineProvenance(
+                engine_name="Stockfish",
+                engine_version="Stockfish fixture",
+                depth=22,
+                multipv=3,
+                analysis_profile_id="live",
+                cache_key=analysis_ref,
+            ),
+        )
+
+        context = await self.builder.build_model_context(
+            self.builder.resolve(state),
+            "What should I do?",
+            live_analysis_loader=lambda fen, ref: ToolResult(
+                ok=fen == START_FEN and ref == analysis_ref,
+                data=result,
+                evidence_refs=["engine-position:fixture"],
+            ),
+        )
+
+        assert context.engine_facts is not None
+        self.assertIsNone(context.position.live_analysis_ref)
+        self.assertEqual("e2e4", context.engine_facts.best_move.uci)
+        self.assertEqual("live_best_moves", context.engine_facts.facts["source"])
+        self.assertEqual(["engine-position:fixture"], context.allowed_evidence_refs)
 
 
 if __name__ == "__main__":

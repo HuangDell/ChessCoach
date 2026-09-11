@@ -19,6 +19,7 @@ export function createReviewNavigation({
   onNotationHighlight,
   onReviewCursorSync,
   onNavUpdate,
+  onLiveAnalysisChange = () => {},
   onFreeAnalysisLine = () => {},
 }) {
   const chess = board.chess;
@@ -36,6 +37,7 @@ export function createReviewNavigation({
     exploreVerdict: null,
     bestArrowOn: false,
     bestArrows: [],
+    liveAnalysisRef: null,
     threatArrowOn: false,
     threatArrows: [],
     evalShapes: [],
@@ -50,6 +52,10 @@ export function createReviewNavigation({
     isThreatEnabled: () => state.threatArrowOn,
     setBestArrows: (arrows) => { state.bestArrows = arrows; },
     setThreatArrows: (arrows) => { state.threatArrows = arrows; },
+    setAnalysisRef: (analysisRef) => {
+      state.liveAnalysisRef = analysisRef;
+      if (state.freeAnalysis) onLiveAnalysisChange();
+    },
     onUpdate: drawArrows,
   });
 
@@ -481,6 +487,7 @@ export function createReviewNavigation({
       currentPrompt: "",
       evalShapes: [],
       bestArrows: [],
+      liveAnalysisRef: null,
       threatArrows: [],
       boardLastMove: null,
       exploreBaseFen: null,
@@ -505,6 +512,7 @@ export function createReviewNavigation({
       exploreVerdict: null,
       evalShapes: [],
       bestArrows: [],
+      liveAnalysisRef: null,
       threatArrows: [],
       boardLastMove: null,
       freeAnalysis: true,
@@ -536,6 +544,7 @@ export function createReviewNavigation({
       exploreVerdict: null,
       evalShapes: [],
       bestArrows: [],
+      liveAnalysisRef: null,
       threatArrows: [],
       boardLastMove: null,
       freeAnalysis: false,
@@ -574,6 +583,7 @@ export function createReviewNavigation({
     get exploring() { return state.exploring; },
     get exploreBaseNode() { return state.exploreBaseNode; },
     get bestArrowOn() { return state.bestArrowOn; },
+    get liveAnalysisRef() { return state.liveAnalysisRef; },
     get threatArrowOn() { return state.threatArrowOn; },
     get freeAnalysis() { return state.freeAnalysis; },
     get freePly() { return state.freeAnalysis ? chess.history().length : 0; },

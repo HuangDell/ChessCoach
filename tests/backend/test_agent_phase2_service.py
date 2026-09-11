@@ -232,7 +232,6 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(priorities)
             self.assertLessEqual(len(priorities.candidates), 8)
             self.assertTrue(priorities.candidates[0].largest_error)
-            self.assertIn("get_player_profile", request.allowed_tools)
             return AgentRunResult(response=critical_response(), tool_calls=[])
 
         self.runtime.handler = run
@@ -316,7 +315,6 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def run(request: AgentRunRequest) -> AgentRunResult:
             self.assertFalse(request.model_context.task.personalization_enabled)
-            self.assertNotIn("get_player_profile", request.allowed_tools)
             self.assertTrue(
                 all(
                     candidate.recurrence_evidence == 0

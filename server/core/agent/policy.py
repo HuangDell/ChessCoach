@@ -13,7 +13,6 @@ from server.core.agent.models import (
     AgentResponse,
     AgentRunRequest,
     AgentRunResult,
-    AgentToolName,
     ChessReference,
     GetPlayerProfileResult,
     GetReviewContextResult,
@@ -29,24 +28,6 @@ from server.core.agent.models import (
 
 
 POLICY_VERSION = 4
-_MOVE_QUESTION = re.compile(
-    r"(?:\b[a-h][1-8][a-h][1-8][qrbn]?\b|why\s+(?:is|was|not|can(?:not|'t))|"
-    r"\b(?:can|could|may)\s+i\s+play\b|\bis\s+\S+\s+legal\b|what\s+if|"
-    r"what\s+changes\s+after|\bif\b[^?\n]{0,80}\b(?:play|played|changes?|captures?)\b|"
-    r"\brecheck\b|instead|为什么不能|为何不能|如果|改走)",
-    re.IGNORECASE,
-)
-_POSITION_QUESTION = re.compile(
-    r"(?:best\s+move|candidate|compare|evaluate|position|候选|比较|最佳着|评估|局面)",
-    re.IGNORECASE,
-)
-_OPENING_QUESTION = re.compile(
-    r"(?:\bopening\b|\beco\b|debut|开局|开局名称|开局计划)", re.IGNORECASE
-)
-_PROFILE_QUESTION = re.compile(
-    r"(?:profile|weakness|strength|recurr|repeat|habit|personal|弱点|强项|反复|经常|个人)",
-    re.IGNORECASE,
-)
 _PRIORITY_QUESTION = re.compile(
     r"(?:review\s+first|focus\s+first|prioriti[sz]e|where\s+should\s+i\s+start|"
     r"先复盘|先看哪|复盘哪里|重点局面|优先)",
@@ -65,9 +46,6 @@ _FOLLOW_UP_REFERENCE = re.compile(
     r"这里|这儿|那里|那儿|那一步|这个局面|这个变化|这里呢|那里呢)",
     re.IGNORECASE,
 )
-_REVIEW_CONTEXT_QUESTION = re.compile(
-    r"(?:\breview\b|\bsaved\b|why\s+was\s+my\s+move|复盘|已保存)", re.IGNORECASE
-)
 _OPEN_ENDED_TRAINING_QUESTION = re.compile(
     r"(?:what\s+should\s+i\s+(?:train|practice)|what\s+to\s+(?:train|practice)|"
     r"next\s+(?:training|practice)|接下来练|下一步练|练什么|训练什么)",
@@ -85,54 +63,6 @@ def is_follow_up_reference_request(message: str) -> bool:
 
 def is_training_planning_request(message: str) -> bool:
     return bool(_TRAINING_PLANNING_QUESTION.search(message))
-
-
-def allowed_tools_for(message: str, context: ModelVisibleContext) -> list[AgentToolName]:
-    """Expose only tools that can operate on the explicit current checkpoint."""
-
-    allowed: list[AgentToolName] = []
-    planning = is_training_planning_request(message)
-    position = context.position
-    facts = context.engine_facts
-    reference = position.reference if position is not None else None
-    if (
-        facts is None
-        and reference is not None
-        and all((reference.game_id, reference.review_side, reference.critical_id))
-        and _REVIEW_CONTEXT_QUESTION.search(message)
-    ):
-        allowed.append("get_review_context")
-    move_question = bool(_MOVE_QUESTION.search(message)) or bool(
-        re.search(r"\bcompare\b", message, re.IGNORECASE)
-        and re.search(r"(?:,|\band\b|\bversus\b|\bvs\.?\b)", message, re.IGNORECASE)
-    )
-    covered_review_question = bool(
-        facts is not None
-        and re.search(r"\bwhy\s+was\s+my\s+move\b", message, re.IGNORECASE)
-    )
-    if position is not None and move_question and not covered_review_question:
-        allowed.append("analyze_move")
-    if (
-        position is not None
-        and _POSITION_QUESTION.search(message)
-        and facts is None
-        and not move_question
-    ):
-        allowed.append("analyze_position")
-    if position is not None and _OPENING_QUESTION.search(message):
-        allowed.append("lookup_opening")
-    if (
-        context.task.personalization_enabled
-        and (
-            _PROFILE_QUESTION.search(message)
-            or _PRIORITY_QUESTION.search(message)
-            or (planning and _OPEN_ENDED_TRAINING_QUESTION.search(message))
-        )
-    ):
-        allowed.append("get_player_profile")
-    if context.task.personalization_enabled and planning:
-        allowed.extend(["get_training_candidates", "create_training_draft"])
-    return allowed
 
 
 def validated_tool_references(

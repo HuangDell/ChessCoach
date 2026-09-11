@@ -19,7 +19,6 @@ from server.core.agent.models import (
     StartTrainingAction,
     ToolCallRecord,
 )
-from server.core.agent.policy import allowed_tools_for
 from server.core.agent.runtime import AgentRuntimeFailure, AgentRuntimeTelemetry
 from tests.evals.evaluator import diagnose_dataset, score_dataset
 from tests.evals.run_portfolio_live import (
@@ -297,18 +296,6 @@ class AgentLiveEvalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("mistake", context.engine_facts.classification)
         self.assertEqual("b1c3", context.engine_facts.best_move.uci)
         self.assertEqual("white", context.engine_facts.facts["score_pov"])
-
-    def test_production_policy_exposes_every_required_baseline_tool(self) -> None:
-        dataset = _load("agent_baseline_v1.json")
-        for case in dataset["cases"]:
-            context = _context(case, dataset)
-            allowed = set(allowed_tools_for(case["input"]["message"], context))
-            required = {
-                call["name"] for call in case["expected"]["tools"]["required_calls"]
-            }
-            with self.subTest(case=case["id"]):
-                self.assertTrue(required.issubset(allowed))
-                self.assertEqual(case["input"]["message"], context.task.user_goal)
 
     def test_training_action_positions_count_as_structured_grounding(self) -> None:
         dataset = _load("agent_baseline_v1.json")

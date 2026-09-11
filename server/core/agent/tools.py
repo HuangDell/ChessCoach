@@ -726,6 +726,42 @@ class AgentTools:
         execution = await self.execute("analyze_position", request)
         return cast(ToolResult[AnalyzePositionResult], execution.result)
 
+    def load_live_analysis(
+        self,
+        fen: str,
+        analysis_ref: str,
+    ) -> ToolResult[AnalyzePositionResult] | None:
+        """Resolve recent Web analysis without trusting browser-supplied Engine data."""
+
+        result = lines.get_live_analysis(analysis_ref)
+        if result is None or result.fen != fen or result.cache_key != analysis_ref:
+            return None
+        try:
+            board = chess.Board(fen)
+            candidates = [
+                _engine_candidate(
+                    raw,
+                    board=board,
+                    rank=rank,
+                    max_plies=self.line_plies,
+                )
+                for rank, raw in enumerate(result.lines[:3], start=1)
+            ]
+            data = AnalyzePositionResult(
+                fen=fen,
+                candidates=candidates,
+                provenance=_engine_provenance(result),
+            )
+        except (ArtifactConsistencyError, ValidationError, ValueError):
+            return None
+        evidence = _evidence_ref(
+            "engine-position",
+            fen,
+            str(result.depth),
+            str(result.multipv),
+        )
+        return ToolResult(ok=True, data=data, evidence_refs=[evidence])
+
     async def analyze_move(
         self,
         request: AnalyzeMoveInput,

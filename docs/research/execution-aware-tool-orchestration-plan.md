@@ -42,7 +42,7 @@ P0–P2 不要求新增模型训练、Vector DB、第二套 Agent runtime、网�
 
 | 原建议中的判断 | 分析与计划调整 |
 | --- | --- |
-| 当前系统是 query → select tool | 当前 `allowed_tools_for(message, context)` 已使用初始局面、已有 facts 和个性化开关。准确基线是“基于 query＋初始 checkpoint 的规则暴露，run 内集合固定”。 |
+| 原系统是 query → select tool | 研究启动时的 `allowed_tools_for(message, context)` 使用初始局面、已有 facts 和个性化开关；生产现已改为注册全部工具，该行为仅作为历史 R0 基线。 |
 | 下一步需求变化就是 distribution shift | 首先称为“状态条件下的工具需求变化”。只有明确训练/测试分布并测量差异后，才讨论 distribution shift。 |
 | 先证明 Full Context 恶化，再证明动态检索有效 | 改为检验假设；允许负结果。不按测试结果反复改工具名称或任务来制造预期曲线。 |
 | 把工具扩展到 20–30 个 | 原生 7 工具足以研究依赖和恢复。真实扩容、语义干扰压力测试和外部大规模检索基准分别报告。 |
@@ -135,7 +135,7 @@ flowchart TD
 个性化开关、checkpoint 归属、参数作用域和预算确定，不能来自相似度分数或模型计划。
 检索只在其中排序；执行前再次验证权限、实际参数及 generation。
 
-当前 `allowed_tools_for` 混合了权限、可用性与任务相关性。P0 保留原实现作为 R0 基线；
+研究启动时的 `allowed_tools_for` 混合了权限、可用性与任务相关性。P0 保留其结果作为历史 R0 基线；
 为研究方法抽出共享的确定性授权检查，不能把当前 query 规则的窄集合当作全部方法的检索上界。
 “这个工具看起来不相关”与“没有权限调用这个工具”必须分开。
 
@@ -240,7 +240,7 @@ candidate snapshot；执行校验读取本轮 snapshot，不能让每个 `is_ena
 
 | ID | 方法 | 检索器可见信息 / 候选方式 |
 | --- | --- | --- |
-| R0 | Current Policy | 当前 `allowed_tools_for` 与原 runtime，保留真实产品基线。 |
+| R0 | Historical Policy | 研究启动时的关键词工具策略与原 runtime，用于冻结对照。 |
 | A | Full Tool Context | 每轮暴露完整 `P_t`，不是绕过权限暴露全仓库能力。 |
 | B | Query-only | 只用 `q` 计算一次全库排名，后续在共同 `P_t` 中取 Top-K；不依赖 observation 重排。 |
 | B0 | Query＋Initial Context | 使用 query＋初始 checkpoint 的冻结排名，控制已有上下文带来的增量。 |

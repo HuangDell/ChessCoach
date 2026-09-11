@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from server import config
 from server.core.agent.models import (
+    AGENT_TOOL_PERMISSIONS,
     AgentRunRequest,
     AnalyzeMoveResult,
     AnalyzePositionResult,
@@ -31,7 +32,6 @@ from server.core.agent.models import (
 from server.core.agent.policy import (
     AgentResponseValidationError,
     POLICY_VERSION,
-    allowed_tools_for,
     validate_agent_run_result,
 )
 from server.core.agent.runtime import AgentRuntimeFailure
@@ -484,7 +484,7 @@ async def _run_cases(
             expected_generation=0,
             message=case["input"]["message"],
             model_context=model_context,
-            allowed_tools=allowed_tools_for(case["input"]["message"], model_context),
+            allowed_tools=list(AGENT_TOOL_PERMISSIONS),
             max_turns=config.AGENT_MAX_TURNS,
             max_total_tool_calls=config.AGENT_MAX_TOOL_CALLS,
             max_engine_tool_calls=config.AGENT_MAX_ENGINE_CALLS,

@@ -41,6 +41,7 @@ export function buildReviewAgentContext(snapshot = {}, details = {}) {
     activeCriticalId,
     retryActive,
     navigation = {},
+    liveAnalysisRef = null,
   } = snapshot;
   const suppliedFen = details.fen || snapshot.fen;
   const recentMainline = (ply) => timeline
@@ -73,6 +74,7 @@ export function buildReviewAgentContext(snapshot = {}, details = {}) {
         fen: suppliedFen,
         recent_moves_uci: [],
         recent_moves_san: [],
+        ...(liveAnalysisRef ? { live_analysis_ref: liveAnalysisRef } : {}),
         reference: { fen: suppliedFen },
       } : null,
     };
@@ -312,6 +314,11 @@ export function createReviewChat({
     const sync = enqueueContextSync(currentContext);
     void sync.catch(() => {});
     return sync;
+  }
+
+  function deferContext(context) {
+    currentContext = context || null;
+    currentContextSignature = semanticSignature(context);
   }
 
   // Narrow compatibility adapter for callers that focus one legal move.
@@ -564,6 +571,7 @@ export function createReviewChat({
     restore,
     setAgentCapability,
     setContext,
+    deferContext,
     setMoveContext,
     contextChanged,
     get generation() { return generation; },

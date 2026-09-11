@@ -80,6 +80,11 @@ SQLite conversation session 和非流式 bounded runs。response schema v4 要�
 和本次成功工具结果确定性校验。`suggested_actions` 直接使用按 action kind 区分的窄 JSON schema，
 例如 `compare_move` 只能返回 `move_uci` 和可选 `fen`；未经验证的模型输出不会作为成功响应提交。
 
+每次 run 都向 Agent 注册全部七个领域工具，不用问题关键词预先裁剪；当前 FEN、review ownership、
+个性化开关、训练候选 allowlist 和调用预算仍由后端强校验。Free analysis 会用服务端生成的 opaque
+reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可被信任的评分或 PV；已完成的关键
+局面继续使用保存的 Stage 2 artifact，不被交互式 live 搜索覆盖。
+
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
 | `CHESS_AGENT_ENABLED` | 启用 Agent surface | `1` |

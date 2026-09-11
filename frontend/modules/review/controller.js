@@ -107,6 +107,7 @@ let showThreatsByDefault = false;
     onNotationHighlight: () => notation.highlightCurrent(),
     onReviewCursorSync: syncReviewCursor,
     onNavUpdate: updateNav,
+    onLiveAnalysisChange: () => chat.deferContext(buildAgentContext()),
     onFreeAnalysisLine: renderFreeAnalysisLine,
   });
   const renderBoard = () => navigation.renderBoard();
@@ -274,6 +275,7 @@ function buildAgentContext(details = {}) {
       exploreBaseNode: navigation.exploreBaseNode,
     },
     fen: chess.fen(),
+    liveAnalysisRef: navigation && navigation.freeAnalysis ? navigation.liveAnalysisRef : null,
   }, details);
 }
 

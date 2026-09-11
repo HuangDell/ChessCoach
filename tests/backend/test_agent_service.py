@@ -9,6 +9,7 @@ import unittest
 
 from server import config
 from server.core.agent.models import (
+    AGENT_TOOL_PERMISSIONS,
     AgentMessageRequest,
     AgentResponse,
     AgentRunRequest,
@@ -148,10 +149,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, run_request.max_total_tool_calls)
         self.assertEqual(1, run_request.max_engine_tool_calls)
         self.assertEqual(9, run_request.timeout_seconds)
-        self.assertEqual(
-            ["analyze_move"],
-            run_request.allowed_tools,
-        )
+        self.assertEqual(list(AGENT_TOOL_PERMISSIONS), run_request.allowed_tools)
         self.assertEqual(TACTICAL_FEN, run_request.model_context.position.fen)
         self.assertEqual(1, run_request.model_context.position.reference.ply)
         self.assertLessEqual(len(run_request.model_context.engine_facts.candidates), 3)

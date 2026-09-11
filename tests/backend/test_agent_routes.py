@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 
 from server import config
+from server.core import lines
 from server.core.agent.models import (
     AgentError,
     AgentMessageRequest,
@@ -207,6 +208,41 @@ class AgentRouteTests(unittest.TestCase):
             ["create", "get", "context", "message", "delete"],
             [name for name, _value in self.service.calls],
         )
+
+    def test_best_moves_returns_server_live_analysis_reference(self) -> None:
+        analysis_ref = "b" * 64
+        analysis = lines.StructuredAnalysis(
+            fen=START_FEN,
+            depth=22,
+            multipv=3,
+            lines=(
+                lines.StructuredEngineLine(
+                    cp=25,
+                    mate=None,
+                    pv_uci=("e2e4", "e7e5"),
+                    win_percent=52.0,
+                ),
+            ),
+            engine_name="Stockfish",
+            engine_version="Stockfish fixture",
+            cache_key=analysis_ref,
+            cache_hit=True,
+            engine_call_count=0,
+        )
+        with patch(
+            "server.web.routes_board.lines.structured_analysis",
+            return_value=analysis,
+        ):
+            response = self.request(
+                "POST",
+                "/api/best-moves",
+                json={"fen": START_FEN, "depth": 22, "multipv": 3},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(analysis_ref, response.json()["analysis_ref"])
+        self.assertEqual("e2e4", response.json()["moves"][0]["uci"])
+        self.assertEqual(analysis, lines.get_live_analysis(analysis_ref))
 
     def test_typed_service_failures_map_to_stable_status_codes(self) -> None:
         cases = [

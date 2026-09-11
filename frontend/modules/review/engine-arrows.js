@@ -13,6 +13,7 @@ export function createEngineArrowSearch({
   isThreatEnabled,
   setBestArrows,
   setThreatArrows,
+  setAnalysisRef = () => {},
   onUpdate,
 }) {
   let abortController = null;
@@ -23,6 +24,7 @@ export function createEngineArrowSearch({
     abortController = new AbortController();
     setBestArrows([]);
     setThreatArrows([]);
+    setAnalysisRef(null);
     onUpdate();
     const currentGeneration = generation;
     const fen = getFen();
@@ -51,6 +53,7 @@ export function createEngineArrowSearch({
       if (currentGeneration !== generation) return;
       if (result && result.moves && result.moves.length) {
         setBestArrows(movesToArrows(result.moves));
+        setAnalysisRef(result.analysis_ref || null);
         onUpdate();
       }
       if (performance.now() - startedAt > SEARCH_MAX_MS) break;

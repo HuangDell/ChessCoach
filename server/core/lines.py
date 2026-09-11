@@ -1,10 +1,12 @@
 """Single-position Engine analysis shared by Web and Core callers."""
 from __future__ import annotations
 
+from collections import OrderedDict
+from dataclasses import dataclass
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+import threading
 from typing import Optional
 
 import chess
@@ -48,6 +50,30 @@ class StructuredAnalysis:
     cache_key: str
     cache_hit: bool
     engine_call_count: int
+
+
+_LIVE_ANALYSIS_LIMIT = 32
+_live_analysis_lock = threading.Lock()
+_live_analyses: OrderedDict[str, StructuredAnalysis] = OrderedDict()
+
+
+def remember_live_analysis(result: StructuredAnalysis) -> StructuredAnalysis:
+    with _live_analysis_lock:
+        _live_analyses[result.cache_key] = result
+        _live_analyses.move_to_end(result.cache_key)
+        while len(_live_analyses) > _LIVE_ANALYSIS_LIMIT:
+            _live_analyses.popitem(last=False)
+    return result
+
+
+def get_live_analysis(cache_key: str) -> StructuredAnalysis | None:
+    """Return a recent server-produced analysis without starting Stockfish."""
+
+    with _live_analysis_lock:
+        result = _live_analyses.get(cache_key)
+        if result is not None:
+            _live_analyses.move_to_end(cache_key)
+        return result
 
 
 def _engine_identity(raw_name: str) -> tuple[str, str]:

@@ -9,6 +9,7 @@ import chess
 
 from server.core.agent.models import (
     AgentSessionState,
+    AnalyzePositionResult,
     EngineFactsContext,
     GameContext,
     GetReviewContextInput,
@@ -64,6 +65,7 @@ class FollowUpResolution:
 ReviewContextLoader = Callable[
     [GetReviewContextInput], Awaitable[ToolResult[GetReviewContextResult]]
 ]
+LiveAnalysisLoader = Callable[[str, str], ToolResult[AnalyzePositionResult] | None]
 
 
 def _move_notation(item: dict[str, Any]) -> tuple[str, str]:
@@ -711,6 +713,7 @@ class ChessContextBuilder:
         bundle: ResolvedContextBundle,
         question: str,
         review_loader: ReviewContextLoader | None = None,
+        live_analysis_loader: LiveAnalysisLoader | None = None,
     ) -> ModelVisibleContext:
         resolved = bundle.context
         engine_facts: EngineFactsContext | None = None
@@ -740,6 +743,26 @@ class ChessContextBuilder:
                     facts=_bounded_facts(review.facts),
                     evidence_refs=allowed_evidence_refs,
                 )
+        elif (
+            resolved.position is not None
+            and resolved.position.live_analysis_ref is not None
+            and live_analysis_loader is not None
+        ):
+            loaded = live_analysis_loader(
+                resolved.position.fen,
+                resolved.position.live_analysis_ref,
+            )
+            if loaded is not None and loaded.ok and loaded.data is not None:
+                analysis = loaded.data
+                allowed_evidence_refs = list(loaded.evidence_refs)
+                engine_facts = EngineFactsContext(
+                    reference=PositionReference(fen=resolved.position.fen),
+                    best_move=analysis.candidates[0].move if analysis.candidates else None,
+                    candidates=analysis.candidates,
+                    provenance=analysis.provenance,
+                    facts={"source": "live_best_moves"},
+                    evidence_refs=allowed_evidence_refs,
+                )
 
         return ModelVisibleContext(
             task=TaskContext(
@@ -747,7 +770,11 @@ class ChessContextBuilder:
                 user_goal=question,
                 review_side=resolved.session.review_side,
             ),
-            position=resolved.position,
+            position=(
+                resolved.position.model_copy(update={"live_analysis_ref": None})
+                if resolved.position is not None
+                else None
+            ),
             engine_facts=engine_facts,
             relevant_profile=None,
             relevant_memory=[],

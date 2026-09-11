@@ -440,6 +440,7 @@ class PositionContext(ContractModel):
     exploration_moves_san: list[str] = Field(default_factory=list, max_length=16)
     selected_move_uci: str | None = None
     selected_move_san: str | None = None
+    live_analysis_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     reference: PositionReference | None = None
 
     _valid_fen = field_validator("fen")(_validate_fen)
