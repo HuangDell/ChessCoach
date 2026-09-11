@@ -228,6 +228,6 @@ test("board controls label key-position navigation explicitly", async () => {
   assert.match(html, /id="prev-mistake"[^>]*>‹ Previous key position<\/button>/);
   assert.match(html, /id="next-mistake"[^>]*>Next key position ›<\/button>/);
   assert.doesNotMatch(html, />‹ Key<\/button>|>Key ›<\/button>/);
-  assert.match(html, /id="free-analysis"[^>]*>Free analysis<\/button>/);
+  assert.doesNotMatch(html, /id="free-analysis"/);
   assert.match(html, /id="free-analysis-line"[^>]*>Start position<\/span>/);
 });

@@ -103,7 +103,6 @@ export function createApp() {
         return;
       }
       if (games.appMode && (await games.maybeAutoload())) return;
-      review.enterFreeAnalysis();
       return;
     }
 
@@ -150,7 +149,6 @@ export function createApp() {
         activateLocalHistory: () => games.activateLocal(),
         loadHistory: (...args) => games.loadHistory(...args),
         openAgentPosition,
-        enterFreeAnalysis: supersedeStartup(() => review.enterFreeAnalysis()),
       },
     });
 
@@ -194,8 +192,9 @@ export function createApp() {
       onSaved: applySettings,
     });
 
+    const handleReviewMove = supersedeStartup((orig, dest) => review.handleMove(orig, dest));
     board.setMoveHandler((orig, dest) =>
-      puzzles.active ? puzzles.handleMove(orig, dest) : review.handleMove(orig, dest)
+      puzzles.active ? puzzles.handleMove(orig, dest) : handleReviewMove(orig, dest)
     );
     review.mount();
     puzzles.mount();

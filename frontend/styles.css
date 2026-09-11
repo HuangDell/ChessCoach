@@ -362,7 +362,6 @@ main {
   font-size: 13px;
 }
 .controls button:hover { background: var(--panel2); }
-.controls button.active { border-color: var(--accent); background: #293826; }
 .controls button:disabled { opacity: 0.4; cursor: default; }
 .controls .icon-btn,
 .icon-btn {

@@ -119,7 +119,6 @@ let showThreatsByDefault = false;
   const flipBoard = () => navigation.flipBoard();
   const toggleBestArrows = () => navigation.toggleBestArrows();
   const toggleThreatArrows = () => navigation.toggleThreatArrows();
-  const onUserMove = (...args) => navigation.handleMove(...args);
   const refreshBestMoves = () => navigation.refreshEngineArrows();
 
   retry = createRetryController({
@@ -500,9 +499,6 @@ function setAnalyzingUI(on) {
 }
 
 function setFreeAnalysisUI(on) {
-  const button = $("free-analysis");
-  button.classList.toggle("active", on);
-  button.setAttribute("aria-pressed", String(on));
   $("review-tabs").hidden = on;
   $("free-analysis-line").hidden = !on;
   $("reset").textContent = on ? "Reset" : "↩ Main line";
@@ -561,6 +557,11 @@ function enterFreeAnalysis() {
   updateFlipReviewButton();
   setFreeAnalysisUI(true);
   navigation.enterFreeAnalysis();
+}
+
+function handleMove(orig, dest) {
+  if (!timeline.length && !navigation.freeAnalysis) enterFreeAnalysis();
+  return navigation.handleMove(orig, dest);
 }
 
 // Set up the board to navigate a PGN immediately (provisional timeline, no engine yet) and reset
@@ -686,7 +687,6 @@ function onAnalysisError(msg) {
 
 
   function mount() {
-    $("free-analysis").addEventListener("click", bridge.enterFreeAnalysis);
     $("back").addEventListener("click", stepBack);
     $("fwd").addEventListener("click", stepForward);
     $("start").addEventListener("click", () => navigation.freeAnalysis ? navigation.resetFreeAnalysis() : gotoNode(0));
@@ -765,11 +765,10 @@ function onAnalysisError(msg) {
 
   return {
     mount,
-    handleMove: onUserMove,
+    handleMove,
     handleKeydown,
     openGame,
     openBatch,
-    enterFreeAnalysis,
     exitFreeAnalysis,
     setWorkflowState,
     applySession,

@@ -121,12 +121,13 @@ test("cross-feature Agent navigation ignores superseded history responses", asyn
   );
 });
 
-test("empty startup and PGN import use the free-analysis lifecycle port", async () => {
+test("free analysis starts from an empty-board move and PGN import exits it", async () => {
   const app = await readFile(path.join(frontend, "modules", "app.js"), "utf8");
+  const review = await readFile(path.join(frontend, "modules", "review", "controller.js"), "utf8");
   const importer = await readFile(path.join(frontend, "modules", "games", "importer.js"), "utf8");
-  assert.match(app, /if \(session[.]empty\)[\s\S]+review[.]enterFreeAnalysis\(\)/);
+  assert.doesNotMatch(app, /review[.]enterFreeAnalysis\(\)/);
   assert.match(app, /exitFreeAnalysis: supersedeStartup\(\(\) => review[.]exitFreeAnalysis\(\)\)/);
-  assert.match(app, /enterFreeAnalysis: supersedeStartup\(\(\) => review[.]enterFreeAnalysis\(\)\)/);
+  assert.match(review, /if \(!timeline[.]length && !navigation[.]freeAnalysis\) enterFreeAnalysis\(\)/);
   assert.match(importer, /bridge[.]review[.]exitFreeAnalysis\(\)/);
 });
 

@@ -49,9 +49,9 @@ python -m server.doctor
 从 Games -> Import 粘贴或上传 PGN。分析流程为全盘快速扫描、关键局面选择、MultiPV 深度分析和
 确定性 facts 提取。FEN、合法着重放、评价、分类和训练判定都不依赖模型。
 
-棋盘控制区的 `Free analysis` 会从标准初始局面打开一个临时分析工作区。每步合法着都会获得
-Stockfish 评价，可逐步撤销或整体重置；当前单线路只存在于页面会话，不保存到 Games，也不导出
-PGN。打开或导入棋局会退出该工作区。
+未载入棋局时，直接在标准初始局面移动棋子会自动进入 `Free analysis` 临时工作区。每步合法着都会
+获得 Stockfish 评价，可逐步撤销或整体重置；当前单线路只存在于页面会话，不保存到 Games，也不
+导出 PGN。打开或导入棋局会退出该工作区。
 
 复盘页可浏览 Key positions、My mistakes 和 All moves，并进入 Retry 或 Practice。个人训练会复用
 现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical
