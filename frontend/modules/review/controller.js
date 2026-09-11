@@ -154,6 +154,7 @@ let showThreatsByDefault = false;
   });
   const workspaceView = createWorkspaceView({
     $,
+    setWorkflowState,
     getSnapshot: () => ({
       analyzing,
       criticalPositions,
@@ -395,6 +396,9 @@ function setWorkflowState(state, label, detail = "", count = "") {
   $("workflow-label").textContent = label;
   $("workflow-detail").textContent = detail;
   $("workflow-count").textContent = count;
+  const analysis = $("workflow-analysis");
+  analysis.hidden = true;
+  analysis.textContent = "";
 }
 
 function selectEngineMove(ply) {
@@ -512,12 +516,8 @@ function setFreeAnalysisUI(on) {
   }
 }
 
-function renderFreeAnalysisLine(line, ply) {
-  $("review-empty").hidden = false;
-  $("review-empty-title").textContent = "Free analysis";
-  $("review-empty-detail").textContent = "Temporary · not saved";
-  $("free-analysis-line").textContent = line;
-  $("timeline-readout").textContent = ply ? `Ply ${ply}` : "Start position";
+function renderFreeAnalysisLine(line, ply, details = {}) {
+  workspaceView.renderFreeAnalysis(line, ply, details);
 }
 
 function exitFreeAnalysis() {

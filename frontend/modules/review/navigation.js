@@ -34,6 +34,7 @@ export function createReviewNavigation({
     exploreBaseNode: 0,
     exploreBaseFen: null,
     exploreGeneration: 0,
+    exploreMoverColor: null,
     exploreVerdict: null,
     bestArrowOn: false,
     bestArrows: [],
@@ -208,7 +209,7 @@ export function createReviewNavigation({
       element.textContent = labels[retrySession.state] || "Retry this position.";
     } else if (state.freeAnalysis) {
       element.className = "status";
-      element.innerHTML = `<strong>Free analysis.</strong>${exploreVerdictHtml()}`;
+      element.textContent = "";
     } else if (state.exploring) {
       element.className = "status away";
       element.innerHTML =
@@ -403,7 +404,14 @@ export function createReviewNavigation({
 
   function notifyFreeAnalysisLine() {
     if (state.freeAnalysis) {
-      onFreeAnalysisLine(freeAnalysisLine(), chess.history().length);
+      const history = chess.history({ verbose: true });
+      const lastMove = history.length ? history[history.length - 1] : null;
+      onFreeAnalysisLine(freeAnalysisLine(), history.length, {
+        sideToMove: board.turnColor(),
+        moverColor: state.exploreMoverColor,
+        moveSan: lastMove && lastMove.san,
+        verdict: state.exploreVerdict,
+      });
     }
   }
 
@@ -444,6 +452,7 @@ export function createReviewNavigation({
     if (!move) return renderBoard();
     state.boardLastMove = [orig, dest];
     state.evalShapes = [];
+    state.exploreMoverColor = moverColor;
     state.exploreVerdict = "pending";
     const requestGeneration = ++state.exploreGeneration;
     renderBoard();
@@ -462,6 +471,7 @@ export function createReviewNavigation({
       if (requestGeneration !== state.exploreGeneration || !state.exploring) return;
       state.exploreVerdict = { error: true };
       updateStatus();
+      notifyFreeAnalysisLine();
       renderVerdict({
         error: "Couldn't evaluate that move — the engine may be busy or restarting. Try again.",
       });
@@ -470,6 +480,7 @@ export function createReviewNavigation({
     if (requestGeneration !== state.exploreGeneration || !state.exploring) return;
     state.exploreVerdict = result.move || (result.error ? { error: true } : null);
     updateStatus();
+    notifyFreeAnalysisLine();
     renderVerdict(result);
     if (result.move) {
       setEvalBar(moverColor === "white" ? result.move.win_after : 100 - result.move.win_after);
@@ -491,6 +502,7 @@ export function createReviewNavigation({
       threatArrows: [],
       boardLastMove: null,
       exploreBaseFen: null,
+      exploreMoverColor: null,
       exploreVerdict: null,
       exploring: false,
       freeAnalysis: false,
@@ -509,6 +521,7 @@ export function createReviewNavigation({
       exploring: false,
       exploreBaseNode: 0,
       exploreBaseFen: chess.fen(),
+      exploreMoverColor: null,
       exploreVerdict: null,
       evalShapes: [],
       bestArrows: [],
@@ -541,6 +554,7 @@ export function createReviewNavigation({
     patch({
       exploring: false,
       exploreBaseFen: null,
+      exploreMoverColor: null,
       exploreVerdict: null,
       evalShapes: [],
       bestArrows: [],

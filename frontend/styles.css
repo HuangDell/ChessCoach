@@ -527,6 +527,35 @@ main {
 .workflow-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .workflow-copy strong { font-size: 13px; line-height: 1.25; }
 .workflow-copy span { color: var(--muted); font-size: 12px; line-height: 1.3; }
+.workflow-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid #3a4549;
+}
+.workflow-analysis[hidden] { display: none; }
+.workflow-analysis .workflow-move {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text);
+}
+.workflow-analysis .workflow-eval { color: var(--muted); }
+.workflow-analysis .tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  color: #161512;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: lowercase;
+}
+.workflow-analysis .tag.best,
+.workflow-analysis .tag.good,
+.workflow-analysis .tag.blunder { color: #fff; }
 #workflow-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .workflow-status[data-state="importing"] .workflow-dot,
 .workflow-status[data-state="analyzing_scan"] .workflow-dot,

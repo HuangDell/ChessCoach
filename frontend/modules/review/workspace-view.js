@@ -6,7 +6,14 @@ import {
   scoreLabel,
 } from "./helpers.js";
 
-export function createWorkspaceView({ $, getSnapshot, onSelectCritical, onSelectEngineMove, wireVariationLinks }) {
+export function createWorkspaceView({
+  $,
+  setWorkflowState,
+  getSnapshot,
+  onSelectCritical,
+  onSelectEngineMove,
+  wireVariationLinks,
+}) {
   let view = "key";
 
   function explanationFor(snapshot, criticalId) {
@@ -213,11 +220,58 @@ export function createWorkspaceView({ $, getSnapshot, onSelectCritical, onSelect
     wireVariationLinks();
   }
 
+  function renderFreeAnalysis(line, ply, details = {}) {
+    $("review-empty").hidden = false;
+    $("review-empty-title").textContent = "Free analysis";
+    $("review-empty-detail").textContent = "Temporary · not saved";
+    $("free-analysis-line").textContent = line;
+    $("timeline-readout").textContent = ply ? `Ply ${ply}` : "Start position";
+
+    const sideToMove = details.sideToMove === "black" ? "Black" : "White";
+    setWorkflowState("free_analysis", "Free analysis", `Temporary position · ${sideToMove} to move`);
+
+    const verdict = details.verdict;
+    const mover = details.moverColor === "black" ? "Black" : "White";
+    const moveNumber = Math.max(1, Math.ceil(Number(ply || 1) / 2));
+    const movePrefix = mover === "White" ? `${moveNumber}.` : `${moveNumber}...`;
+    const moveSan = details.moveSan ? `${movePrefix}${escapeHtml(details.moveSan)}` : "";
+    if (!verdict || !moveSan) return;
+
+    const analysis = $("workflow-analysis");
+    analysis.hidden = false;
+    if (verdict === "pending" || verdict.error) {
+      const result = verdict === "pending" ? "Evaluating…" : "Couldn't evaluate that move.";
+      analysis.innerHTML =
+        `<span class="workflow-move"><b>${mover} played ${moveSan}</b></span>` +
+        `<span class="workflow-eval">${result}</span>`;
+      return;
+    }
+
+    const label = verdict.classification === "best" && !verdict.is_engine_best
+      ? "good"
+      : verdict.classification;
+    const toWhiteWinChance = (value) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return value;
+      return mover === "White" ? numeric : Math.round((100 - numeric) * 10) / 10;
+    };
+    const whiteBefore = toWhiteWinChance(verdict.win_before);
+    const whiteAfter = toWhiteWinChance(verdict.win_after);
+    const bestMove = verdict.is_engine_best || !verdict.better_move_san
+      ? "Engine's top choice"
+      : `Best was <b>${movePrefix}${escapeHtml(verdict.better_move_san)}</b>`;
+    analysis.innerHTML =
+      `<span class="workflow-move"><span class="tag ${label}">${label}</span>` +
+        `<b>${mover} played ${moveSan}</b></span>` +
+      `<span class="workflow-eval">White win chance ${whiteBefore}% → ${whiteAfter}% · ${bestMove}</span>`;
+  }
+
   return {
     setView,
     refreshView() { setView(view); },
     renderList,
     renderCursor,
     renderCritical,
+    renderFreeAnalysis,
   };
 }
