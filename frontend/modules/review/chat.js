@@ -4,6 +4,15 @@ import { renderMarkdown } from "../core/format.js";
 import { storageGet, storageSet } from "../core/storage.js";
 
 const AGENT_SESSION_KEY = "chessAgentSessionId";
+const FAILURE_LABELS = {
+  structured_output: "invalid structured response",
+  model_refusal: "model refusal",
+  grounding_validation: "grounding validation",
+  provider_request: "provider request",
+  timeout: "timeout",
+  context_budget: "context budget",
+  turn_limit: "turn limit",
+};
 
 function unavailable(capability) {
   return capability && (
@@ -198,6 +207,8 @@ export function createReviewChat({
   let sessionEpoch = 0;
   let pendingMessage = null;
   let restoredSummary = "";
+  let retryEpoch = 0;
+  const retryButtons = new Set();
   const messageScope = createLatestRequestScope();
   const actionScope = createLatestRequestScope();
 
@@ -230,6 +241,84 @@ export function createReviewChat({
       }
     });
     parent.appendChild(button);
+  }
+
+  function invalidateRetries() {
+    retryEpoch += 1;
+    for (const button of retryButtons) button.disabled = true;
+    retryButtons.clear();
+  }
+
+  function agentErrorDetails(error) {
+    const payload = error && error.payload && typeof error.payload === "object"
+      ? error.payload.error
+      : null;
+    return payload && typeof payload === "object" ? payload : null;
+  }
+
+  function retryableError(error) {
+    const details = agentErrorDetails(error);
+    if (details && typeof details.recoverable === "boolean") return details.recoverable;
+    const status = Number(error && error.status);
+    return status === 0 || status === 200 || status >= 500;
+  }
+
+  function agentErrorText(error) {
+    const details = agentErrorDetails(error);
+    const lines = [errorMessage(error, "The coach request failed.")];
+    const stage = details && FAILURE_LABELS[details.failure_stage];
+    if (stage) lines.push(`Reason: ${stage}.`);
+    if (details && details.run_id) lines.push(`Diagnostic ID: \`${details.run_id}\``);
+    return lines.join("\n\n");
+  }
+
+  function addRetryableError(error, question, retryContext) {
+    const message = addMessage("bot err", agentErrorText(error));
+    if (!retryableError(error)) return message;
+    const controls = document.createElement("div");
+    controls.className = "chat-response-actions";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-response-action";
+    button.textContent = "Retry";
+    retryButtons.add(button);
+    button.addEventListener("click", async () => {
+      if (
+        retryContext.retryEpoch !== retryEpoch ||
+        retryContext.uiGeneration !== generation ||
+        retryContext.sessionId !== agentSessionId ||
+        retryContext.agentGeneration !== agentGeneration
+      ) {
+        button.disabled = true;
+        return;
+      }
+      button.disabled = true;
+      const details = agentErrorDetails(error);
+      if (details && details.code === "stale_agent_context") {
+        try {
+          const payload = await agentApi.getSession(agentSessionId);
+          adoptAgentSession(payload);
+          syncedContextSignature = "";
+        } catch (recoveryError) {
+          if (!recoveryError || recoveryError.name !== "AbortError") {
+            message.remove();
+            retryButtons.delete(button);
+            addRetryableError(recoveryError, question, {
+              retryEpoch,
+              uiGeneration: generation,
+              sessionId: agentSessionId,
+              agentGeneration,
+            });
+          }
+          return;
+        }
+      }
+      await runQuestion(question, { previousError: message, isRetry: true });
+      retryButtons.delete(button);
+    });
+    controls.appendChild(button);
+    message.appendChild(controls);
+    return message;
   }
 
   function addAgentResponse(response = {}, calls = [], actionContext = {}) {
@@ -290,6 +379,7 @@ export function createReviewChat({
 
   function invalidatePending() {
     generation += 1;
+    invalidateRetries();
     messageScope.cancel();
     actionScope.cancel();
     if (pendingMessage) pendingMessage.remove();
@@ -535,30 +625,43 @@ export function createReviewChat({
     renderConversationSummary(session);
   }
 
-  async function send(event) {
-    event.preventDefault();
-    const input = $("chat-input");
-    const question = input.value.trim() || "What's the best move in this position, and why?";
-    input.value = "";
-    addMessage("user", question);
+  async function runQuestion(question, { previousError = null, isRetry = false } = {}) {
     const request = messageScope.begin();
     const expectedGeneration = generation;
+    const activeRetryEpoch = retryEpoch;
     $("chat-send").disabled = true;
     pendingMessage = addMessage("bot pending", "Snowie is thinking... (a few seconds)");
     try {
       await sendAgent(question, request, expectedGeneration);
+      if (previousError) previousError.remove();
     } catch (error) {
       if (request.isCurrent() && error && error.name !== "AbortError") {
-        addMessage("bot err", errorMessage(error, "The coach request failed."));
+        if (previousError) previousError.remove();
+        addRetryableError(error, question, {
+          retryEpoch: activeRetryEpoch,
+          uiGeneration: expectedGeneration,
+          sessionId: agentSessionId,
+          agentGeneration,
+        });
       }
     } finally {
       if (request.isCurrent()) {
         if (pendingMessage) pendingMessage.remove();
         pendingMessage = null;
         $("chat-send").disabled = false;
-        input.focus();
+        if (!isRetry) $("chat-input").focus();
       }
     }
+  }
+
+  async function send(event) {
+    event.preventDefault();
+    const input = $("chat-input");
+    const question = input.value.trim() || "What's the best move in this position, and why?";
+    input.value = "";
+    invalidateRetries();
+    addMessage("user", question);
+    await runQuestion(question);
   }
 
   function mount() {

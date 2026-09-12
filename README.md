@@ -110,7 +110,8 @@ reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可
 | `CHESS_AGENT_MAX_ENGINE_CALLS` | 单 run 最大 Engine 工具调用 | `2` |
 | `CHESS_AGENT_TIMEOUT` | 单 run wall-clock 秒数 | `120` |
 | `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
-| `CHESS_AGENT_DEBUG` | 在终端输出 Agent SDK 活动和 grounding 拒绝原因 | `0` |
+| `CHESS_AGENT_DEBUG` | 在终端输出带时间戳的脱敏 Agent 诊断 | `0` |
+| `CHESS_AGENT_RAW_TRACE` | 将最近 20 个 run 的原始 Responses body 写入本地文件 | `0` |
 | `CHESS_AGENT_CONTEXT_TOKENS` | endpoint/model 有效上下文容量；`0` 使用模型默认 | `deepseek-flash` 为 `1000000`，其他为 `128000` |
 | `CHESS_AGENT_CONTEXT_TRIGGER_RATIO` | 上下文压缩软阈值比例 | `0.9` |
 | `CHESS_AGENT_CONTEXT_TARGET_RATIO` | 压缩后输入目标比例 | `0.6` |
@@ -123,9 +124,11 @@ reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可
 CHESS_WEB_OPEN=0 CHESS_AGENT_DEBUG=1 uv run python -m server.web.runner
 ```
 
-该模式默认隐藏模型和工具正文。若需要在本机终端查看完整模型输入、结构化输出和工具参数，可额外
-设置 `OPENAI_AGENTS_DONT_LOG_MODEL_DATA=0` 与 `OPENAI_AGENTS_DONT_LOG_TOOL_DATA=0`。这些输出会
-包含棋局、对话和个性化上下文，不应重定向到会被提交或共享的文件。
+该模式输出 run/model/tool 生命周期、耗时、usage、失败阶段，以及不含字段值的结构校验路径；终端
+始终不打印模型输入、输出或工具正文。需要完整请求和响应时可另外设置
+`CHESS_AGENT_RAW_TRACE=1`。原始 body 会写到 `<DATA_DIR>/agent/traces/<timestamp>-<run_id>/`，不包含
+HTTP header，并自动只保留最近 20 个 run。这些文件包含棋局、对话、工具数据和可能的 reasoning，
+只能保留在本机。
 
 官方 OpenAI 和自定义 endpoint 都按当前后端配置直接创建 runtime，不要求本地 compatibility
 certificate。live portfolio 用相同 runtime、生产工具路由、生产预算、生产响应验收、fixture tools、
@@ -231,6 +234,7 @@ report。完整 benchmark 命令见 [Operations](docs/operations.md)。
 <DATA_DIR>/agent/conversations.sqlite3
 <DATA_DIR>/agent/sessions/<session_id>.json
 <DATA_DIR>/agent/runs.jsonl
+<DATA_DIR>/agent/traces/<timestamp>-<run_id>/*.json  # 仅显式开启 raw trace 时
 ```
 
 `analysis.json`、`explanations.json`、history、attempt 和 learning schema 保持兼容。旧 analysis
@@ -244,9 +248,9 @@ DELETE /api/agent/runs
 ```
 
 run log 只记录 version、run/session/generation、去敏 task/activity、model/endpoint type、usage、
-status/error、latency 和 tool 摘要。位置只保存 game/critical reference 或 FEN fingerprint；不保存
-完整 prompt、FEN、PV、base URL、credential、reasoning 或 traceback。清理 runs 不会触碰 session、
-learning、棋局、解释、attempt 或 Engine cache。
+status/error、失败阶段、脱敏 validation path、latency 和 tool 摘要。位置只保存 game/critical
+reference 或 FEN fingerprint；不保存完整 prompt、FEN、PV、base URL、credential、reasoning 或
+traceback。清理 runs 不会触碰 session、raw trace、learning、棋局、解释、attempt 或 Engine cache。
 
 usage 新增可选 `input_cache_hit_tokens` / `input_cache_miss_tokens`，来自 SDK 的
 `input_tokens_details.cached_tokens` 及输入总数之差。旧记录或无缓存明细时字段缺省，不视为零命中。

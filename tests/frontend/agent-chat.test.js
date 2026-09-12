@@ -99,6 +99,14 @@ function enabledCapability(overrides = {}) {
   };
 }
 
+function apiFailure(error, status = 502) {
+  return Object.assign(new Error(error.message), {
+    name: "ApiError",
+    status,
+    payload: { error },
+  });
+}
+
 function setupChat({ legacyApi, agentApi, sessionStore, getAgentContext } = {}) {
   const originalDocument = globalThis.document;
   const { $, elements } = elementLookup();
@@ -146,6 +154,104 @@ test("Review chat never falls back to the legacy endpoint when Agent is unavaila
     assert.deepEqual(legacyCalls, []);
     assert.match(visibleMessages(fixture.elements).at(-1).innerHTML, /unavailable/i);
     assert.equal(fixture.$("chat-send").disabled, false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("recoverable Agent errors show diagnostics and retry the same question once", async () => {
+  let serverGeneration = 0;
+  let sends = 0;
+  const fixture = setupChat({
+    agentApi: {
+      createSession: async () => ({ session: { session_id: "agent-retry", generation: 0 } }),
+      getSession: async (id) => ({
+        session: { session_id: id, generation: serverGeneration },
+      }),
+      updateContext: async (id, body) => {
+        serverGeneration = body.expected_generation + 1;
+        return { session: { session_id: id, generation: serverGeneration } };
+      },
+      sendMessage: async (id, body) => {
+        sends += 1;
+        if (sends === 1) {
+          throw apiFailure({
+            code: "invalid_agent_response",
+            message: "Chess Coach Agent returned an invalid structured response.",
+            recoverable: true,
+            run_id: "run-structured-1",
+            failure_stage: "structured_output",
+          });
+        }
+        return {
+          session: { session_id: id, generation: body.expected_generation },
+          response: { text: "The retried answer is grounded." },
+          tool_calls: [],
+        };
+      },
+    },
+  });
+  try {
+    fixture.chat.setAgentCapability(enabledCapability());
+    fixture.$("chat-input").value = "Why this move?";
+    await fixture.$("chat-form").emit("submit", { preventDefault() {} });
+
+    const error = visibleMessages(fixture.elements).at(-1);
+    assert.match(error.innerHTML, /invalid structured response/i);
+    assert.match(error.innerHTML, /run-structured-1/);
+    const retry = error.children[0].children[0];
+    assert.equal(retry.textContent, "Retry");
+
+    await retry.emit("click");
+    assert.equal(sends, 2);
+    assert.equal(error.removed, true);
+    assert.equal(
+      visibleMessages(fixture.elements).filter((item) => item.className.includes("user")).length,
+      1,
+    );
+    assert.match(visibleMessages(fixture.elements).at(-1).innerHTML, /retried answer is grounded/i);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("non-recoverable errors omit Retry and context changes disable old Retry controls", async () => {
+  let recoverable = false;
+  let serverGeneration = 0;
+  const fixture = setupChat({
+    agentApi: {
+      createSession: async () => ({ session: { session_id: "agent-errors", generation: 0 } }),
+      getSession: async (id) => ({
+        session: { session_id: id, generation: serverGeneration },
+      }),
+      updateContext: async (id, body) => {
+        serverGeneration = body.expected_generation + 1;
+        return { session: { session_id: id, generation: serverGeneration } };
+      },
+      sendMessage: async () => {
+        throw apiFailure({
+          code: recoverable ? "agent_timeout" : "agent_authentication_failed",
+          message: recoverable ? "The coach timed out." : "Authentication failed.",
+          recoverable,
+          run_id: "run-error",
+          failure_stage: recoverable ? "timeout" : "provider_request",
+        }, recoverable ? 504 : 503);
+      },
+    },
+  });
+  try {
+    fixture.chat.setAgentCapability(enabledCapability());
+    fixture.$("chat-input").value = "First question";
+    await fixture.$("chat-form").emit("submit", { preventDefault() {} });
+    assert.equal(visibleMessages(fixture.elements).at(-1).children.length, 0);
+
+    recoverable = true;
+    fixture.$("chat-input").value = "Second question";
+    await fixture.$("chat-form").emit("submit", { preventDefault() {} });
+    const retry = visibleMessages(fixture.elements).at(-1).children[0].children[0];
+    assert.equal(retry.disabled, false);
+    fixture.chat.setContext({ ...positionContext(), active_ply: 1 });
+    assert.equal(retry.disabled, true);
   } finally {
     fixture.cleanup();
   }

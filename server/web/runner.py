@@ -1,8 +1,10 @@
 """Run the sole Chess Review Coach FastAPI + static frontend product runtime."""
 from __future__ import annotations
 
+from copy import deepcopy
 import ipaddress
-import sys
+import logging
+import logging.config
 import threading
 import webbrowser
 
@@ -15,6 +17,20 @@ from server.web.app import create_app
 
 _opened = False
 _open_lock = threading.Lock()
+logger = logging.getLogger("chesscoach.web")
+
+
+def _logging_config() -> dict:
+    value = deepcopy(uvicorn.config.LOGGING_CONFIG)
+    for formatter in value["formatters"].values():
+        formatter["fmt"] = "%(asctime)s %(levelprefix)s %(message)s"
+        formatter["datefmt"] = "%Y-%m-%dT%H:%M:%S%z"
+    value["loggers"]["chesscoach"] = {
+        "handlers": ["default"],
+        "level": "DEBUG" if config.AGENT_DEBUG else "INFO",
+        "propagate": False,
+    }
+    return value
 
 
 def _web_url() -> str:
@@ -39,16 +55,11 @@ def open_board_once() -> None:
     url = _web_url()
     try:
         if webbrowser.open(url):
-            print(f"[chess-web] opened board in browser: {url}", file=sys.stderr, flush=True)
+            logger.info("opened board in browser: %s", url)
         else:
-            print(
-                f"[chess-web] no browser to open; board is at {url}",
-                file=sys.stderr,
-                flush=True,
-            )
+            logger.info("no browser to open; board is at %s", url)
     except Exception as exc:  # pragma: no cover - defensive
-        print(f"[chess-web] could not open browser ({exc}); board is at {url}",
-              file=sys.stderr, flush=True)
+        logger.warning("could not open browser (%s); board is at %s", exc, url)
 
 
 def _require_loopback(host: str) -> None:
@@ -71,7 +82,9 @@ def main() -> int:
     settings.apply_saved()
     _require_loopback(config.WEB_HOST)
     url = _web_url()
-    print(f"Chess Review Coach is available at {url}", flush=True)
+    log_config = _logging_config()
+    logging.config.dictConfig(log_config)
+    logger.info("Chess Review Coach is available at %s", url)
     if config.WEB_OPEN:
         threading.Timer(0.75, open_board_once).start()
     try:
@@ -81,6 +94,7 @@ def main() -> int:
             port=config.WEB_PORT,
             log_level="info",
             access_log=False,
+            log_config=log_config,
         )
     finally:
         engine.shutdown()

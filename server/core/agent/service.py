@@ -35,6 +35,7 @@ from server.core.agent.models import (
     AgentSessionResponse,
     AgentSessionState,
     AgentSessionSummary,
+    AgentValidationIssue,
     ChessReference,
     MemoryQuery,
     PositionContext,
@@ -77,9 +78,10 @@ from server.core.storage.agent_runs import (
     RunStatus,
     utc_now,
 )
+from server.core.storage.agent_traces import AgentRawTraceStore
 
 
-logger = logging.getLogger("openai.agents.chesscoach")
+logger = logging.getLogger("chesscoach.agent")
 
 
 ToolsFactory = Callable[[ResolvedContextBundle], AgentTools]
@@ -686,6 +688,8 @@ class ChessAgentService:
         result = None
         status: RunStatus = "provider_failure"
         error_code: str | None = None
+        failure_stage = None
+        validation_errors: list[AgentValidationIssue] = []
         try:
             try:
                 async with asyncio.timeout(self.timeout_seconds):
@@ -744,18 +748,44 @@ class ChessAgentService:
             except (TimeoutError, asyncio.TimeoutError):
                 status = "timeout"
                 error_code = "agent_timeout"
-                raise
+                failure_stage = "timeout"
+                raise AgentRuntimeFailure(
+                    AgentError(
+                        code="agent_timeout",
+                        message="Chess Coach Agent did not finish before the timeout.",
+                        recoverable=True,
+                        run_id=run_request.run_id,
+                        failure_stage="timeout",
+                    )
+                )
             except AgentResponseValidationError as exc:
                 status = "invalid_output"
                 error_code = "invalid_agent_response"
+                failure_stage = "grounding_validation"
+                validation_errors = [
+                    AgentValidationIssue(
+                        path="$",
+                        error_type="grounding_validation",
+                        message=str(exc)[:240] or "Grounding validation failed.",
+                    )
+                ]
                 logger.debug(
-                    "Agent run %s rejected by grounding validation: %s",
+                    "event=grounding_validation_failed run=%s reason=%s",
                     run_request.run_id,
                     exc,
                 )
-                raise
+                raise AgentRuntimeFailure(
+                    AgentError(
+                        code="invalid_agent_response",
+                        message="Chess Coach Agent returned an ungrounded response.",
+                        recoverable=True,
+                        run_id=run_request.run_id,
+                        failure_stage="grounding_validation",
+                    )
+                ) from exc
             except AgentRuntimeFailure as exc:
                 error_code = exc.error.code
+                failure_stage = exc.error.failure_stage
                 status = (
                     "timeout"
                     if exc.error.code == "agent_timeout"
@@ -789,6 +819,19 @@ class ChessAgentService:
                 if result is not None
                 else {}
             )
+            if telemetry is not None:
+                failure_stage = telemetry.failure_stage or failure_stage
+                validation_errors = list(telemetry.validation_errors) or validation_errors
+            duration_ms = max(0, round((time.monotonic() - started) * 1000))
+            if status != "success":
+                logger.debug(
+                    "event=run_failed run=%s status=%s error_code=%s failure_stage=%s duration_ms=%s",
+                    run_request.run_id,
+                    status,
+                    error_code,
+                    failure_stage,
+                    duration_ms,
+                )
             if self.run_store is not None:
                 try:
                     self.run_store.append(
@@ -804,10 +847,12 @@ class ChessAgentService:
                             policy_version=POLICY_VERSION,
                             response_schema_version=RESPONSE_SCHEMA_VERSION,
                             started_at=started_at,
-                            duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+                            duration_ms=duration_ms,
                             usage=usage,
                             status=status,
                             error_code=error_code,
+                            failure_stage=failure_stage,
+                            validation_errors=validation_errors or None,
                             tool_calls=tool_calls,
                         )
                     )
@@ -932,6 +977,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             domain_tools_factory=service.tools_for_runtime,
             session_provider=service.session_for_runtime,
             debug=config.AGENT_DEBUG,
+            raw_trace_store=(AgentRawTraceStore(root) if config.AGENT_RAW_TRACE else None),
         )
     except Exception as exc:  # optional Agent initialization must not prevent Web startup
         runtime = UnavailableAgentRuntime(

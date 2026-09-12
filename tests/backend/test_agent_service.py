@@ -273,13 +273,15 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
             with self.subTest(case=label):
                 self.runtime.handler = run
-                with self.assertLogs("openai.agents.chesscoach", level="DEBUG") as logs:
+                with self.assertLogs("chesscoach.agent", level="DEBUG") as logs:
                     with self.assertRaises(AgentServiceFailure) as raised:
                         await self.service.send_message(
                             self.session.session_id,
                             AgentMessageRequest(message="Explain this.", expected_generation=0),
                         )
                 self.assertEqual("invalid_agent_response", raised.exception.error.code)
+                self.assertEqual("grounding_validation", raised.exception.error.failure_stage)
+                self.assertIsNotNone(raised.exception.error.run_id)
                 self.assertIn(expected_reasons[label], "\n".join(logs.output))
                 self.assertEqual([], await self.conversation_items())
 
@@ -331,10 +333,13 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual("agent_timeout", raised.exception.error.code)
+        self.assertEqual("timeout", raised.exception.error.failure_stage)
+        self.assertIsNotNone(raised.exception.error.run_id)
         self.assertEqual([], await self.conversation_items())
         record = self.runs.read()[0]
         self.assertEqual("timeout", record.status)
         self.assertEqual("agent_timeout", record.error_code)
+        self.assertEqual("timeout", record.failure_stage)
 
     async def test_run_log_failure_does_not_roll_back_conversation(self) -> None:
         class FailingRunStore:

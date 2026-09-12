@@ -23,11 +23,11 @@ Agent runs are non-streaming and bounded by `CHESS_AGENT_MAX_TURNS`,
 `CHESS_AGENT_MAX_TOOL_CALLS`, `CHESS_AGENT_MAX_ENGINE_CALLS`, and `CHESS_AGENT_TIMEOUT`.
 `CHESS_AGENT_RUN_MAX_RECORDS` bounds the run log and defaults to 1000.
 
-Set `CHESS_AGENT_DEBUG=1` to print SDK activity and the exact local grounding validation failure to
-the terminal. Model and tool payloads stay redacted by default. For a controlled local reproduction,
-also set `OPENAI_AGENTS_DONT_LOG_MODEL_DATA=0` and `OPENAI_AGENTS_DONT_LOG_TOOL_DATA=0` to include the
-full model request, structured response, and tool data; those logs can contain personal chess and
-conversation context.
+Set `CHESS_AGENT_DEBUG=1` to print timestamped, redacted run/model/tool activity and exact local
+validation paths to the terminal. Model input, output, tool payloads, FEN, PV, and reasoning are never
+printed. Set `CHESS_AGENT_RAW_TRACE=1` independently to save exact Responses request and response
+bodies under `<DATA_DIR>/agent/traces/<timestamp>-<run_id>/`. Headers are excluded and only the newest
+20 run directories are retained. These files can contain personal chess and conversation context.
 
 ## Data layout
 
@@ -42,11 +42,13 @@ conversation context.
   agent/conversations.sqlite3          SDK conversation items
   agent/sessions/*.json                chess checkpoints and summaries
   agent/runs.jsonl                     redacted bounded telemetry
+  agent/traces/<timestamp>-<run_id>/   opt-in raw Responses bodies; newest 20 runs
 ```
 
-Run telemetry contains IDs, version metadata, status, stable errors, usage totals, latency, and
-redacted tool records. It never contains prompts, raw endpoint URLs, credentials, full FEN/PV,
-reasoning, or tracebacks. `GET /api/agent/metrics?limit=100` aggregates recent records.
+Run telemetry contains IDs, version metadata, status, stable errors, failure stages, redacted
+validation paths, usage totals, latency, and redacted tool records. It never contains prompts, raw
+endpoint URLs, credentials, full FEN/PV, reasoning, or tracebacks. `GET /api/agent/metrics?limit=100`
+aggregates recent records.
 `DELETE /api/agent/runs` clears only telemetry; the Settings data controls expose the same action.
 
 ## Degradation

@@ -4,7 +4,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from server.core.agent.models import AgentError, AgentRunRequest, AgentRunResult, ToolCallRecord
+from server.core.agent.models import (
+    AgentError,
+    AgentFailureStage,
+    AgentRunRequest,
+    AgentRunResult,
+    AgentValidationIssue,
+    ToolCallRecord,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +28,8 @@ class AgentRuntimeAvailability:
 class AgentRuntimeTelemetry:
     tool_calls: list[ToolCallRecord]
     usage: dict[str, int | float]
+    failure_stage: AgentFailureStage | None = None
+    validation_errors: tuple[AgentValidationIssue, ...] = ()
 
 
 class AgentRuntimeFailure(RuntimeError):

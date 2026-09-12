@@ -24,7 +24,7 @@ class DotenvConfigTests(unittest.TestCase):
             (server_dir / "__init__.py").write_text("", encoding="utf-8")
             shutil.copy2(ROOT / "server" / "config.py", server_dir / "config.py")
             (project_root / ".env").write_text(
-                "CHESS_WEB_PORT=9123\nCHESS_WEB_OPEN=0\n",
+                "CHESS_WEB_PORT=9123\nCHESS_WEB_OPEN=0\nCHESS_AGENT_RAW_TRACE=1\n",
                 encoding="utf-8",
             )
 
@@ -38,7 +38,8 @@ class DotenvConfigTests(unittest.TestCase):
                     "-c",
                     (
                         "import json; from server import config; "
-                        "print(json.dumps({'port': config.WEB_PORT, 'open': config.WEB_OPEN}))"
+                        "print(json.dumps({'port': config.WEB_PORT, 'open': config.WEB_OPEN, "
+                        "'raw_trace': config.AGENT_RAW_TRACE}))"
                     ),
                 ],
                 cwd=working_dir,
@@ -48,7 +49,10 @@ class DotenvConfigTests(unittest.TestCase):
                 text=True,
             )
 
-            self.assertEqual({"port": 9456, "open": False}, json.loads(result.stdout))
+            self.assertEqual(
+                {"port": 9456, "open": False, "raw_trace": True},
+                json.loads(result.stdout),
+            )
 
 
 if __name__ == "__main__":

@@ -36,6 +36,15 @@ ToolErrorCode = Literal[
     "training_unavailable",
     "tool_budget_exceeded",
 ]
+AgentFailureStage = Literal[
+    "structured_output",
+    "model_refusal",
+    "grounding_validation",
+    "provider_request",
+    "timeout",
+    "context_budget",
+    "turn_limit",
+]
 AGENT_TOOL_PERMISSIONS: Mapping[AgentToolName, ToolPermission] = MappingProxyType(
     {
         "get_review_context": "read",
@@ -1039,6 +1048,14 @@ class AgentError(ContractModel):
     ]
     message: str = Field(min_length=1)
     recoverable: bool
+    run_id: str | None = Field(default=None, min_length=1)
+    failure_stage: AgentFailureStage | None = None
+
+
+class AgentValidationIssue(ContractModel):
+    path: str = Field(min_length=1)
+    error_type: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=240)
 
 
 class SessionError(ContractModel):

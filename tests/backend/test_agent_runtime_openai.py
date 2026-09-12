@@ -101,6 +101,10 @@ class _FakeOpenAI:
     RateLimitError = _RateLimitError
     APITimeoutError = _APITimeoutError
 
+    @staticmethod
+    def DefaultAsyncHttpxClient(**kwargs):
+        return type("HttpClient", (), {"kwargs": kwargs})()
+
 
 @dataclass
 class _Usage:
@@ -132,6 +136,25 @@ class _FakeAgents:
 
     class Model:
         pass
+
+    class AgentOutputSchemaBase:
+        pass
+
+    class AgentOutputSchema:
+        def __init__(self, output_type):
+            self.output_type = output_type
+
+        def is_plain_text(self):
+            return False
+
+        def name(self):
+            return self.output_type.__name__
+
+        def json_schema(self):
+            return self.output_type.model_json_schema()
+
+        def is_strict_json_schema(self):
+            return True
 
     class ModelSettings:
         def __init__(self, **kwargs):
@@ -209,7 +232,7 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
         _FakeAgents.runner_error = None
         _FakeAgents.verbose_logging_enabled = False
 
-    def test_debug_enables_sdk_verbose_logging(self) -> None:
+    def test_debug_does_not_enable_sdk_verbose_stdout_logging(self) -> None:
         with patch(
             "server.core.agent.runtime_openai.importlib.import_module",
             side_effect=self._imports,
@@ -224,7 +247,73 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
                 debug=True,
             )
 
-        self.assertTrue(_FakeAgents.verbose_logging_enabled)
+        self.assertFalse(_FakeAgents.verbose_logging_enabled)
+
+    def test_output_schema_reports_safe_validation_paths_without_raw_values(self) -> None:
+        with patch(
+            "server.core.agent.runtime_openai.importlib.import_module",
+            side_effect=self._imports,
+        ):
+            runtime = OpenAIAgentsRuntime(
+                model="gpt-test",
+                api_key="secret",
+                base_url="https://api.openai.com/v1",
+                endpoint_type="openai_responses",
+                domain_tools_factory=lambda _request: object(),
+                session_provider=lambda _session_id: object(),
+                debug=True,
+            )
+        request = _request("session-1")
+        local = _LocalRunContext(
+            request=request,
+            tools=object(),
+            budget=_ToolBudget(max_total=6, max_engine=2),
+        )
+        raw = '{"text":"ok","grounding":{"completion":"private-broken-value"}}'
+
+        with self.assertLogs("chesscoach.agent", level="DEBUG") as logs:
+            with self.assertRaises(_FakeAgents.ModelBehaviorError):
+                runtime._output_schema(local).validate_json(raw)
+
+        self.assertEqual("structured_output", local.failure_stage)
+        self.assertEqual("grounding.completion", local.validation_errors[0].path)
+        rendered = "\n".join(logs.output)
+        self.assertIn('"path":"grounding.completion"', rendered)
+        self.assertIn('"error_type":"literal_error"', rendered)
+        self.assertNotIn("private-broken-value", rendered)
+
+    def test_raw_trace_hooks_are_attached_without_enabling_verbose_logging(self) -> None:
+        trace_store = type(
+            "TraceStore",
+            (),
+            {
+                "event_hooks": lambda self: {
+                    "request": [lambda _request: None],
+                    "response": [lambda _response: None],
+                }
+            },
+        )()
+        with patch(
+            "server.core.agent.runtime_openai.importlib.import_module",
+            side_effect=self._imports,
+        ):
+            OpenAIAgentsRuntime(
+                model="gpt-test",
+                api_key="secret",
+                base_url="https://api.openai.com/v1",
+                endpoint_type="openai_responses",
+                domain_tools_factory=lambda _request: object(),
+                session_provider=lambda _session_id: object(),
+                raw_trace_store=trace_store,
+                debug=True,
+            )
+        hooks = _AsyncClient.created[0]["http_client"].kwargs["event_hooks"]
+        self.assertEqual(1, len(hooks["request"]))
+        self.assertEqual(1, len(hooks["response"]))
+
+        http_client = _AsyncClient.created[-1]["http_client"]
+        self.assertEqual({"request", "response"}, set(http_client.kwargs["event_hooks"]))
+        self.assertFalse(_FakeAgents.verbose_logging_enabled)
 
     @staticmethod
     def _imports(name: str):

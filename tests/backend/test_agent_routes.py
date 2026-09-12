@@ -251,7 +251,16 @@ class AgentRouteTests(unittest.TestCase):
             (SessionError(code="session_busy", message="busy", recoverable=True), 409),
             (SessionError(code="invalid_session_context", message="invalid", recoverable=False), 400),
             (AgentError(code="agent_provider_error", message="provider", recoverable=True), 502),
-            (AgentError(code="invalid_agent_response", message="invalid output", recoverable=True), 502),
+            (
+                AgentError(
+                    code="invalid_agent_response",
+                    message="invalid output",
+                    recoverable=True,
+                    run_id="run-structured",
+                    failure_stage="structured_output",
+                ),
+                502,
+            ),
             (AgentError(code="max_turns_exceeded", message="turns", recoverable=True), 502),
             (AgentError(code="agent_unavailable", message="unavailable", recoverable=True), 503),
             (AgentError(code="agent_authentication_failed", message="auth", recoverable=True), 503),

@@ -13,7 +13,12 @@ from typing import Iterator, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from server.core.agent.models import AgentActivity, ToolCallRecord
+from server.core.agent.models import (
+    AgentActivity,
+    AgentFailureStage,
+    AgentValidationIssue,
+    ToolCallRecord,
+)
 
 
 RUN_RECORD_SCHEMA_VERSION = 1
@@ -74,6 +79,8 @@ class AgentRunRecord(BaseModel):
     usage: AgentUsageSummary = Field(default_factory=AgentUsageSummary)
     status: RunStatus
     error_code: str | None = None
+    failure_stage: AgentFailureStage | None = None
+    validation_errors: list[AgentValidationIssue] | None = Field(default=None, max_length=10)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
 
 

@@ -8,7 +8,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from server.core.agent.models import ToolCallRecord, ToolPositionReference
+from server.core.agent.models import AgentValidationIssue, ToolCallRecord, ToolPositionReference
 from server.core.storage.agent_runs import AgentRunRecord, AgentRunStore
 
 
@@ -112,6 +112,30 @@ class AgentRunStoreTests(unittest.TestCase):
         values["usage"] = {"input_tokens": 2, "api_key": "secret"}
         with self.assertRaises(ValidationError):
             AgentRunRecord.model_validate(values)
+
+    def test_optional_failure_diagnostics_remain_redacted_and_backward_compatible(self) -> None:
+        store = AgentRunStore(self.temporary.name)
+        store.append(_record(0))
+        store.append(
+            _record(1, status="invalid_output").model_copy(
+                update={
+                    "error_code": "invalid_agent_response",
+                    "failure_stage": "structured_output",
+                    "validation_errors": [
+                        AgentValidationIssue(
+                            path="grounding.completion",
+                            error_type="literal_error",
+                            message="Input should be 'full' or 'partial'",
+                        )
+                    ],
+                }
+            )
+        )
+
+        records = store.read()
+        self.assertIsNone(records[0].failure_stage)
+        self.assertEqual("structured_output", records[1].failure_stage)
+        self.assertEqual("grounding.completion", records[1].validation_errors[0].path)
 
 
 if __name__ == "__main__":
