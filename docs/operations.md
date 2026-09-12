@@ -25,9 +25,12 @@ Agent runs are non-streaming and bounded by `CHESS_AGENT_MAX_TURNS`,
 
 Set `CHESS_AGENT_DEBUG=1` to print timestamped, redacted run/model/tool activity and exact local
 validation paths to the terminal. Model input, output, tool payloads, FEN, PV, and reasoning are never
-printed. Set `CHESS_AGENT_RAW_TRACE=1` independently to save exact Responses request and response
-bodies under `<DATA_DIR>/agent/traces/<timestamp>-<run_id>/`. Headers are excluded and only the newest
-20 run directories are retained. These files can contain personal chess and conversation context.
+printed. When `CHESS_AGENT_RAW_TRACE` is unset, it inherits `CHESS_AGENT_DEBUG`; an explicit `0` or `1`
+always wins. Raw tracing covers both Ask Coach Responses calls and bounded Explanation Chat
+Completions calls. Exact request and response bodies are stored under
+`<DATA_DIR>/agent/traces/<timestamp>-<trace-id>/`; headers are excluded and the two paths share one
+newest-20-directory retention quota. These files can contain personal chess, conversation, learning
+memory, model output, tool payloads, and reasoning.
 
 ## Data layout
 
@@ -42,7 +45,7 @@ bodies under `<DATA_DIR>/agent/traces/<timestamp>-<run_id>/`. Headers are exclud
   agent/conversations.sqlite3          SDK conversation items
   agent/sessions/*.json                chess checkpoints and summaries
   agent/runs.jsonl                     redacted bounded telemetry
-  agent/traces/<timestamp>-<run_id>/   opt-in raw Responses bodies; newest 20 runs
+  agent/traces/<timestamp>-<trace-id>/ opt-in raw model HTTP bodies; newest 20 combined traces
 ```
 
 Run telemetry contains IDs, version metadata, status, stable errors, failure stages, redacted

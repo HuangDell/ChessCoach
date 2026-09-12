@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -10,6 +11,8 @@ import httpx
 
 from server import config
 from server.core.explanation.models import ExplanationRequest, ProviderResponse
+from server.core.storage.agent_traces import RawHttpTraceStore
+
 
 class ExplanationProviderError(RuntimeError):
     """A model transport or availability failure safe to show through the local API."""
@@ -56,11 +59,20 @@ def _is_loopback_url(url: str) -> bool:
 class OpenAICompatibleProvider(ExplanationProvider):
     """Direct backend-only client for local or remote OpenAI-compatible APIs."""
 
-    def __init__(self, *, base_url: str, model: str, api_key: str = "", local: bool = False):
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key: str = "",
+        local: bool = False,
+        raw_trace_store: RawHttpTraceStore | None = None,
+    ):
         self._base_url = base_url.strip()
         self._model = model.strip()
         self._api_key = api_key.strip()
         self._local = local
+        self._raw_trace_store = raw_trace_store
 
     @property
     def info(self) -> ProviderInfo:
@@ -88,9 +100,18 @@ class OpenAICompatibleProvider(ExplanationProvider):
         }
         try:
             url = _chat_completions_url(self._base_url)
+            trace_id = f"explanation-{request.critical_id}-{request.input_hash[:12]}"
+            trace_context = (
+                self._raw_trace_store.activate(trace_id)
+                if self._raw_trace_store is not None
+                else nullcontext()
+            )
             # Corporate/system proxy variables must not intercept a configured loopback API.
             # Remote compatible APIs keep normal proxy discovery.
-            with httpx.Client(trust_env=not _is_loopback_url(url)) as client:
+            client_options = {"trust_env": not _is_loopback_url(url)}
+            if self._raw_trace_store is not None:
+                client_options["event_hooks"] = self._raw_trace_store.sync_event_hooks()
+            with trace_context, httpx.Client(**client_options) as client:
                 response = client.post(
                     url,
                     json=payload,
@@ -122,7 +143,9 @@ class OpenAICompatibleProvider(ExplanationProvider):
         return ProviderResponse(text=content.strip())
 
 
-def configured_provider() -> ExplanationProvider:
+def configured_provider(
+    *, raw_trace_store: RawHttpTraceStore | None = None
+) -> ExplanationProvider:
     """Resolve the current provider without leaking its credentials into business data."""
     selected = config.EXPLANATION_PROVIDER.strip().lower().replace("_", "-")
     base_url = config.EXPLANATION_BASE_URL.strip()
@@ -136,6 +159,7 @@ def configured_provider() -> ExplanationProvider:
             model=model,
             api_key=config.EXPLANATION_API_KEY,
             local=_is_loopback_url(base_url),
+            raw_trace_store=raw_trace_store,
         )
     raise ExplanationProviderError(
         "No explanation provider is configured. Set CHESS_EXPLANATION_BASE_URL and "

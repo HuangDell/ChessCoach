@@ -396,6 +396,44 @@ class AgentLifecycleTests(unittest.TestCase):
 
         self.assertFalse(injected_service.closed)
 
+    def test_lifespan_injects_one_trace_store_into_both_model_paths(self) -> None:
+        default_service = FakeAgentService()
+        explanation_provider = object()
+        old_raw_trace = config.AGENT_RAW_TRACE
+        config.AGENT_RAW_TRACE = True
+        try:
+            with (
+                patch(
+                    "server.web.app.create_default_agent_service",
+                    return_value=default_service,
+                ) as create_agent,
+                patch(
+                    "server.web.app.configured_provider",
+                    return_value=explanation_provider,
+                ) as create_explanation,
+                patch("server.web.app.app_liveness.start"),
+                patch("server.web.app.lifecycle.start_watchdog"),
+                patch("server.web.app.lifecycle.stop_watchdog"),
+                patch("server.web.app.engine.shutdown"),
+            ):
+                app = create_app()
+
+                async def exercise() -> None:
+                    async with app.router.lifespan_context(app):
+                        store = app.state.raw_trace_store
+                        self.assertIsNotNone(store)
+                        self.assertIs(explanation_provider, app.state.explanation_provider)
+                        self.assertIs(
+                            store, create_agent.call_args.kwargs["raw_trace_store"]
+                        )
+                        self.assertIs(
+                            store, create_explanation.call_args.kwargs["raw_trace_store"]
+                        )
+
+                asyncio.run(exercise())
+        finally:
+            config.AGENT_RAW_TRACE = old_raw_trace
+
 
 if __name__ == "__main__":
     unittest.main()

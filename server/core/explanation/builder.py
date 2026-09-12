@@ -9,7 +9,7 @@ from server.core.agent.models import LearningMemoryItem, MemoryQuery
 from server.core.explanation.models import ExplanationRequest
 from server.core.learning import memory as learning_memory
 
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 EXPLANATION_SCHEMA_VERSION = 1
 
 _BASE_EVIDENCE_REFS = (
@@ -206,13 +206,23 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
             "'the engine says', never output hidden reasoning, and be conservative when evidence is "
             "limited. why_it_looked_reasonable may describe only an observable intent. For "
             "multiple_good_moves, say the first choice need not be memorized; for only_move, name the "
-            "functions it uniquely combines. Return one JSON object and no Markdown fence."
+            "functions it uniquely combines. Return one JSON object and no Markdown fence. "
+            "The object must contain exactly these fields: critical_id, played_move, "
+            "why_it_looked_reasonable, core_problem, recommended_move, why_recommended, "
+            "played_line_summary, best_line_summary, primary_category, secondary_categories, "
+            "transferable_principle, next_time_checklist, evidence_refs. Copy critical_id, "
+            "played_move, recommended_move, primary_category, and secondary_categories exactly from "
+            "position_context.expected. why_recommended must contain 1-5 concrete reasons; "
+            "next_time_checklist 1-6 checks; evidence_refs 1-8 exact, unique strings from "
+            "position_context.allowed_evidence_refs. Begin played_line_summary with the complete legal "
+            "SAN sequence in position_context.engine.variations.played_line.san joined by spaces, and "
+            "begin best_line_summary the same way from best_line.san, before summarizing each result. "
+            "All string and list items must be non-empty; list items must be unique."
         )
-        short_text = "short English string"
-        core_text = "required; state the missed problem first"
-        reason_text = "1-5 concrete evidence-grounded reasons"
-        principle_text = "required transferable principle"
-        checklist_text = "1-6 checks for next time"
+        user_intro = (
+            "Explain this one critical position. Do not cite the full game or any history that is "
+            "not supplied. Use only this final context object:\nposition_context:\n"
+        )
     else:
         system_prompt = (
             "你是国际象棋复盘教练。你只负责把给定的 Engine 结果和确定性 Chess Facts 转成简洁、"
@@ -223,44 +233,29 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
             "编造用户心理；why_it_looked_reasonable 只能描述这步棋表面上可观察的意图。"
             "criticality=multiple_good_moves 时说明无需死记第一选择；criticality=only_move 时说明"
             "最佳着具体同时承担了哪些功能。只输出一个 JSON 对象，不要 Markdown 代码围栏。"
+            "对象必须且只能包含这些字段：critical_id、played_move、why_it_looked_reasonable、"
+            "core_problem、recommended_move、why_recommended、played_line_summary、"
+            "best_line_summary、primary_category、secondary_categories、transferable_principle、"
+            "next_time_checklist、evidence_refs。critical_id、played_move、recommended_move、"
+            "primary_category 和 secondary_categories 必须原样复制 position_context.expected。"
+            "why_recommended 必须有 1-5 条具体理由；next_time_checklist 必须有 1-6 个检查项；"
+            "evidence_refs 必须有 1-8 个互不重复且精确来自 position_context.allowed_evidence_refs "
+            "的值。played_line_summary 必须以 position_context.engine.variations.played_line.san "
+            "中的完整合法 SAN 序列（以空格连接）开头，再概括结果；best_line_summary 同理使用 "
+            "best_line.san。所有字符串和列表项都不能为空，列表项不能重复。"
         )
-        short_text = "简短中文字符串"
-        core_text = "必填，先指出漏看的问题"
-        reason_text = "1-5 条有事实依据的具体原因"
-        principle_text = "必填，可迁移棋理"
-        checklist_text = "1-6 个下次检查项"
-    played_line_text = " ".join(str(move) for move in (critical.get("played_line") or {}).get("san") or [])
-    best_line_text = " ".join(str(move) for move in (critical.get("best_line") or {}).get("san") or [])
-    output_shape = {
-        **expected,
-        "why_it_looked_reasonable": short_text,
-        "core_problem": core_text,
-        "why_recommended": [reason_text],
-        "played_line_summary": f"必须以原样 SAN 行‘{played_line_text}’开头，再概括结果",
-        "best_line_summary": f"必须以原样 SAN 行‘{best_line_text}’开头，再概括结果",
-        "transferable_principle": principle_text,
-        "next_time_checklist": [checklist_text],
-        "evidence_refs": ["1-8 个 allowed_evidence_refs 中的精确值"],
+        user_intro = (
+            "请解释这一处关键局面。不得引用整盘棋或未提供的历史。只使用末尾这一个上下文对象："
+            "\nposition_context:\n"
+        )
+    position_context = {
+        "expected": expected,
+        "allowed_evidence_refs": allowed_refs,
+        "engine": payload,
     }
-    if config.EXPLANATION_LANGUAGE == "en":
-        user_prompt = (
-            "Explain this one critical position. Do not cite the full game or any history that is "
-            "not supplied.\n\n"
-            f"Fields to preserve exactly:\n{json.dumps(expected, ensure_ascii=False, sort_keys=True)}\n\n"
-            f"Allowed evidence paths:\n{json.dumps(allowed_refs, ensure_ascii=False)}\n\n"
-            "Required output shape (all fields required; no extra fields):\n"
-            f"{json.dumps(output_shape, ensure_ascii=False, indent=2)}\n\n"
-            f"Only input JSON:\n{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
-        )
-    else:
-        user_prompt = (
-            "请基于下面这一处关键局面生成解释。不得引用整盘棋或未提供的历史。\n\n"
-            f"必须原样使用的字段：\n{json.dumps(expected, ensure_ascii=False, sort_keys=True)}\n\n"
-            f"允许引用的证据路径：\n{json.dumps(allowed_refs, ensure_ascii=False)}\n\n"
-            f"输出结构（字段必须齐全且不能增加字段）：\n"
-            f"{json.dumps(output_shape, ensure_ascii=False, indent=2)}\n\n"
-            f"唯一输入 JSON：\n{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
-        )
+    user_prompt = user_intro + json.dumps(
+        position_context, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return ExplanationRequest(
         critical_id=critical_id,
         language=config.EXPLANATION_LANGUAGE,

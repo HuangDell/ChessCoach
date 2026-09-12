@@ -1,7 +1,7 @@
 """Artifact-backed endpoints for structured AI coaching explanations."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -39,16 +39,17 @@ def get_game_explanations(game_id: str, review_side: str | None = None) -> JSONR
 
 @router.post("/games/{game_id}/explanations")
 def post_game_explanations(
-    game_id: str, body: GenerateExplanationsBody | None = None
+    game_id: str, http_request: Request, body: GenerateExplanationsBody | None = None
 ) -> JSONResponse:
     """Generate one critical position or all missing positions, with input-hash caching."""
-    request = body or GenerateExplanationsBody()
+    generation = body or GenerateExplanationsBody()
     try:
         result = generate_explanations(
             game_id,
-            review_side=request.review_side,
-            critical_id=(request.critical_id or "").strip() or None,
-            force=request.force,
+            review_side=generation.review_side,
+            critical_id=(generation.critical_id or "").strip() or None,
+            force=generation.force,
+            provider=getattr(http_request.app.state, "explanation_provider", None),
         )
     except ExplanationNotFoundError as exc:
         return _error("explanation_input_not_found", str(exc), 404)

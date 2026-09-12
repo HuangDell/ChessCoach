@@ -18,6 +18,8 @@ from server.core import engine
 from server.core import lifecycle
 from server.core.learning import initialize_learning
 from server.core.agent.service import ChessAgentService, create_default_agent_service
+from server.core.explanation.providers import ExplanationProviderError, configured_provider
+from server.core.storage.agent_traces import RawHttpTraceStore
 from server.web.routes_agent import router as agent_router
 from server.web.routes_board import router as board_router
 from server.web.routes_explanation import router as explanation_router
@@ -123,9 +125,18 @@ async def _lifespan(app: FastAPI):
     app.state.learning_status = initialize_learning()
     service = getattr(app.state, "agent_service", None)
     owns_agent_service = service is None
+    raw_trace_store = RawHttpTraceStore(config.DATA_DIR) if config.AGENT_RAW_TRACE else None
+    app.state.raw_trace_store = raw_trace_store
+    try:
+        app.state.explanation_provider = configured_provider(
+            raw_trace_store=raw_trace_store
+        )
+    except ExplanationProviderError:
+        # Explanation is optional; invalid configuration is reported by its endpoint, not startup.
+        app.state.explanation_provider = None
     try:
         if service is None:
-            service = create_default_agent_service()
+            service = create_default_agent_service(raw_trace_store=raw_trace_store)
             app.state.agent_service = service
         yield
     finally:
@@ -136,6 +147,8 @@ async def _lifespan(app: FastAPI):
                 finally:
                     app.state.agent_service = None
         finally:
+            app.state.explanation_provider = None
+            app.state.raw_trace_store = None
             lifecycle.stop_watchdog()
             engine.shutdown()
 
@@ -148,6 +161,8 @@ def create_app(agent_service: ChessAgentService | None = None) -> FastAPI:
         lifespan=_lifespan,
     )
     app.state.agent_service = agent_service
+    app.state.explanation_provider = None
+    app.state.raw_trace_store = None
 
     # In app mode (double-click launcher), self-exit shortly after the browser tab is closed.
     # No-op for development servers and tests (config.APP_MODE is off there).

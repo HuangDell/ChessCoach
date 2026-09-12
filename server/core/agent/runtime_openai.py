@@ -57,7 +57,7 @@ from server.core.agent.runtime import (
     UnavailableAgentRuntime,
 )
 from server.core.learning import taxonomy
-from server.core.storage.agent_traces import AgentRawTraceStore
+from server.core.storage.agent_traces import RawHttpTraceStore
 
 
 DomainToolsFactory = Callable[[AgentRunRequest], Any]
@@ -230,7 +230,7 @@ class OpenAIAgentsRuntime:
         orchestration_factory: Callable[[AgentRunRequest], OrchestrationController] | None = None,
         research_model: Any | None = None,
         http_event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
-        raw_trace_store: AgentRawTraceStore | None = None,
+        raw_trace_store: RawHttpTraceStore | None = None,
         debug: bool = False,
         context_budget: ContextBudget | None = None,
         summary_builder: ConversationSummaryBuilder | None = None,
@@ -267,7 +267,11 @@ class OpenAIAgentsRuntime:
             name: list(callbacks) for name, callbacks in (http_event_hooks or {}).items()
         }
         if raw_trace_store is not None:
-            for name, callbacks in raw_trace_store.event_hooks().items():
+            hook_factory = getattr(raw_trace_store, "async_event_hooks", None)
+            raw_trace_hooks = (
+                hook_factory() if hook_factory is not None else raw_trace_store.event_hooks()
+            )
+            for name, callbacks in raw_trace_hooks.items():
                 event_hooks.setdefault(name, []).extend(callbacks)
         if event_hooks:
             client_options["http_client"] = openai.DefaultAsyncHttpxClient(
@@ -1499,7 +1503,7 @@ def create_openai_runtime(
     session_provider: SessionProvider,
     provider: str = "",
     debug: bool = False,
-    raw_trace_store: AgentRawTraceStore | None = None,
+    raw_trace_store: RawHttpTraceStore | None = None,
 ) -> OpenAIAgentsRuntime | UnavailableAgentRuntime:
     provider = resolve_agent_provider(provider, base_url)
     endpoint_type = "custom_responses" if base_url else "openai_responses"

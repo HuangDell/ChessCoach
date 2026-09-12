@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import stat
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,24 @@ class _Response:
         self.body = body
 
     async def aread(self) -> bytes:
+        return self.body
+
+
+class _SyncRequest:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.headers = {"Authorization": "Bearer must-not-be-written"}
+
+    def read(self) -> bytes:
+        return self.body
+
+
+class _SyncResponse:
+    def __init__(self, request: _SyncRequest, body: bytes) -> None:
+        self.request = request
+        self.body = body
+
+    def read(self) -> bytes:
         return self.body
 
 
@@ -64,6 +83,44 @@ class AgentRawTraceStoreTests(unittest.TestCase):
                         asyncio.run(store.on_request(request))
 
             self.assertIn("raw_trace_write_failed", "\n".join(logs.output))
+
+    def test_sync_and_async_hooks_share_retention_and_keep_contexts_isolated(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="shared-traces-") as data_dir:
+            store = AgentRawTraceStore(data_dir, max_runs=2)
+            barrier = threading.Barrier(2)
+
+            def write_sync() -> None:
+                request = _SyncRequest(b'{"sync-request":true}')
+                with store.activate("explanation-position-hash"):
+                    barrier.wait()
+                    store.on_sync_request(request)
+                    store.on_sync_response(_SyncResponse(request, b'{"sync-response":true}'))
+
+            thread = threading.Thread(target=write_sync)
+            thread.start()
+            request = _Request(b'{"async-request":true}')
+            with store.activate("agent-run"):
+                barrier.wait()
+                asyncio.run(store.on_request(request))
+                asyncio.run(store.on_response(_Response(request, b'{"async-response":true}')))
+            thread.join()
+
+            with store.activate("newest-run"):
+                newest_request = _SyncRequest(b'{"newest":true}')
+                store.on_sync_request(newest_request)
+
+            directories = sorted((Path(data_dir) / "agent" / "traces").iterdir())
+            self.assertEqual(2, len(directories))
+            contents = {
+                path.name: sorted(file.read_bytes() for file in path.iterdir())
+                for path in directories
+            }
+            for bodies in contents.values():
+                self.assertFalse(
+                    b'{"async-request":true}' in bodies
+                    and b'{"sync-request":true}' in bodies
+                )
+            self.assertTrue(any("newest-run" in name for name in contents))
 
 
 if __name__ == "__main__":

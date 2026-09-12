@@ -508,9 +508,11 @@ AGENT_MAX_OUTPUT_TOKENS: int = _parse_int("CHESS_AGENT_MAX_OUTPUT_TOKENS", 8192)
 AGENT_SUMMARY_MAX_OUTPUT_TOKENS: int = _parse_int("CHESS_AGENT_SUMMARY_MAX_OUTPUT_TOKENS", 8192)
 # Emit timestamped, redacted Agent lifecycle and validation diagnostics to the terminal.
 AGENT_DEBUG: bool = os.environ.get("CHESS_AGENT_DEBUG", "0") == "1"
-# Persist exact Responses request/response bodies locally without HTTP headers. This is independent
-# of terminal debug logging and retains only the newest twenty Agent runs.
-AGENT_RAW_TRACE: bool = os.environ.get("CHESS_AGENT_RAW_TRACE", "0") == "1"
+# Persist exact model request/response bodies locally without HTTP headers. When unset, raw tracing
+# follows terminal debug mode; either explicit value always wins. Both model paths share the newest
+# twenty trace directories.
+_agent_raw_trace = os.environ.get("CHESS_AGENT_RAW_TRACE")
+AGENT_RAW_TRACE: bool = AGENT_DEBUG if _agent_raw_trace is None else _agent_raw_trace == "1"
 
 # --- Puzzle mode (server.core.puzzles / puzzle_rating) ------------------------------------------
 # A tactical trainer built on the same board, Engine, and DATA_DIR substrate. Puzzles

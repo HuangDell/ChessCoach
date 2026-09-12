@@ -78,7 +78,7 @@ from server.core.storage.agent_runs import (
     RunStatus,
     utc_now,
 )
-from server.core.storage.agent_traces import AgentRawTraceStore
+from server.core.storage.agent_traces import RawHttpTraceStore
 
 
 logger = logging.getLogger("chesscoach.agent")
@@ -936,7 +936,11 @@ class ChessAgentService:
             raise first_error
 
 
-def create_default_agent_service(data_dir: str | None = None) -> ChessAgentService:
+def create_default_agent_service(
+    data_dir: str | None = None,
+    *,
+    raw_trace_store: RawHttpTraceStore | None = None,
+) -> ChessAgentService:
     """Create the lifecycle-owned production service without requiring the optional SDK."""
 
     from server.core.agent.runtime import UnavailableAgentRuntime
@@ -966,6 +970,8 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
         max_engine_tool_calls=config.AGENT_MAX_ENGINE_CALLS,
         timeout_seconds=config.AGENT_TIMEOUT,
     )
+    if raw_trace_store is None and config.AGENT_RAW_TRACE:
+        raw_trace_store = RawHttpTraceStore(root)
     try:
         runtime = create_openai_runtime(
             enabled=config.AGENT_ENABLED,
@@ -977,7 +983,7 @@ def create_default_agent_service(data_dir: str | None = None) -> ChessAgentServi
             domain_tools_factory=service.tools_for_runtime,
             session_provider=service.session_for_runtime,
             debug=config.AGENT_DEBUG,
-            raw_trace_store=(AgentRawTraceStore(root) if config.AGENT_RAW_TRACE else None),
+            raw_trace_store=raw_trace_store,
         )
     except Exception as exc:  # optional Agent initialization must not prevent Web startup
         runtime = UnavailableAgentRuntime(

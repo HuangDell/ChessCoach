@@ -1,4 +1,4 @@
-"""Opt-in local storage for raw Agent Responses request and response bodies."""
+"""Opt-in local storage for header-free raw model HTTP bodies."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -28,14 +28,14 @@ class _ActiveTrace:
     disabled: bool = False
 
 
-class AgentRawTraceStore:
-    """Write header-free raw HTTP bodies and retain only the newest run directories."""
+class RawHttpTraceStore:
+    """Write header-free raw HTTP bodies and retain only the newest trace directories."""
 
     def __init__(self, data_dir: str | os.PathLike[str], *, max_runs: int = 20) -> None:
         self.root = Path(data_dir) / "agent" / "traces"
         self.max_runs = max(1, int(max_runs))
         self._current: ContextVar[_ActiveTrace | None] = ContextVar(
-            "chesscoach_agent_raw_trace", default=None
+            "chesscoach_raw_http_trace", default=None
         )
         self._lock = threading.RLock()
         self._active_directories: set[Path] = set()
@@ -54,8 +54,15 @@ class AgentRawTraceStore:
                     self._active_directories.discard(state.directory)
                 self._prune()
 
-    def event_hooks(self) -> dict[str, list[Any]]:
+    def async_event_hooks(self) -> dict[str, list[Any]]:
         return {"request": [self.on_request], "response": [self.on_response]}
+
+    def sync_event_hooks(self) -> dict[str, list[Any]]:
+        return {"request": [self.on_sync_request], "response": [self.on_sync_response]}
+
+    # Compatibility for callers that used the original Agent-only API.
+    def event_hooks(self) -> dict[str, list[Any]]:
+        return self.async_event_hooks()
 
     def current_directory(self) -> Path | None:
         state = self._current.get()
@@ -85,6 +92,32 @@ class AgentRawTraceStore:
             return
         try:
             self._write_private(path, await response.aread())
+        except Exception as exc:  # trace diagnostics must never replace the provider response
+            self._disable(state, exc)
+
+    def on_sync_request(self, request: Any) -> None:
+        state = self._current.get()
+        if state is None or state.disabled:
+            return
+        try:
+            directory = self._ensure_directory(state)
+            state.call_index += 1
+            path = directory / f"{state.call_index:03d}-request.json"
+            response_path = directory / f"{state.call_index:03d}-response.json"
+            self._write_private(path, request.read())
+            state.response_paths[id(request)] = response_path
+        except Exception as exc:  # trace diagnostics must never break a provider request
+            self._disable(state, exc)
+
+    def on_sync_response(self, response: Any) -> None:
+        state = self._current.get()
+        if state is None or state.disabled:
+            return
+        path = state.response_paths.pop(id(response.request), None)
+        if path is None:
+            return
+        try:
+            self._write_private(path, response.read())
         except Exception as exc:  # trace diagnostics must never replace the provider response
             self._disable(state, exc)
 
@@ -135,8 +168,13 @@ class AgentRawTraceStore:
                 )
                 for path in directories[:-self.max_runs]:
                     shutil.rmtree(path)
-        except Exception as exc:  # retention failure must not affect the completed Agent run
+        except Exception as exc:  # retention failure must not affect the completed model request
             logger.warning("event=raw_trace_prune_failed error=%s", type(exc).__name__)
 
 
-__all__ = ["AgentRawTraceStore"]
+# Preserve the public name used by existing integrations while the store is now shared by both
+# model paths.
+AgentRawTraceStore = RawHttpTraceStore
+
+
+__all__ = ["AgentRawTraceStore", "RawHttpTraceStore"]
