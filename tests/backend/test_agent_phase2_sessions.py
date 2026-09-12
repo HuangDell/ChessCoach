@@ -75,7 +75,7 @@ class Phase2ConversationSummaryTests(unittest.IsolatedAsyncioTestCase):
             session=self.store.get(SESSION_ID),
         )
 
-    async def test_recent_history_is_hard_limited_to_twelve_items(self) -> None:
+    async def test_history_is_complete_with_explicit_bounded_queries(self) -> None:
         factory = InMemoryConversationSessionFactory()
         backing = factory.get_session(SESSION_ID)
         await backing.add_items([{"index": index} for index in range(20)])
@@ -86,29 +86,19 @@ class Phase2ConversationSummaryTests(unittest.IsolatedAsyncioTestCase):
             expected_generation=0,
         )
 
-        self.assertEqual(list(range(8, 20)), [item["index"] for item in await guarded.get_items()])
+        self.assertEqual(list(range(20)), [item["index"] for item in await guarded.get_items()])
         self.assertEqual(list(range(15, 20)), [item["index"] for item in await guarded.get_items(5)])
-        self.assertEqual(list(range(8, 20)), [item["index"] for item in await guarded.get_items(100)])
+        self.assertEqual(list(range(20)), [item["index"] for item in await guarded.get_items(100)])
 
-    async def test_summary_extracts_readable_text_from_sdk_structured_output(self) -> None:
-        summary = ConversationSummaryBuilder().summarize(
-            [
-                {"role": "user", "content": "How should I calculate here?"},
-                {
-                    "role": "assistant",
-                    "content": [{
-                        "type": "output_text",
-                        "text": (
-                            '{"text":"Check forcing replies before choosing a move.",'
-                            '"references":[{"fen":"' + START_FEN + '"}]}'
-                        ),
-                    }],
-                },
-            ]
-        )
-
-        self.assertIn("Check forcing replies before choosing a move.", summary)
-        self.assertNotIn('"references"', summary)
+    async def test_summary_preserves_full_input_and_long_model_output(self) -> None:
+        content = "学习目标" * 800
+        generate = mock.AsyncMock(return_value=content)
+        summary = await ConversationSummaryBuilder(generate, input_limit=100_000).summarize([
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": "Check forcing replies."},
+        ])
+        self.assertEqual(content, summary)
+        self.assertIn(content, generate.call_args.args[0])
 
     async def test_summary_update_is_guarded_atomic_and_filters_invalid_references(self) -> None:
         valid = PositionReference(

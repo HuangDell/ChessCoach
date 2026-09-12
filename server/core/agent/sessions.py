@@ -26,12 +26,12 @@ from server.core.agent.models import (
     AgentSessionContextRequest,
     AgentSessionCreateRequest,
     AgentSessionState,
+    ContextInputMeasurement,
     PositionReference,
 )
 
 
 SESSION_SCHEMA_VERSION = 1
-DEFAULT_RECENT_ITEM_LIMIT = 12
 DEFAULT_DISCUSSION_REFERENCE_LIMIT = 5
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _ResultT = TypeVar("_ResultT")
@@ -240,6 +240,9 @@ class ChessSessionCheckpointStore:
         reference_validator: Callable[[PositionReference], PositionReference | None],
         reference_limit: int = DEFAULT_DISCUSSION_REFERENCE_LIMIT,
         validator: Callable[[AgentSessionState], Any] | None = None,
+        covered_items: int | None = None,
+        input_measurement: ContextInputMeasurement | None = None,
+        summary_version: int = 1,
     ) -> AgentSessionState:
         """Atomically replace the compact summary and its validated position references.
 
@@ -270,6 +273,12 @@ class ChessSessionCheckpointStore:
             values = current.model_dump(mode="python")
             values["conversation_summary"] = summary.strip()
             values["conversation_summary_references"] = validated
+            if covered_items is not None:
+                if covered_items < current.conversation_summary_covered_items:
+                    raise InvalidSessionContextError("Conversation coverage cannot move backwards.")
+                values["conversation_summary_covered_items"] = covered_items
+                values["conversation_summary_version"] = summary_version
+                values["context_input_measurement"] = input_measurement
             values["updated_at"] = self._clock()
             try:
                 updated = AgentSessionState.model_validate(values)
@@ -546,9 +555,9 @@ class GenerationGuardedSession:
         coordinator: SessionMutationCoordinator,
         *,
         expected_generation: int,
-        recent_item_limit: int = DEFAULT_RECENT_ITEM_LIMIT,
+        recent_item_limit: int | None = None,
     ) -> None:
-        if recent_item_limit < 1:
+        if recent_item_limit is not None and recent_item_limit < 1:
             raise ValueError("recent_item_limit must be positive")
         self.session_id = backing.session_id
         self.session_settings = getattr(backing, "session_settings", None)
@@ -562,6 +571,8 @@ class GenerationGuardedSession:
         self._base_pop_count = 0
         self._clear_requested = False
         self._status = "active"
+        self.context_checkpoint = checkpoint_store.assert_generation(self.session_id, expected_generation)
+        self.pending_context: dict[str, Any] | None = None
 
     @property
     def staged_items(self) -> list[Any]:
@@ -575,7 +586,14 @@ class GenerationGuardedSession:
         effective_limit = self._effective_limit(limit)
         if effective_limit == 0:
             return []
-        return deepcopy(self._items[-effective_limit:])
+        return deepcopy(self._items if effective_limit is None else self._items[-effective_limit:])
+
+    def stage_context(self, *, summary: str, covered_items: int,
+                      input_measurement: ContextInputMeasurement | None, summary_version: int = 1) -> None:
+        self._ensure_active()
+        self._checkpoint_store.assert_generation(self.session_id, self._expected_generation)
+        self.pending_context = dict(summary=summary, covered_items=covered_items,
+                                    input_measurement=input_measurement, summary_version=summary_version)
 
     async def add_items(self, items: list[Any]) -> None:
         self._ensure_active()
@@ -682,17 +700,22 @@ class GenerationGuardedSession:
         self._items = None
         self._base_pop_count = 0
         self._clear_requested = False
+        self.pending_context = None
 
     async def _ensure_loaded(self) -> None:
         if self._items is not None:
             return
-        items = await self._backing.get_items(limit=self._recent_item_limit)
-        self._items = deepcopy(items[-self._recent_item_limit :])
+        items = await self._backing.get_items()
+        boundary = self.context_checkpoint.conversation_summary_covered_items
+        if boundary > len(items):
+            raise SessionStoreError("Conversation summary coverage exceeds stored history.")
+        items = items[boundary:]
+        self._items = deepcopy(items if self._recent_item_limit is None else items[-self._recent_item_limit:])
 
-    def _effective_limit(self, requested: int | None) -> int:
+    def _effective_limit(self, requested: int | None) -> int | None:
         if requested is None:
             return self._recent_item_limit
-        return max(0, min(requested, self._recent_item_limit))
+        return max(0, requested if self._recent_item_limit is None else min(requested, self._recent_item_limit))
 
     def _ensure_active(self) -> None:
         if self._status != "active":

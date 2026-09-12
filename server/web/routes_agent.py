@@ -29,6 +29,7 @@ _ERROR_STATUS = {
     "invalid_session_context": 400,
     "training_action_unavailable": 409,
     "agent_provider_error": 502,
+    "agent_context_budget_exceeded": 413,
     "invalid_agent_response": 502,
     "max_turns_exceeded": 502,
     "agent_unavailable": 503,
@@ -38,7 +39,7 @@ _ERROR_STATUS = {
 }
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status: {"model": AgentErrorResponse}
-    for status in (400, 404, 409, 502, 503, 504)
+    for status in (400, 404, 409, 413, 502, 503, 504)
 }
 
 

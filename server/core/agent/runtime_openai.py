@@ -14,7 +14,11 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from server import config
 from server.config import resolve_agent_provider
+from server.core.agent.context_budget import ContextBudget, ContextBudgetExceeded, RunContextWindow
+from server.core.agent.summary import ConversationSummaryBuilder, SUMMARY_INSTRUCTIONS
+from server.core.agent.sessions import SessionStoreError, StaleAgentContextError
 from server.core.agent.schema_adapter import adapt_schema
 from server.core.agent.models import (
     AGENT_TOOL_PERMISSIONS,
@@ -183,6 +187,8 @@ class _LocalRunContext:
     tools: Any
     budget: _ToolBudget
     orchestration: OrchestrationController | None = None
+    window: RunContextWindow | None = None
+    usage: dict[str, int | float] = field(default_factory=dict)
 
 
 def _error_result(error: ToolError) -> str:
@@ -217,6 +223,8 @@ class OpenAIAgentsRuntime:
         research_model: Any | None = None,
         http_event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
         debug: bool = False,
+        context_budget: ContextBudget | None = None,
+        summary_builder: ConversationSummaryBuilder | None = None,
     ) -> None:
         agents = importlib.import_module("agents")
         openai = importlib.import_module("openai")
@@ -232,6 +240,15 @@ class OpenAIAgentsRuntime:
         self._session_provider = session_provider
         self._orchestration_factory = orchestration_factory
         self._research_model = research_model
+        self.context_budget = context_budget or ContextBudget(
+            capacity=config.AGENT_CONTEXT_TOKENS or (1_000_000 if model == "deepseek-flash" else 128_000),
+            trigger_ratio=config.AGENT_CONTEXT_TRIGGER_RATIO,
+            target_ratio=config.AGENT_CONTEXT_TARGET_RATIO,
+            max_output_tokens=config.AGENT_MAX_OUTPUT_TOKENS,
+            summary_max_output_tokens=config.AGENT_SUMMARY_MAX_OUTPUT_TOKENS,
+        )
+        self._summary_builder = summary_builder
+        self._endpoint_fingerprint = hashlib.sha256(base_url.encode()).hexdigest()
         self.sdk_version = str(getattr(agents, "__version__", "unknown"))
         self._telemetry: dict[str, AgentRuntimeTelemetry] = {}
         self._orchestration_traces: dict[str, dict[str, Any]] = {}
@@ -330,14 +347,42 @@ class OpenAIAgentsRuntime:
             )
 
     def _model_for_run(self, local: _LocalRunContext) -> Any:
-        if self._research_model is None:
-            return self._model
-        delegate = self._research_model
+        delegate = self._research_model or self._provider.get_model(self._model)
         runtime = self
 
-        class _ResearchModelProxy(self._agents.Model):
-            async def get_response(self, *args: Any, **kwargs: Any) -> Any:
-                response = await delegate.get_response(*args, **kwargs)
+        class _BudgetedModelProxy(self._agents.Model):
+            async def get_response(self, **kwargs: Any) -> Any:
+                window = local.window
+                assert window is not None
+                schema = kwargs.get("output_schema")
+                fixed = {
+                    "model": runtime._model,
+                    "endpoint_fingerprint": runtime._endpoint_fingerprint,
+                    "instructions": kwargs.get("system_instructions"),
+                    "tools": [{"name": tool.name, "description": tool.description,
+                               "parameters": tool.params_json_schema, "strict": tool.strict_json_schema}
+                              for tool in kwargs.get("tools", [])],
+                    "schema": schema.json_schema() if schema is not None else None,
+                }
+                builder = runtime._summary_builder or ConversationSummaryBuilder(
+                    lambda payload: runtime._generate_summary(local, payload),
+                    input_limit=runtime.context_budget.capacity - runtime.context_budget.summary_max_output_tokens - 1024,
+                )
+                items = kwargs["input"]
+                if isinstance(items, str):
+                    items = [{"role": "user", "content": items}]
+                try:
+                    kwargs["input"] = await window.prepare(fixed, items, builder)
+                except ContextBudgetExceeded as exc:
+                    raise AgentRuntimeFailure(AgentError(
+                        code="agent_context_budget_exceeded", message=str(exc), recoverable=True,
+                    )) from exc
+                # Summarization can take time. Recheck the generation before spending
+                # another model call on a position that may already have changed.
+                await runtime._session_provider(local.request.session_id).get_items(limit=0)
+                response = await delegate.get_response(**kwargs)
+                runtime._record_usage(local, getattr(response, "usage", None))
+                window.observe(fixed, kwargs["input"], getattr(getattr(response, "usage", None), "input_tokens", None))
                 runtime._record_research_model_response(local, response)
                 return response
 
@@ -352,7 +397,42 @@ class OpenAIAgentsRuntime:
                 if cleanup is not None:
                     await cleanup(owner)
 
-        return _ResearchModelProxy()
+        return _BudgetedModelProxy()
+
+    @staticmethod
+    def _record_usage(local: _LocalRunContext, source: Any, *, summary: bool = False) -> None:
+        local.usage["requests"] = local.usage.get("requests", 0) + 1
+        if summary:
+            local.usage["summary_requests"] = local.usage.get("summary_requests", 0) + 1
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = getattr(source, key, None)
+            if isinstance(value, (int, float)) and value >= 0:
+                local.usage[key] = local.usage.get(key, 0) + value
+                if summary:
+                    local.usage["summary_" + key] = local.usage.get("summary_" + key, 0) + value
+        cached = getattr(getattr(source, "input_tokens_details", None), "cached_tokens", None)
+        total = getattr(source, "input_tokens", None)
+        if isinstance(cached, int) and isinstance(total, int) and 0 <= cached <= total:
+            for key, value in (("input_cache_hit_tokens", cached), ("input_cache_miss_tokens", total - cached)):
+                local.usage[key] = local.usage.get(key, 0) + value
+
+    async def _generate_summary(self, local: _LocalRunContext, payload: str) -> str:
+        started = time.monotonic()
+        try:
+            await self._session_provider(local.request.session_id).get_items(limit=0)
+            response = await self._client.responses.create(
+                model=self._model, instructions=SUMMARY_INSTRUCTIONS,
+                input=[{"role": "user", "content": payload}], tools=[],
+                max_output_tokens=self.context_budget.summary_max_output_tokens,
+                store=False,
+            )
+            self._record_usage(local, response.usage, summary=True)
+            await self._session_provider(local.request.session_id).get_items(limit=0)
+            if response.status != "completed" or not response.output_text.strip():
+                raise ValueError("The summary model returned an incomplete or empty summary.")
+            return response.output_text
+        finally:
+            local.usage["summary_duration_ms"] = local.usage.get("summary_duration_ms", 0) + round((time.monotonic() - started) * 1000)
 
     async def _call_tool(
         self,
@@ -1025,6 +1105,8 @@ class OpenAIAgentsRuntime:
         usage: dict[str, int | float] = {}
         try:
             session = self._session_provider(request.session_id)
+            history = await session.get_items()
+            checkpoint = getattr(session, "context_checkpoint", None)
             local = _LocalRunContext(
                 request=request,
                 tools=self._domain_tools_factory(request),
@@ -1037,11 +1119,19 @@ class OpenAIAgentsRuntime:
                     if self._orchestration_factory is not None
                     else None
                 ),
+                window=RunContextWindow(
+                    budget=self.context_budget, history=history,
+                    summary=getattr(checkpoint, "conversation_summary", request.model_context.conversation_summary),
+                    covered_items=getattr(checkpoint, "conversation_summary_covered_items", 0),
+                    summary_version=getattr(checkpoint, "conversation_summary_version", 0),
+                    measurement=getattr(checkpoint, "context_input_measurement", None),
+                ),
             )
             agent = self._agents.Agent(
                 name="Chess Coach",
                 instructions=build_agent_instructions(),
                 model=self._model_for_run(local),
+                model_settings=self._agents.ModelSettings(max_tokens=self.context_budget.max_output_tokens),
                 tools=self._sdk_tools(local),
                 output_type=self._output_schema(),
             )
@@ -1049,7 +1139,7 @@ class OpenAIAgentsRuntime:
                 model_provider=self._provider,
                 tracing_disabled=True,
                 trace_include_sensitive_data=False,
-                session_settings=self._agents.SessionSettings(limit=12),
+                session_settings=self._agents.SessionSettings(limit=None),
                 tool_execution=self._agents.ToolExecutionConfig(
                     max_function_tool_concurrency=1
                 ),
@@ -1084,6 +1174,18 @@ class OpenAIAgentsRuntime:
             ):
                 usage["input_cache_hit_tokens"] = cached_tokens
                 usage["input_cache_miss_tokens"] = input_tokens - cached_tokens
+            if local.usage:
+                usage = dict(local.usage)
+            assert local.window is not None
+            usage.update(local.window.metrics)
+            stage_context = getattr(session, "stage_context", None)
+            if callable(stage_context):
+                stage_context(
+                    summary=local.window.summary,
+                    covered_items=local.window.covered_items + local.window.cut,
+                    summary_version=local.window.summary_version,
+                    input_measurement=local.window.measurement,
+                )
             run_result = AgentRunResult(
                 response=response,
                 tool_calls=local.budget.records,
@@ -1112,7 +1214,7 @@ class OpenAIAgentsRuntime:
                     ) from exc
                 local.orchestration.terminate("accepted")
             return run_result
-        except AgentRuntimeFailure:
+        except (AgentRuntimeFailure, StaleAgentContextError, SessionStoreError):
             if (
                 local is not None
                 and local.orchestration is not None
@@ -1139,6 +1241,11 @@ class OpenAIAgentsRuntime:
                 )
             raise self._map_exception(exc) from exc
         finally:
+            if local is not None:
+                if local.usage:
+                    usage = dict(local.usage)
+                if local.window is not None:
+                    usage.update(local.window.metrics)
             self._telemetry[request.run_id] = AgentRuntimeTelemetry(
                 tool_calls=list(local.budget.records) if local is not None else [],
                 usage=dict(usage),

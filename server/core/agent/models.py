@@ -570,6 +570,12 @@ class RelevantProfileContext(ContractModel):
         return self
 
 
+class ContextInputMeasurement(ContractModel):
+    input_tokens: int = Field(gt=0)
+    item_count: int = Field(ge=0)
+    fingerprint: str = Field(min_length=64, max_length=64)
+
+
 class AgentSessionState(ContractModel):
     schema_version: int = Field(default=1, ge=1)
     session_id: str = Field(min_length=1)
@@ -582,6 +588,9 @@ class AgentSessionState(ContractModel):
     position: PositionContext | None = None
     discussed_positions: list[PositionReference] = Field(default_factory=list)
     conversation_summary: str = ""
+    conversation_summary_version: int = Field(default=0, ge=0, le=1)
+    conversation_summary_covered_items: int = Field(default=0, ge=0)
+    context_input_measurement: ContextInputMeasurement | None = None
     conversation_summary_references: list[PositionReference] = Field(
         default_factory=list,
         max_length=5,
@@ -1024,6 +1033,7 @@ class AgentError(ContractModel):
         "agent_authentication_failed",
         "agent_rate_limited",
         "agent_provider_error",
+        "agent_context_budget_exceeded",
         "invalid_agent_response",
         "max_turns_exceeded",
     ]

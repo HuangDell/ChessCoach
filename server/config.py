@@ -501,6 +501,11 @@ AGENT_MAX_TOOL_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_TOOL_CALLS", 6))
 AGENT_MAX_ENGINE_CALLS: int = max(0, _parse_int("CHESS_AGENT_MAX_ENGINE_CALLS", 2))
 AGENT_TIMEOUT: int = max(1, _parse_int("CHESS_AGENT_TIMEOUT", 120))
 AGENT_RUN_MAX_RECORDS: int = max(1, _parse_int("CHESS_AGENT_RUN_MAX_RECORDS", 1000))
+AGENT_CONTEXT_TOKENS: int = _parse_int("CHESS_AGENT_CONTEXT_TOKENS", 0)
+AGENT_CONTEXT_TRIGGER_RATIO: float = _parse_float("CHESS_AGENT_CONTEXT_TRIGGER_RATIO", 0.9)
+AGENT_CONTEXT_TARGET_RATIO: float = _parse_float("CHESS_AGENT_CONTEXT_TARGET_RATIO", 0.6)
+AGENT_MAX_OUTPUT_TOKENS: int = _parse_int("CHESS_AGENT_MAX_OUTPUT_TOKENS", 8192)
+AGENT_SUMMARY_MAX_OUTPUT_TOKENS: int = _parse_int("CHESS_AGENT_SUMMARY_MAX_OUTPUT_TOKENS", 8192)
 # Emit Agent SDK activity and local grounding rejection reasons to the terminal. Model and tool
 # payloads remain redacted unless the SDK's explicit OPENAI_AGENTS_DONT_LOG_* flags are disabled.
 AGENT_DEBUG: bool = os.environ.get("CHESS_AGENT_DEBUG", "0") == "1"

@@ -193,7 +193,7 @@ class AgentSessionConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         async with gate.hold(SESSION_ID):
             pass
 
-    async def test_staged_add_is_bounded_and_commits_once(self) -> None:
+    async def test_staged_add_preserves_history_and_commits_once(self) -> None:
         factory = InMemoryConversationSessionFactory()
         backing = factory.get_session(SESSION_ID)
         await backing.add_items([{"index": index} for index in range(20)])
@@ -206,7 +206,7 @@ class AgentSessionConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [item["index"] for item in await guarded.get_items()],
-            list(range(8, 20)),
+            list(range(20)),
         )
         await guarded.add_items([{"role": "user", "content": "why?"}])
         self.assertEqual(len(await backing.get_items()), 20)

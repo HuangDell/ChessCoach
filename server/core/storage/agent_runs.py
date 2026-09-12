@@ -39,6 +39,18 @@ class AgentUsageSummary(BaseModel):
     input_cache_miss_tokens: int | float | None = Field(default=None, ge=0)
     output_tokens: int | float | None = Field(default=None, ge=0)
     total_tokens: int | float | None = Field(default=None, ge=0)
+    context_last_input_tokens: int | None = Field(default=None, ge=0)
+    context_peak_input_tokens: int | None = Field(default=None, ge=0)
+    context_estimated_input_tokens: int | None = Field(default=None, ge=0)
+    context_compactions: int | None = Field(default=None, ge=0)
+    context_compaction_failures: int | None = Field(default=None, ge=0)
+    context_before_tokens: int | None = Field(default=None, ge=0)
+    context_after_tokens: int | None = Field(default=None, ge=0)
+    summary_requests: int | None = Field(default=None, ge=0)
+    summary_input_tokens: int | float | None = Field(default=None, ge=0)
+    summary_output_tokens: int | float | None = Field(default=None, ge=0)
+    summary_total_tokens: int | float | None = Field(default=None, ge=0)
+    summary_duration_ms: int | None = Field(default=None, ge=0)
 
 
 class AgentRunRecord(BaseModel):

@@ -67,7 +67,6 @@ from server.core.agent.sessions import (
     SessionStoreError,
     StaleAgentContextError,
 )
-from server.core.agent.summary import ConversationSummaryBuilder
 from server.core.agent.tools import ActiveReviewArtifact, AgentTools
 from server.core.learning import memory as learning_memory
 from server.core import training_planner
@@ -253,7 +252,6 @@ class ChessAgentService:
         message_gate: SessionMessageGate | None = None,
         tools_factory: ToolsFactory = _default_tools,
         run_store: AgentRunStore | None = None,
-        summary_builder: ConversationSummaryBuilder | None = None,
         max_turns: int = 4,
         max_total_tool_calls: int = 6,
         max_engine_tool_calls: int = 2,
@@ -268,7 +266,6 @@ class ChessAgentService:
         self.tools_factory = tools_factory
         self.run_store = run_store
         self._last_run_log_error: str | None = None
-        self.summary_builder = summary_builder or ConversationSummaryBuilder()
         self.max_turns = max_turns
         self.max_total_tool_calls = max_total_tool_calls
         self.max_engine_tool_calls = max_engine_tool_calls
@@ -531,6 +528,11 @@ class ChessAgentService:
             raise _session_error(
                 "invalid_session_context", exc.message, recoverable=False
             ) from exc
+        except SessionStoreError as exc:
+            raise _session_error(
+                "invalid_session_context", "Could not save the conversation. Check the data directory and retry.",
+                recoverable=True,
+            ) from exc
         except AgentResponseValidationError as exc:
             raise AgentServiceFailure(
                 AgentError(
@@ -700,12 +702,24 @@ class ChessAgentService:
                             {"role": "assistant", "content": result.response.text},
                         ]
                     )
-                await guarded.commit()
+                def commit_context() -> None:
+                    if guarded.pending_context is not None:
+                        self.checkpoint_store.update_conversation_summary(
+                            session_id,
+                            expected_generation=request.expected_generation,
+                            **guarded.pending_context,
+                            references=[*state.conversation_summary_references, *state.discussed_positions],
+                            reference_validator=lambda reference: self.context_builder.canonicalize_reference(
+                                reference, session=state,
+                            ),
+                            validator=self._validate_checkpoint,
+                        )
+
+                await guarded.commit(on_committed=commit_context)
                 final_state = await self._update_conversation_metadata(
                     session_id=session_id,
                     expected_generation=request.expected_generation,
                     initial_state=state,
-                    backing=backing,
                     model_context=model_context,
                     response=result.response,
                 )
@@ -817,39 +831,10 @@ class ChessAgentService:
         session_id: str,
         expected_generation: int,
         initial_state: AgentSessionState,
-        backing: Any,
         model_context: Any,
         response: AgentResponse,
     ) -> AgentSessionState:
-        current = initial_state
-        all_items = await backing.get_items()
-        if len(all_items) > 12:
-            try:
-                summary = self.summary_builder.summarize(
-                    all_items[:-12],
-                    initial_state.conversation_summary,
-                )
-            except Exception:  # summary failure leaves every raw SDK item intact
-                summary = None
-            if summary is not None:
-                try:
-                    current = await self.coordinator.update_conversation_summary(
-                        self.checkpoint_store,
-                        session_id,
-                        expected_generation=expected_generation,
-                        summary=summary,
-                        references=[
-                            *initial_state.conversation_summary_references,
-                            *initial_state.discussed_positions,
-                        ],
-                        reference_validator=lambda reference: self.context_builder.canonicalize_reference(
-                            reference,
-                            session=initial_state,
-                        ),
-                        validator=self._validate_checkpoint,
-                    )
-                except (StaleAgentContextError, InvalidSessionContextError, ChessContextError):
-                    current = self.checkpoint_store.get(session_id)
+        current = self.checkpoint_store.get(session_id)
 
         discussed: list[PositionReference] = []
         position = model_context.position

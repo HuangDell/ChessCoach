@@ -130,6 +130,13 @@ class _FakeAgents:
     class ModelRefusalError(Exception):
         pass
 
+    class Model:
+        pass
+
+    class ModelSettings:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
     class SessionSettings:
         def __init__(self, *, limit) -> None:
             self.limit = limit
@@ -141,6 +148,9 @@ class _FakeAgents:
     class OpenAIProvider:
         def __init__(self, **kwargs) -> None:
             self.kwargs = kwargs
+
+        def get_model(self, model):
+            return object()
 
     class Agent:
         def __init__(self, **kwargs) -> None:
@@ -294,7 +304,7 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
             run_config = _FakeAgents.last_run[2]["run_config"]
             self.assertTrue(run_config.tracing_disabled)
             self.assertFalse(run_config.trace_include_sensitive_data)
-            self.assertEqual(12, run_config.session_settings.limit)
+            self.assertIsNone(run_config.session_settings.limit)
             self.assertEqual(1, run_config.tool_execution.max_function_tool_concurrency)
             self.assertEqual([], await backing.get_session(state.session_id).get_items())
             self.assertEqual(3, len(guarded.staged_items))
@@ -310,7 +320,7 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
                 base_url="http://localhost:9999/v1",
                 endpoint_type="custom_responses",
                 domain_tools_factory=lambda _request: object(),
-                session_provider=lambda _session_id: object(),
+                session_provider=InMemoryConversationSessionFactory().get_session,
             )
 
             for failure, expected_code in (
@@ -517,7 +527,7 @@ class LockedSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
             base_url="https://api.openai.com/v1",
             endpoint_type="openai_responses",
             domain_tools_factory=lambda _request: object(),
-            session_provider=lambda _session_id: object(),
+            session_provider=InMemoryConversationSessionFactory().get_session,
         )
         runner = AsyncMock(return_value=_RunResult())
         with patch.object(runtime._agents.Runner, "run", new=runner):
@@ -526,7 +536,7 @@ class LockedSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("Use development before tactics.", result.response.text)
         kwargs = runner.await_args.kwargs
         self.assertTrue(kwargs["run_config"].tracing_disabled)
-        self.assertEqual(12, kwargs["run_config"].session_settings.limit)
+        self.assertIsNone(kwargs["run_config"].session_settings.limit)
         await runtime.close()
 
     async def test_sdk_sqlite_session_round_trip_and_factory_cleanup(self) -> None:

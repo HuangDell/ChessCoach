@@ -111,7 +111,7 @@ def validated_tool_references(
 def build_model_input(context: ModelVisibleContext) -> str:
     """Serialize the backend-owned snapshot appended before the current user message."""
 
-    payload = context.model_dump(mode="json", exclude_none=True)
+    payload = context.model_dump(mode="json", exclude_none=True, exclude={"conversation_summary"})
     return "MODEL_VISIBLE_CONTEXT_JSON:\n" + json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )

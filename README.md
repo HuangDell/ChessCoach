@@ -111,6 +111,11 @@ reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可
 | `CHESS_AGENT_TIMEOUT` | 单 run wall-clock 秒数 | `120` |
 | `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
 | `CHESS_AGENT_DEBUG` | 在终端输出 Agent SDK 活动和 grounding 拒绝原因 | `0` |
+| `CHESS_AGENT_CONTEXT_TOKENS` | endpoint/model 有效上下文容量；`0` 使用模型默认 | `deepseek-flash` 为 `1000000`，其他为 `128000` |
+| `CHESS_AGENT_CONTEXT_TRIGGER_RATIO` | 上下文压缩软阈值比例 | `0.9` |
+| `CHESS_AGENT_CONTEXT_TARGET_RATIO` | 压缩后输入目标比例 | `0.6` |
+| `CHESS_AGENT_MAX_OUTPUT_TOKENS` | 每次教练调用的输出上限（包含 reasoning） | `8192` |
+| `CHESS_AGENT_SUMMARY_MAX_OUTPUT_TOKENS` | 每次摘要调用的输出上限 | `8192` |
 
 调试 Agent 对话时可运行：
 
@@ -138,7 +143,25 @@ Responses 请求已通过 `text.format.type=json_schema` 和 `strict=true` 要�
 
 Agent instructions 仅包含固定规则；每轮在最近历史之后追加服务端 developer context 快照和用户
 问题。最新快照覆盖旧局面、证据引用和个性化状态，旧快照不作为当前棋盘事实。快照随 SDK session
-一起保存，仍共享最近 12 items 的窗口；摘要只提取 user/assistant 消息。
+一起保存；模型读取上次压缩边界之后的完整历史，不再固定截取 12 items。短程指代解析仍单独查询
+最近 12 items。
+
+每次模型调用前检查完整输入预算，包含工具定义、输出 schema 和本次工具结果。以单次响应的
+`usage.input_tokens` 校准相同前缀的后续输入；没有匹配测量时采用 UTF-8 字节数加协议余量的保守
+估算。缓存命中 tokens 仍占上下文；run 累计 usage 不能当作当前窗口长度。
+预留 `R=max(10%×C,32768)`，达到 `min(trigger_ratio×C,C−R)` 时压缩，目标默认不超过 60% 容量。
+容量和输出限制必须给预留留出空间；自定义 endpoint 的容量请按实际限制覆盖配置。
+
+压缩复用当前 Agent endpoint/model，发起无工具、无会话的独立摘要请求，与主回答共享 run 超时。
+摘要保留目标、约束、教学结论、未解决问题和历史引用，不承担棋类事实。取消原摘要总长 1500 字符
+及逐条 360 字符截取，使用 token 输出预算。默认保留最近四个完整 turn，必要时减少；当前 turn
+不裁剪，工具调用和结果不拆开。摘要只在历史前注入一次，不重复进入每轮快照。
+
+原始 SQLite 历史保留；摘要、覆盖边界和计数基线随成功 run 在 generation guard 下提交。
+失败、取消或 stale run 不推进边界；无法安全容纳请求时返回可重试的
+`agent_context_budget_exceeded`（HTTP 413），可重试压缩、缩短问题或新建对话，Engine Review 保持可用。
+旧 checkpoint 默认边界为 0，有原始历史时首次压缩重建旧摘要。具体实现与验证见
+[v3 上下文预算](docs/agent-cache-v3-and-context-budget.md)。
 
 ### 运行自定义 endpoint 模型 benchmark
 
@@ -231,6 +254,11 @@ usage 新增可选 `input_cache_hit_tokens` / `input_cache_miss_tokens`，来自
 `hit_rate`（0–1；无可统计输入时为 null），与 `tools.cache_hits` 的 Engine/tool 缓存分开。
 SDK 可能将 Provider 未报告的 cached_tokens 默认成 0；这些值是 SDK 报告口径，不是独立账单核验。
 run record schema v1 保留，新增可选字段默认 null；response schema v4 不变。
+usage 的 `context_last_input_tokens` / `context_peak_input_tokens` 记录教练请求的最后/峰值实测输入；
+`context_estimated_input_tokens`、`context_before_tokens` / `context_after_tokens` 是估算，
+`context_compactions` / `context_compaction_failures` 记录本 run 压缩结果。
+`summary_requests`、`summary_input_tokens` / `summary_output_tokens` / `summary_total_tokens` 和
+`summary_duration_ms` 单列摘要用量与耗时；摘要用量同时计入 run 总量，但不计入教练窗口峰值。
 优化前对照数据见 [缓存基线](docs/agent-cache-baseline-2026-09-11.md)。
 
 ## Eval 与验证

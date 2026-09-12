@@ -16,16 +16,20 @@ from server.core.agent.models import (
     AgentResponse,
     AgentRunRequest,
     AgentRunResult,
+    AgentError,
+    AgentSessionContextRequest,
     AgentSessionCreateRequest,
     ChessReference,
     PositionReference,
     SkillEstimate,
     StartRetryAction,
 )
-from server.core.agent.service import ChessAgentService
+from server.core.agent.service import ChessAgentService, AgentServiceFailure
+from server.core.agent.runtime import AgentRuntimeFailure
 from server.core.agent.sessions import (
     ChessSessionCheckpointStore,
     InMemoryConversationSessionFactory,
+    SessionStoreError,
 )
 from server.core.agent.tools import ActiveReviewArtifact, AgentTools
 from server.web.app import create_app
@@ -75,11 +79,6 @@ def critical_response() -> AgentResponse:
             )
         ],
     )
-
-
-class FailingSummaryBuilder:
-    def summarize(self, _items, _previous_summary="") -> str:
-        raise RuntimeError("summary unavailable")
 
 
 class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -176,7 +175,7 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.runtime.requests)
         self.assertEqual(4, len(await backing.get_items()))
 
-    async def test_long_history_is_summarized_without_deleting_raw_sdk_items(self) -> None:
+    async def test_history_beyond_twelve_items_is_retained_without_automatic_summary(self) -> None:
         session = self.create_review_session()
         backing = self.conversations.get_session(session.session_id)
         await backing.add_items(
@@ -191,7 +190,7 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def run(_request: AgentRunRequest) -> AgentRunResult:
             recent = await self.service.session_for_runtime(session.session_id).get_items()
-            self.assertEqual(12, len(recent))
+            self.assertEqual(14, len(recent))
             return AgentRunResult(response=critical_response(), tool_calls=[])
 
         self.runtime.handler = run
@@ -202,12 +201,10 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(16, len(await backing.get_items()))
         checkpoint = self.store.get(session.session_id)
-        self.assertTrue(checkpoint.conversation_summary)
-        self.assertIn("continuity only", checkpoint.conversation_summary)
+        self.assertEqual("", checkpoint.conversation_summary)
         self.assertEqual(checkpoint.conversation_summary, result.session.conversation_summary)
 
-    async def test_summary_failure_keeps_success_and_all_raw_items(self) -> None:
-        self.service.summary_builder = FailingSummaryBuilder()  # type: ignore[assignment]
+    async def test_small_history_keeps_success_and_all_raw_items(self) -> None:
         session = self.create_review_session()
         backing = self.conversations.get_session(session.session_id)
         await backing.add_items(
@@ -222,6 +219,67 @@ class Phase2AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(critical_response(), response.response)
         self.assertEqual(15, len(await backing.get_items()))
+        self.assertEqual("", self.store.get(session.session_id).conversation_summary)
+
+    async def test_compaction_checkpoint_and_raw_append_commit_together(self) -> None:
+        session = self.create_review_session()
+        backing = self.conversations.get_session(session.session_id)
+        history = [{"role": "user", "content": "old goal"}, {"role": "assistant", "content": "old answer"}]
+        await backing.add_items(history)
+        summary = "Remember the user's goal. " * 100
+
+        async def run(request):
+            self.service.session_for_runtime(request.session_id).stage_context(
+                summary=summary, covered_items=2, input_measurement=None,
+            )
+            return AgentRunResult(response=critical_response(), tool_calls=[])
+
+        self.runtime.handler = run
+        result = await self.service.send_message(session.session_id, AgentMessageRequest(message="Explain.", expected_generation=0))
+        self.assertEqual(summary.strip(), result.session.conversation_summary)
+        self.assertEqual(2, self.store.get(session.session_id).conversation_summary_covered_items)
+        self.assertEqual(history, (await backing.get_items())[:2])
+        self.assertEqual(4, len(await backing.get_items()))
+
+    async def test_compaction_write_failure_rolls_back_new_items_and_coverage(self) -> None:
+        session = self.create_review_session()
+        backing = self.conversations.get_session(session.session_id)
+        history = [{"role": "user", "content": "goal"}, {"role": "assistant", "content": "answer"}]
+        await backing.add_items(history)
+
+        async def run(request):
+            self.service.session_for_runtime(request.session_id).stage_context(
+                summary="candidate", covered_items=2, input_measurement=None,
+            )
+            return AgentRunResult(response=critical_response(), tool_calls=[])
+
+        self.runtime.handler = run
+        with patch.object(self.store, "update_conversation_summary", side_effect=SessionStoreError("disk")):
+            with self.assertRaises(AgentServiceFailure):
+                await self.service.send_message(session.session_id, AgentMessageRequest(message="Explain.", expected_generation=0))
+        self.assertEqual(history, await backing.get_items())
+        self.assertEqual(0, self.store.get(session.session_id).conversation_summary_covered_items)
+
+    async def test_stale_run_does_not_commit_pending_compaction(self) -> None:
+        session = self.create_review_session()
+        backing = self.conversations.get_session(session.session_id)
+        history = [{"role": "user", "content": "goal"}, {"role": "assistant", "content": "answer"}]
+        await backing.add_items(history)
+
+        async def run(request):
+            self.service.session_for_runtime(request.session_id).stage_context(
+                summary="stale candidate", covered_items=2, input_measurement=None,
+            )
+            await self.service.update_context(request.session_id, AgentSessionContextRequest(
+                expected_generation=0, activity="game_review",
+            ))
+            return AgentRunResult(response=critical_response(), tool_calls=[])
+
+        self.runtime.handler = run
+        with self.assertRaises(AgentServiceFailure) as raised:
+            await self.service.send_message(session.session_id, AgentMessageRequest(message="Explain.", expected_generation=0))
+        self.assertEqual("stale_agent_context", raised.exception.error.code)
+        self.assertEqual(history, await backing.get_items())
         self.assertEqual("", self.store.get(session.session_id).conversation_summary)
 
     async def test_review_priority_context_is_bounded_and_keeps_largest_error(self) -> None:
@@ -434,6 +492,44 @@ class Phase2AgentRouteIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(409, stale.status_code)
         self.assertEqual("stale_agent_context", stale.json()["error"]["code"])
+
+    def test_budget_error_is_actionable_and_session_remains_available(self) -> None:
+        created = self.request("POST", "/api/agent/sessions", json={})
+        self.assertEqual(200, created.status_code)
+
+        async def fail(request):
+            raise AgentRuntimeFailure(AgentError(
+                code="agent_context_budget_exceeded", message="Shorten the question or start a new conversation.",
+                recoverable=True,
+            ))
+
+        self.runtime.handler = fail
+        result = self.request("POST", f"/api/agent/sessions/{SESSION_ID}/messages",
+                              json={"message": "Explain development.", "expected_generation": 0})
+        self.assertEqual(413, result.status_code, result.text)
+        self.assertTrue(result.json()["error"]["recoverable"])
+        self.assertEqual("agent_context_budget_exceeded", result.json()["error"]["code"])
+        restored = self.request("GET", f"/api/agent/sessions/{SESSION_ID}")
+        self.assertEqual(200, restored.status_code)
+        self.assertEqual(0, restored.json()["session"]["conversation_summary_covered_items"])
+
+    def test_message_returns_full_summary_and_restores_checkpoint(self) -> None:
+        self.request("POST", "/api/agent/sessions", json={})
+        summary = "用户希望掌握开局原则。" * 200
+
+        async def reply(request):
+            self.service.session_for_runtime(request.session_id).stage_context(
+                summary=summary, covered_items=0, input_measurement=None,
+            )
+            return AgentRunResult(response=AgentResponse(text="Develop your pieces."), tool_calls=[])
+
+        self.runtime.handler = reply
+        result = self.request("POST", f"/api/agent/sessions/{SESSION_ID}/messages",
+                              json={"message": "Explain development.", "expected_generation": 0})
+        self.assertEqual(200, result.status_code, result.text)
+        self.assertEqual(summary, result.json()["session"]["conversation_summary"])
+        restored = self.request("GET", f"/api/agent/sessions/{SESSION_ID}")
+        self.assertEqual(summary, restored.json()["session"]["conversation_summary"])
 
     def test_training_activity_clears_review_ownership_and_can_return_to_review(self) -> None:
         created = self.request(
