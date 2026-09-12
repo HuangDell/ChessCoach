@@ -446,10 +446,26 @@ export function createReviewChat({
     queuedContextSignature = "";
     restoredSummary = "";
     $("chat-messages").innerHTML = "";
+    $("chat-input").value = "";
     forgetAgentSession();
     sessionPromise = null;
     contextQueue = Promise.resolve();
     if (obsoleteSessionId) void deleteAgentSession(obsoleteSessionId);
+  }
+
+  async function newChat() {
+    const context = currentContext || getAgentContext();
+    reset();
+    deferContext(context);
+    $("chat-input").focus();
+    try {
+      await ensureAgentSession();
+      if (context) await enqueueContextSync(context);
+    } catch (error) {
+      if (!error || error.name !== "AbortError") {
+        addMessage("bot err", errorMessage(error, "Could not start a new coach chat."));
+      }
+    }
   }
 
   function setAgentCapability(value = {}) {
@@ -666,10 +682,12 @@ export function createReviewChat({
 
   function mount() {
     $("chat-form").addEventListener("submit", send);
+    $("chat-new").addEventListener("click", newChat);
   }
 
   return {
     mount,
+    newChat,
     reset,
     restore,
     setAgentCapability,

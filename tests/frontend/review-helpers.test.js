@@ -6,6 +6,7 @@ import {
   buildProvisionalTimeline,
   classGlyph,
   movesToArrows,
+  sameGameIdentity,
   samePosition,
   scoreLabel,
 } from "../../frontend/modules/review/helpers.js";
@@ -25,6 +26,14 @@ test("samePosition ignores move clocks but compares playable position fields", (
     ),
     false
   );
+});
+
+test("game identity prefers IDs and falls back to PGN only when an ID is missing", () => {
+  assert.equal(sameGameIdentity("game-1", "same pgn", "game-1", "other pgn"), true);
+  assert.equal(sameGameIdentity("game-1", "same pgn", "game-2", "same pgn"), false);
+  assert.equal(sameGameIdentity("game-1", "same pgn", null, "same pgn"), true);
+  assert.equal(sameGameIdentity(null, "same pgn", "game-1", "same pgn"), true);
+  assert.equal(sameGameIdentity(null, "old pgn", null, "new pgn"), false);
 });
 
 test("movesToArrows emphasizes the best move and omits weak alternatives", () => {

@@ -60,12 +60,15 @@ My mistakes、All moves；Games 始终通过顶部按钮打开抽屉，打开棋
 发起模型请求或清除聊天草稿。Retry 临时替换分析页签，退出后恢复原选择。
 
 超过 1400px 时三栏并排；901–1400px 时导航和 Analysis 排在棋盘右侧；900px 及以下依次纵向排列。
-桌面三栏的导航默认约 400px，关键局面使用纵向列表和暗色滚动条。两处分隔条可拖动或用左右
+桌面三栏会锁定页面滚动，Analysis 栏独立滚动，因此棋盘和导航不会随长讲解或对话移动；导航默认
+约 400px，关键局面使用纵向列表，所有页面与内部滚动区统一使用暗色滚动条。两处分隔条可拖动或用左右
 方向键调整相邻栏宽度，并在本机记忆；双击棋盘分隔条恢复整体默认，双击导航分隔条恢复导航
 默认宽度。窗口变窄时会限制宽度，纵向布局不显示分隔条。复盘中可进入 Retry 或 Practice。个人训练会复用
 现有 Engine artifact；未覆盖的合法着才触发按需 Stockfish。每次 attempt 会投影为 canonical
 observation，再确定性重建 recent/lifetime skill estimate。
 
+AI Coach 对话按棋局隔离：打开不同棋局会自动开始新对话，重新打开同一棋局或切换复盘方会保留
+当前对话并同步棋盘上下文；也可点击 Chat 标题旁的 `New chat` 随时清空当前对话并新建 session。
 AI Coach 中的 `Explain this position` 只生成当前局面的讲解；次级入口
 `Explain remaining key positions (N)` 明确批量生成尚未讲解的关键局面，已有讲解可单独重新生成。
 讲解保存到棋局，Ask Coach 用于继续追问或探索。打开页签不会自动发起模型请求。

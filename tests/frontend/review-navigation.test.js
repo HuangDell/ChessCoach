@@ -259,6 +259,19 @@ test("Games is a drawer on wide screens too", async () => {
   assert.match(css, /\.history-col\s*\{\s*position: fixed;/);
 });
 
+test("AI Coach exposes New chat and wide review uses an independently scrolling Analysis column", async () => {
+  const [html, css] = await Promise.all([
+    readFile(path.join(root, "frontend", "index.html"), "utf8"),
+    readFile(path.join(root, "frontend", "styles.css"), "utf8"),
+  ]);
+  assert.match(html, /id="chat-new"[^>]*>New chat<\/button>/);
+  assert.match(css, /scrollbar-color:\s*var\(--scrollbar-thumb\) var\(--scrollbar-track\)/);
+  assert.match(css, /\*::\-webkit-scrollbar-thumb:hover\s*\{[^}]*var\(--scrollbar-thumb-hover\)/);
+  assert.match(css, /@media \(min-width: 1401px\)[\s\S]*body:not\(\.puzzle-mode\)\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(css, /body:not\(\.puzzle-mode\) main\s*\{[^}]*height:\s*calc\(100dvh - var\(--header-h\)\)[^}]*overflow:\s*hidden/);
+  assert.match(css, /body:not\(\.puzzle-mode\) \.side-col\s*\{[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain[^}]*scrollbar-gutter:\s*stable/);
+});
+
 test("win-chance timeline stays hidden until a game timeline exists", () => {
   const elements = {
     graph: { innerHTML: "stale", setAttribute() {} },

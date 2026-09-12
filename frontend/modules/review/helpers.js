@@ -26,6 +26,11 @@ export function samePosition(fenA, fenB) {
   return fenA.split(" ").slice(0, 4).join(" ") === fenB.split(" ").slice(0, 4).join(" ");
 }
 
+export function sameGameIdentity(currentGameId, currentPgn, nextGameId, nextPgn) {
+  if (currentGameId && nextGameId) return currentGameId === nextGameId;
+  return Boolean(currentPgn && nextPgn && currentPgn === nextPgn);
+}
+
 export function pieceGlyph(san) {
   if (san.startsWith("O-O")) return "♚";
   return { N: "♞", B: "♝", R: "♜", Q: "♛", K: "♚" }[san[0]] || "♟";

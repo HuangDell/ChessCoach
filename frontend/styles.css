@@ -13,6 +13,9 @@
      "correct" (a solved-tile pulse) and isn't overloaded to mean "puzzle mode". */
   --puzzle-accent: #4a90c2;
   --puzzle-partial: #d9a441;
+  --scrollbar-track: var(--bg);
+  --scrollbar-thumb: #625d55;
+  --scrollbar-thumb-hover: #81796e;
   /* Board scales with viewport height but caps out — and never takes more than ~half the viewport
      width, so on smaller laptops the board and the analysis column still fit side by side (the
      board stays pinned; see .board-col). This is the *default*; the drag handle between the board
@@ -28,7 +31,15 @@
   --col-width: calc(var(--board-size) + 28px);
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+*::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 body {
   margin: 0;
@@ -187,14 +198,6 @@ main {
      overlay. The separator is then measured off the panel's real right edge (positionResizer in
      main.js), so it clears the reserved gutter in every browser. See issue #5. */
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--panel2) transparent;
-}
-.board-col::-webkit-scrollbar { width: 8px; }
-.board-col::-webkit-scrollbar-track { background: transparent; }
-.board-col::-webkit-scrollbar-thumb {
-  background: var(--panel2);
-  border-radius: 4px;
 }
 /* On a short window the column's content can exceed max-height. Don't let flex shrink the
    children to fit — the board/controls are floored by their content, but the win graph holds
@@ -600,13 +603,7 @@ main {
   overflow-x: auto;
   padding: 1px 1px 4px;
   min-height: 0;
-  scrollbar-width: thin;
-  scrollbar-color: #625d55 var(--bg);
 }
-.review-position-list::-webkit-scrollbar { width: 8px; height: 8px; }
-.review-position-list::-webkit-scrollbar-track { background: var(--bg); }
-.review-position-list::-webkit-scrollbar-thumb { background: #625d55; border-radius: 8px; }
-.review-position-list::-webkit-scrollbar-thumb:hover { background: #81796e; }
 .review-position-list:empty { display: none; }
 .position-item {
   flex: 0 0 154px;
@@ -998,6 +995,16 @@ body.retry-mode .board-col { max-height: none; overflow: visible; }
 
 .chat-panel { border-top: 1px solid #000; padding-top: 12px; }
 .chat-panel h2 { color: var(--text); }
+.chat-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.chat-heading #chat-new {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 0;
+  cursor: pointer;
+  font-size: 12px;
+}
+.chat-heading #chat-new:hover, .chat-heading #chat-new:focus-visible { color: var(--text); }
 .chat-hint { margin: 0 0 6px; }
 
 .chat-messages {
@@ -1944,7 +1951,15 @@ body.retry-mode #analysis-coach,
 body.puzzle-mode .navigation-col { display: none !important; }
 @media (min-width: 1401px) {
   :root { --board-default: min(68vh, 660px, calc(100vw - 908px)); }
+  body:not(.puzzle-mode) { height: 100dvh; overflow: hidden; }
+  body:not(.puzzle-mode) main { height: calc(100dvh - var(--header-h)); overflow: hidden; }
   body:not(.puzzle-mode) #navigation-resizer { display: flex; }
+  body:not(.puzzle-mode) .side-col {
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
   .navigation-col .review-workspace { height: calc(100dvh - var(--header-h) - 40px); }
   .navigation-col .review-position-list { flex-direction: column; overflow-x: hidden; scrollbar-gutter: stable; }
   .navigation-col .position-item { flex: 0 0 auto; width: 100%; min-height: 68px; }

@@ -17,6 +17,11 @@ class FakeElement {
     this.innerHTML = "";
     this.removed = false;
   }
+  get innerHTML() { return this._innerHTML; }
+  set innerHTML(value) {
+    this._innerHTML = value;
+    if (value === "" && this.children) this.children = [];
+  }
   addEventListener(type, listener) {
     const listeners = this.listeners.get(type) || [];
     listeners.push(listener);
@@ -529,6 +534,67 @@ test("reset deletes the Agent session and clears browser reuse state", async () 
     await waitFor(() => deleted.length === 1);
     assert.deepEqual(deleted, ["agent-reset"]);
     assert.equal(sessionStore.getItem("chessAgentSessionId"), "");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("New chat cancels old work, clears the UI, and creates a session for the current game", async () => {
+  const sessionStore = memoryStorage({ chessAgentSessionId: "agent-old" });
+  const deleted = [];
+  const created = [];
+  const contexts = [];
+  let oldRequestStarted = false;
+  let oldRequestAborted = false;
+  const fixture = setupChat({
+    sessionStore,
+    agentApi: {
+      getSession: async (id) => ({ session: { session_id: id, generation: 2 } }),
+      createSession: async (body) => {
+        created.push(body);
+        return { session: { session_id: "agent-new", generation: 0 } };
+      },
+      updateContext: async (id, body) => {
+        contexts.push({ id, body });
+        return { session: { session_id: id, generation: body.expected_generation + 1 } };
+      },
+      sendMessage: async (_id, _body, { signal }) => new Promise((_resolve, reject) => {
+        oldRequestStarted = true;
+        signal.addEventListener("abort", () => {
+          oldRequestAborted = true;
+          reject(new DOMException("Superseded", "AbortError"));
+        });
+      }),
+      deleteSession: async (id) => { deleted.push(id); },
+    },
+  });
+  try {
+    fixture.chat.setAgentCapability(enabledCapability());
+    await fixture.chat.restore();
+    fixture.$("chat-input").value = "Old question";
+    const sending = fixture.$("chat-form").emit("submit", { preventDefault() {} });
+    await waitFor(() => oldRequestStarted);
+    fixture.$("chat-input").value = "Unsent draft";
+
+    await fixture.$("chat-new").emit("click");
+    await sending;
+    await waitFor(() => deleted.length === 1);
+
+    assert.equal(oldRequestAborted, true);
+    assert.deepEqual(deleted, ["agent-old"]);
+    assert.equal(fixture.$("chat-messages").children.length, 0);
+    assert.equal(fixture.$("chat-input").value, "");
+    assert.equal(fixture.$("chat-input").focused, true);
+    assert.equal(fixture.$("chat-send").disabled, false);
+    assert.deepEqual(created, [{
+      game_id: "game-1",
+      review_side: "white",
+      active_ply: 0,
+      active_critical_id: "ply-1",
+    }]);
+    assert.equal(contexts.at(-1).id, "agent-new");
+    assert.equal(contexts.at(-1).body.game_id, "game-1");
+    assert.equal(sessionStore.getItem("chessAgentSessionId"), "agent-new");
   } finally {
     fixture.cleanup();
   }

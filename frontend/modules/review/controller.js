@@ -11,7 +11,12 @@ import {
 import { createReviewCoach } from "./coach.js";
 import { createReviewArtifacts } from "./artifacts.js";
 import { createReviewGraph } from "./graph.js";
-import { buildProvisionalTimeline, pgnHeaders, reviewMoveLabel } from "./helpers.js";
+import {
+  buildProvisionalTimeline,
+  pgnHeaders,
+  reviewMoveLabel,
+  sameGameIdentity,
+} from "./helpers.js";
 import { createReviewNavigation } from "./navigation.js";
 import { createReviewNotation } from "./notation.js";
 import { createAnalysisProgress } from "./progress.js";
@@ -560,6 +565,7 @@ function handleMove(orig, dest) {
 // Set up the board to navigate a PGN immediately (provisional timeline, no engine yet) and reset
 // per-game UI state. Shared by single-game opens and the first game of a batch upload.
 function beginProvisional(pgn, side, metaText, gameId = null) {
+  const sameGame = sameGameIdentity(currentGameId, currentPgn, gameId, pgn);
   exitFreeAnalysis();
   analyzing = true;
   artifacts.reset(gameId);
@@ -581,8 +587,8 @@ function beginProvisional(pgn, side, metaText, gameId = null) {
   renderMistakeList();
   $("scoreboard").hidden = true; // stale until the new game's stats land in phase-2
   coach.reset();
-  // A game switch invalidates an in-flight answer but preserves the stateful Agent session.
-  chat.contextChanged();
+  if (sameGame) chat.contextChanged();
+  else chat.reset();
 
   let prov = null;
   try {

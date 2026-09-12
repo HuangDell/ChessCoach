@@ -167,6 +167,18 @@ test("Review chat uses only the Agent API owner", async () => {
   assert.match(await readFile(path.join(reviewDirectory, "controller.js"), "utf8"), /agentApi/);
 });
 
+test("review game opens reset chat only when the game identity changes", async () => {
+  const controller = await readFile(
+    path.join(frontend, "modules", "review", "controller.js"),
+    "utf8"
+  );
+  const start = controller.indexOf("function beginProvisional");
+  const end = controller.indexOf("\n}\n\n// Show/label", start);
+  const opening = controller.slice(start, end);
+  assert.match(opening, /sameGameIdentity\(currentGameId, currentPgn, gameId, pgn\)/);
+  assert.match(opening, /if \(sameGame\) chat[.]contextChanged\(\);\s*else chat[.]reset\(\)/);
+});
+
 test("business modules do not bypass the HTTP client", async () => {
   const files = await javascriptFiles(path.join(frontend, "modules"));
   for (const file of files) {
