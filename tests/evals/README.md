@@ -93,3 +93,54 @@ tools, SQLite recent-items, production response validation, and portfolio qualit
 response, tool selection, task completion, reference/action validity, and degradation correctness
 targets remain 100%; illegal move claims, unnecessary Engine calls, and false personalization target
 0%. These results measure model behavior and do not enable or disable the production runtime.
+
+
+## Explanation 共享 facts 对比
+
+显式入口 `tests.evals.explanation_compare` 不加入默认测试或 CI，不运行 Ask Coach live portfolio。
+使用配置的 Explanation Chat Completions Provider，temperature 固定 0.2；仅后端读取凭据。
+
+**在修改 builder 之前**冻结旧请求：
+
+```bash
+.venv/bin/python -m tests.evals.explanation_compare freeze --directory /tmp/chesscoach-explanation-eval
+```
+
+freeze 只读个人数据，优先匹配 2026-09-12 基线的八个局面；不可用时按最新 analysis 确定性选取，
+尽量保留两个无 motif 局面。完整 analysis、逐局面 memory、模型参数和当时的 ExplanationRequest
+保存在指定目录。目录必须在仓库之外。仓库不保存旧 builder；当前代码 freeze 的是当前版本，
+不能凭空重建 v3 请求。已有冻结文件可直接使用。
+
+修改后从冻结数据构建新输入并审计所有投影/allowlist 引用，再显式执行：
+
+```bash
+CHESSCOACH_DATA_DIR=/tmp/chesscoach-eval-isolated \
+.venv/bin/python -m tests.evals.explanation_compare prepare --directory /tmp/chesscoach-explanation-eval
+
+CHESSCOACH_DATA_DIR=/tmp/chesscoach-eval-isolated \
+.venv/bin/python -m tests.evals.explanation_compare run --directory /tmp/chesscoach-explanation-eval
+```
+
+prepare 使用冻结 memory，不检索当前个人数据；不修改 analysis 或重排变化线。run 接受保存的请求，
+顺序固定为旧、新、新、旧，每轮保持八个局面的顺序，最多 32 次请求，不自动重试。
+已有 calls 目录时拒绝重跑，避免误重复付费；网络无响应时停止，需要先检查原始日志，不能把
+超时误判为模型未执行。不要为了改善数字重复整批调用。启动前校验模型、endpoint 和语言与冻结
+配置一致。不清空供应商缓存；首次测量不代表严格冷缓存，本地结果缓存不计入供应商命中。
+
+每次调用的请求、原始 HTTP response、讲解文本、验证错误仅写入本地目录。report.json 报告双方、
+各轮和有/无 motif 分组的 input、output、reasoning（已包含在 output 内）、耗时、模型调用数、
+生产校验率、每条有效讲解 input，以及缓存 hit/miss 和 token 加权命中率。缺少明细保持未知，
+同时报告有 usage/cache/reasoning 的调用数，不能将未知解读为零命中。
+
+完成后匿名交错的 `blind_review.json` 提供统一完整源证据和输出。先逐条填写 review 的布尔值：
+core_problem（核心问题正确）、board_reasons（有具体且正确的棋盘原因）、unsupported_claims
+（存在证据外声明），可加 notes；核对后再打开独立 blind_key.json。重新汇总不会覆盖批注：
+
+```bash
+.venv/bin/python -m tests.evals.explanation_compare report --directory /tmp/chesscoach-explanation-eval
+```
+
+完整记录和质量审查之前 success 为 null。成功要求总 input 减少至少 30%、生产有效率不下降、
+miss tokens 和每条有效讲解 input 不恶化，并且有/无 motif 两组的质量指标不下降。缓存收益受
+供应商和样本影响，不是长期保证；历史 4.38% 只作参考。仅脱敏 report/config 摘要和数据指纹可
+进入仓库，原始输出和冻结个人数据不得提交。

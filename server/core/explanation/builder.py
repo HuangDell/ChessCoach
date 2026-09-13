@@ -9,29 +9,12 @@ from server.core.agent.models import LearningMemoryItem, MemoryQuery
 from server.core.explanation.models import ExplanationRequest
 from server.core.learning import memory as learning_memory
 
-PROMPT_VERSION = 3
-EXPLANATION_SCHEMA_VERSION = 1
-
-_BASE_EVIDENCE_REFS = (
-    "position.classification",
-    "position.scores",
-    "position.win_percent",
-    "position.criticality",
-    "variations.multi_pv",
-    "variations.played_line",
-    "variations.best_line",
-    "facts.snapshots",
-    "facts.move_effects.played",
-    "facts.move_effects.best",
-    "facts.played_line_result",
-    "facts.best_line_result",
-    "facts.deltas.material_delta",
-    "facts.deltas.exchange_sequence",
-    "facts.deltas.king_safety",
-    "facts.deltas.activity",
-    "facts.opponent_direct_replies",
-    "facts.motifs",
+from server.core.facts_projection import (
+    FactsProjectionError, fact_evidence_refs, project_facts,
 )
+
+PROMPT_VERSION = 4
+EXPLANATION_SCHEMA_VERSION = 1
 
 
 class ExplanationInputError(ValueError):
@@ -82,17 +65,19 @@ def _relevant_memory(critical: dict, facts: dict) -> list[LearningMemoryItem]:
     return promoted[:3]
 
 
-def _allowed_refs(facts: dict) -> list[str]:
-    refs = set(_BASE_EVIDENCE_REFS)
-    for motif in facts.get("motifs") or []:
-        refs.update(str(ref) for ref in motif.get("evidence_refs") or [] if ref)
-    # Fact Extractor motif refs are relative to the facts object. Prefix them so every reference
-    # points into the exact JSON payload the model sees.
-    normalized = {
-        ref if ref.startswith(("position.", "variations.", "facts.")) else f"facts.{ref}"
-        for ref in refs
-    }
-    return sorted(normalized)
+def _allowed_refs(payload: dict) -> list[str]:
+    refs = set()
+    for branch in ('position', 'variations', 'facts'):
+        for key, value in payload[branch].items():
+            if value is not None:
+                refs.add(f'{branch}.{key}')
+    for branch in ('move_effects', 'deltas'):
+        for key, value in payload['facts'].get(branch, {}).items():
+            if value is not None:
+                refs.add(f'facts.{branch}.{key}')
+    refs.update('facts.' + ref.removeprefix('facts.')
+                for ref in fact_evidence_refs(payload['facts']))
+    return sorted(refs)
 
 
 def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
@@ -110,6 +95,11 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
     best_san = str(((critical.get("best_line") or {}).get("san") or [""])[0])
     if side not in {"white", "black"} or move_number < 1 or not played_san or not best_san:
         raise ExplanationInputError(f"Critical position {critical_id} has incomplete move data.")
+
+    try:
+        projected_facts = project_facts(facts, critical.get("signals") or [])
+    except FactsProjectionError as exc:
+        raise ExplanationInputError(str(exc)) from exc
 
     stage_move = next(
         (
@@ -168,20 +158,7 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
             "played_line": critical.get("played_line"),
             "best_line": critical.get("best_line"),
         },
-        "facts": {
-            "facts_version": facts.get("facts_version"),
-            "signals": critical.get("signals") or [],
-            "snapshots": facts.get("snapshots"),
-            "move_effects": facts.get("move_effects"),
-            "played_line_result": facts.get("played_line_result"),
-            "best_line_result": facts.get("best_line_result"),
-            "deltas": facts.get("deltas"),
-            "opponent_direct_replies": facts.get("opponent_direct_replies"),
-            "motifs": facts.get("motifs"),
-            "primary_category": facts.get("primary_category"),
-            "secondary_categories": facts.get("secondary_categories") or [],
-            "classification_evidence": facts.get("classification_evidence") or [],
-        },
+        "facts": projected_facts,
     }
     relevant_memory = _relevant_memory(critical, facts)
     if relevant_memory:
@@ -189,7 +166,7 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
             item.model_dump(mode="json", exclude_none=True) for item in relevant_memory
         ]
 
-    allowed_refs = _allowed_refs(facts)
+    allowed_refs = _allowed_refs(payload)
     allowed_refs.extend(
         evidence_ref
         for item in relevant_memory
@@ -248,6 +225,14 @@ def build_request(analysis: dict, critical: dict) -> ExplanationRequest:
             "请解释这一处关键局面。不得引用整盘棋或未提供的历史。只使用末尾这一个上下文对象："
             "\nposition_context:\n"
         )
+    system_prompt += (
+        " Compact facts: snapshot_comparison.before is background before the move; "
+        "after_played_changed_values and after_best_changed_values contain only changed values "
+        "immediately after ONE move (omitted fields are unchanged). move_effects also describe "
+        "one move. played_line_result, best_line_result and line deltas describe variation ENDPOINTS. "
+        "Do not confuse these times or recompute facts. Restored snapshots are exact cited evidence; "
+        "signals.NAME references membership in the signals list."
+    )
     position_context = {
         "expected": expected,
         "allowed_evidence_refs": allowed_refs,

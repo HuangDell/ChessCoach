@@ -446,7 +446,17 @@ class BoundedExplanationContractTests(_BackendBaselineCase):
         self.assertEqual(critical["played_line"], payload["variations"]["played_line"])
         self.assertEqual(critical["best_line"], payload["variations"]["best_line"])
         self.assertEqual(critical["fen_before"], payload["position"]["fen_before"])
-        self.assertEqual(critical["facts"]["snapshots"], payload["facts"]["snapshots"])
+        self.assertNotIn("snapshots", payload["facts"])
+        before = payload["facts"]["snapshot_comparison"]["before"]
+        for key in ("turn", "in_check", "material", "mobility", "king_safety", "structure"):
+            self.assertEqual(critical["facts"]["snapshots"]["before"][key], before[key])
+        self.assertEqual(critical["facts"]["snapshots"]["before"]["phase"]["name"], before["phase"])
+        for key in ("deltas", "played_line_result", "best_line_result", "classification_evidence"):
+            self.assertEqual(critical["facts"][key], payload["facts"][key])
+        self.assertEqual(
+            critical["facts"]["opponent_direct_replies"]["engine_best_reply"],
+            payload["facts"]["opponent_direct_replies"]["engine_best_reply"],
+        )
         self.assertEqual(
             critical["facts"]["move_effects"], payload["facts"]["move_effects"]
         )

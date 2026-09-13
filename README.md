@@ -85,9 +85,19 @@ CHESS_EXPLANATION_API_KEY=... \
 ```
 
 `auto` 只选择这条 API provider；base URL 或 model 缺失时 explanation 明确 unavailable，不回退
-CLI。explanation prompt v3 将固定教练规则和输出契约保留为可缓存公共前缀，并把局面、合法 SAN、
+CLI。explanation prompt v4 将固定教练规则和输出契约保留为可缓存公共前缀，并把局面、合法 SAN、
 允许的 evidence 与个性化 memory 集中在末尾 `position_context`。模型失败不会修改
 `analysis.json`，也不会影响 Engine Review。
+
+Explanation 和 Ask Coach 的初始上下文、`get_review_context` 模型返回使用同一个纯函数 facts 投影。
+保留全部 motifs、分类证据、move effects、deltas、变化线结果和对手最佳回复；三份 snapshots
+改为紧凑的起始背景和一着后的变化，按引用补回精确源节点（包含 signals 列表成员）。无 motif
+局面同样保留背景。缺少被引用证据时明确报错，不回退完整输入；Agent 内部仍保留完整工具结果。
+持久化 analysis 不迁移，旧讲解继续展示，再生成按现有版本/hash 失效。
+显式对比命令及测量口径见 [Explanation 对比评测](tests/evals/README.md#explanation-共享-facts-对比)。
+本次同源 8 局面、32 次真实调用，总输入减少 36.9%，供应商 miss tokens 减少 5.3%，新版生产校验
+16/16 通过；加权命中率本身没有提高。小样本结果及内容质量风险见
+[共享 facts 实测](docs/explanation-facts-comparison-2026-09-13.md)。
 
 ## Agent 配置
 
@@ -147,7 +157,7 @@ dataset 和 scorer 衡量模型表现，但结果不控制 Agent 是否可用。
 以便比较模型表现。DeepSeek 规则尚需真实 endpoint 评测，离线通过不代表真实 endpoint 的表现。
 
 Responses 请求已通过 `text.format.type=json_schema` 和 `strict=true` 要求原生结构化输出，
-不是 Chat Completions 的 `response_format`。policy v5 明确要求完整 JSON、结果复用、预算拒绝后
+不是 Chat Completions 的 `response_format`。policy v6 明确要求完整 JSON、结果复用、预算拒绝后
 停止重试，以及 suggested action 不得作为工具调用。
 
 Agent instructions 仅包含固定规则；每轮在最近历史之后追加服务端 developer context 快照和用户
@@ -262,7 +272,9 @@ usage 新增可选 `input_cache_hit_tokens` / `input_cache_miss_tokens`，来自
 `input_tokens_details.cached_tokens` 及输入总数之差。旧记录或无缓存明细时字段缺省，不视为零命中。
 `GET /api/agent/metrics` 的 `input_cache` 返回有明细的记录数、hit/miss token 合计和加权
 `hit_rate`（0–1；无可统计输入时为 null），与 `tools.cache_hits` 的 Engine/tool 缓存分开。
-SDK 可能将 Provider 未报告的 cached_tokens 默认成 0；这些值是 SDK 报告口径，不是独立账单核验。
+缓存明细使用 SDK 保留的供应商原始 usage；缺失时保持未知，不使用 SDK 补出的零值。
+同一 run 中任一调用缺少明细时，该 run 不参与缓存命中率统计。reasoning_tokens 单列且已包含在
+output_tokens 中，不能重复相加；这仍不是独立账单核验。
 run record schema v1 保留，新增可选字段默认 null；response schema v4 不变。
 usage 的 `context_last_input_tokens` / `context_peak_input_tokens` 记录教练请求的最后/峰值实测输入；
 `context_estimated_input_tokens`、`context_before_tokens` / `context_after_tokens` 是估算，

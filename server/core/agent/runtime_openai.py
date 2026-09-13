@@ -15,6 +15,9 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from server.core.facts_projection import project_facts
+from server.core.model_usage import normalize_usage
+
 from server import config
 from server.config import resolve_agent_provider
 from server.core.agent.context_budget import ContextBudget, ContextBudgetExceeded, RunContextWindow
@@ -194,6 +197,7 @@ class _LocalRunContext:
     orchestration: OrchestrationController | None = None
     window: RunContextWindow | None = None
     usage: dict[str, int | float] = field(default_factory=dict)
+    cache_details_complete: bool = True
     model_requests: int = 0
     failure_stage: AgentFailureStage | None = None
     validation_errors: list[AgentValidationIssue] = field(default_factory=list)
@@ -469,7 +473,15 @@ class OpenAIAgentsRuntime:
                 )
                 response = await delegate.get_response(**kwargs)
                 duration_ms = max(0, round((time.monotonic() - started) * 1000))
-                runtime._record_usage(local, getattr(response, "usage", None))
+                raw_usage = getattr(response, "raw_usage", None)
+                if raw_usage is None:
+                    # SDK-normalized details can invent cached_tokens=0. Keep only totals
+                    # when native usage is unavailable, so cache/reasoning remain unknown.
+                    source = getattr(response, "usage", None)
+                    raw_usage = {key: getattr(source, key, None) for key in (
+                        "input_tokens", "output_tokens", "total_tokens"
+                    )}
+                runtime._record_usage(local, raw_usage)
                 window.observe(fixed, kwargs["input"], getattr(getattr(response, "usage", None), "input_tokens", None))
                 runtime._record_research_model_response(local, response)
                 runtime._debug_event(
@@ -505,17 +517,19 @@ class OpenAIAgentsRuntime:
         local.usage["requests"] = local.usage.get("requests", 0) + 1
         if summary:
             local.usage["summary_requests"] = local.usage.get("summary_requests", 0) + 1
-        for key in ("input_tokens", "output_tokens", "total_tokens"):
-            value = getattr(source, key, None)
-            if isinstance(value, (int, float)) and value >= 0:
-                local.usage[key] = local.usage.get(key, 0) + value
-                if summary:
-                    local.usage["summary_" + key] = local.usage.get("summary_" + key, 0) + value
-        cached = getattr(getattr(source, "input_tokens_details", None), "cached_tokens", None)
-        total = getattr(source, "input_tokens", None)
-        if isinstance(cached, int) and isinstance(total, int) and 0 <= cached <= total:
-            for key, value in (("input_cache_hit_tokens", cached), ("input_cache_miss_tokens", total - cached)):
-                local.usage[key] = local.usage.get(key, 0) + value
+        normalized = normalize_usage(source, protocol="responses")
+        for key, value in normalized.items():
+            if key == "requests":
+                continue
+            local.usage[key] = local.usage.get(key, 0) + value
+            if summary and key in {"input_tokens", "output_tokens", "total_tokens"}:
+                local.usage["summary_" + key] = local.usage.get("summary_" + key, 0) + value
+        # A run with any unreported call must not look like complete cache telemetry.
+        if "input_cache_hit_tokens" not in normalized:
+            local.cache_details_complete = False
+        if not local.cache_details_complete:
+            local.usage.pop("input_cache_hit_tokens", None)
+            local.usage.pop("input_cache_miss_tokens", None)
 
     async def _generate_summary(self, local: _LocalRunContext, payload: str) -> str:
         started = time.monotonic()
@@ -690,6 +704,12 @@ class OpenAIAgentsRuntime:
             else:
                 result = await getattr(tools, name)(payload)
                 cache_hit, engine_calls = self._execution_metadata(tools)
+            visible_result = result.model_dump(mode="json")
+            if name == "get_review_context" and result.ok and result.data is not None:
+                full_facts = result.data.facts
+                visible_result["data"]["facts"] = project_facts(
+                    full_facts, full_facts.get("signals") or []
+                )
             # Reconcile the conservative pre-call reservation with actual cache/Engine metadata.
             # A cache hit refunds the reservation; an operation with multiple misses consumes each.
             context.budget.engine = max(
@@ -727,7 +747,7 @@ class OpenAIAgentsRuntime:
                     engine_used=context.budget.engine,
                 )
             self._debug_tool_record(context)
-            return result.model_dump_json()
+            return json.dumps(visible_result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         except Exception as exc:
             duration_ms = max(0, round((time.monotonic() - started) * 1000))
             error_code = (
@@ -1314,7 +1334,9 @@ class OpenAIAgentsRuntime:
                 name="Chess Coach",
                 instructions=build_agent_instructions(),
                 model=self._model_for_run(local),
-                model_settings=self._agents.ModelSettings(max_tokens=self.context_budget.max_output_tokens),
+                model_settings=self._agents.ModelSettings(
+                    max_tokens=self.context_budget.max_output_tokens, preserve_raw_usage=True,
+                ),
                 tools=self._sdk_tools(local),
                 output_type=self._output_schema(local),
             )
@@ -1347,22 +1369,12 @@ class OpenAIAgentsRuntime:
                     "The model output did not match the Agent response schema."
                 ) from None
             usage_source = getattr(getattr(result, "context_wrapper", None), "usage", None)
-            usage = {
-                key: value
-                for key in ("requests", "input_tokens", "output_tokens", "total_tokens")
-                if isinstance((value := getattr(usage_source, key, None)), (int, float))
-            }
-            cached_tokens = getattr(
-                getattr(usage_source, "input_tokens_details", None), "cached_tokens", None
+            usage = normalize_usage(
+                {key: getattr(usage_source, key, None) for key in (
+                    "requests", "input_tokens", "output_tokens", "total_tokens"
+                )},
+                protocol="responses",
             )
-            input_tokens = usage.get("input_tokens")
-            if (
-                isinstance(cached_tokens, int)
-                and isinstance(input_tokens, (int, float))
-                and 0 <= cached_tokens <= input_tokens
-            ):
-                usage["input_cache_hit_tokens"] = cached_tokens
-                usage["input_cache_miss_tokens"] = input_tokens - cached_tokens
             if local.usage:
                 usage = dict(local.usage)
             assert local.window is not None

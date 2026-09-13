@@ -1,0 +1,244 @@
+{
+  "data_sha256": "7469991a7160104754b5464a404f7cbbdcc3ab0aa9619000a257468f0d5b54b0",
+  "first_measurement_is_cold": false,
+  "groups": {
+    "new": {
+      "motif": {
+        "cache": {
+          "hit_rate": 0.5325393044306813,
+          "hit_tokens": 33534,
+          "miss_tokens": 29436,
+          "reported_record_count": 12
+        },
+        "duration_ms": 450219,
+        "input_per_valid": 5247.5,
+        "input_tokens": 62970,
+        "model_calls": 12,
+        "output_tokens": 93276,
+        "reasoning_reported_calls": 12,
+        "reasoning_tokens": 81588,
+        "usage_reported_calls": 12,
+        "valid": 12,
+        "valid_rate": 1.0
+      },
+      "no_motif": {
+        "cache": {
+          "hit_rate": 0.5444702242846094,
+          "hit_tokens": 9856,
+          "miss_tokens": 8246,
+          "reported_record_count": 4
+        },
+        "duration_ms": 163630,
+        "input_per_valid": 4525.5,
+        "input_tokens": 18102,
+        "model_calls": 4,
+        "output_tokens": 32762,
+        "reasoning_reported_calls": 4,
+        "reasoning_tokens": 28923,
+        "usage_reported_calls": 4,
+        "valid": 4,
+        "valid_rate": 1.0
+      }
+    },
+    "old": {
+      "motif": {
+        "cache": {
+          "hit_rate": 0.6089475378178307,
+          "hit_tokens": 60544,
+          "miss_tokens": 38880,
+          "reported_record_count": 12
+        },
+        "duration_ms": 441818,
+        "input_per_valid": 9038.545454545454,
+        "input_tokens": 99424,
+        "model_calls": 12,
+        "output_tokens": 93015,
+        "reasoning_reported_calls": 12,
+        "reasoning_tokens": 81234,
+        "usage_reported_calls": 12,
+        "valid": 11,
+        "valid_rate": 0.9166666666666666
+      },
+      "no_motif": {
+        "cache": {
+          "hit_rate": 0.9687629007843677,
+          "hit_tokens": 28160,
+          "miss_tokens": 908,
+          "reported_record_count": 4
+        },
+        "duration_ms": 210162,
+        "input_per_valid": 7267.0,
+        "input_tokens": 29068,
+        "model_calls": 4,
+        "output_tokens": 43349,
+        "reasoning_reported_calls": 4,
+        "reasoning_tokens": 39481,
+        "usage_reported_calls": 4,
+        "valid": 4,
+        "valid_rate": 1.0
+      }
+    }
+  },
+  "input_reduction": 0.3690502132428478,
+  "language": "zh-CN",
+  "model": "deepseek-flash",
+  "new_requests_sha256": "165111049624acf2dc70a48b8bacca2052fd4ee208772b6382ff2e936f96bf72",
+  "quality": {
+    "new": {
+      "all": {
+        "board_reasons": 1.0,
+        "core_problem": 1.0,
+        "reviewed": 16,
+        "unsupported_claims": 0.1875
+      },
+      "motif": {
+        "board_reasons": 1.0,
+        "core_problem": 1.0,
+        "reviewed": 12,
+        "unsupported_claims": 0.16666666666666666
+      },
+      "no_motif": {
+        "board_reasons": 1.0,
+        "core_problem": 1.0,
+        "reviewed": 4,
+        "unsupported_claims": 0.25
+      }
+    },
+    "old": {
+      "all": {
+        "board_reasons": 1.0,
+        "core_problem": 0.875,
+        "reviewed": 16,
+        "unsupported_claims": 0.3125
+      },
+      "motif": {
+        "board_reasons": 1.0,
+        "core_problem": 0.8333333333333334,
+        "reviewed": 12,
+        "unsupported_claims": 0.3333333333333333
+      },
+      "no_motif": {
+        "board_reasons": 1.0,
+        "core_problem": 1.0,
+        "reviewed": 4,
+        "unsupported_claims": 0.25
+      }
+    }
+  },
+  "quality_review": "complete",
+  "rounds": {
+    "0": {
+      "cache": {
+        "hit_rate": 0.4044454129439965,
+        "hit_tokens": 25984,
+        "miss_tokens": 38262,
+        "reported_record_count": 8
+      },
+      "duration_ms": 360377,
+      "input_per_valid": 8030.75,
+      "input_tokens": 64246,
+      "model_calls": 8,
+      "output_tokens": 76694,
+      "reasoning_reported_calls": 8,
+      "reasoning_tokens": 69018,
+      "usage_reported_calls": 8,
+      "valid": 8,
+      "valid_rate": 1.0
+    },
+    "1": {
+      "cache": {
+        "hit_rate": 0.10420367081113084,
+        "hit_tokens": 4224,
+        "miss_tokens": 36312,
+        "reported_record_count": 8
+      },
+      "duration_ms": 302409,
+      "input_per_valid": 5067.0,
+      "input_tokens": 40536,
+      "model_calls": 8,
+      "output_tokens": 61750,
+      "reasoning_reported_calls": 8,
+      "reasoning_tokens": 53987,
+      "usage_reported_calls": 8,
+      "valid": 8,
+      "valid_rate": 1.0
+    },
+    "2": {
+      "cache": {
+        "hit_rate": 0.9662028813893823,
+        "hit_tokens": 39166,
+        "miss_tokens": 1370,
+        "reported_record_count": 8
+      },
+      "duration_ms": 311440,
+      "input_per_valid": 5067.0,
+      "input_tokens": 40536,
+      "model_calls": 8,
+      "output_tokens": 64288,
+      "reasoning_reported_calls": 8,
+      "reasoning_tokens": 56524,
+      "usage_reported_calls": 8,
+      "valid": 8,
+      "valid_rate": 1.0
+    },
+    "3": {
+      "cache": {
+        "hit_rate": 0.9762475484855089,
+        "hit_tokens": 62720,
+        "miss_tokens": 1526,
+        "reported_record_count": 8
+      },
+      "duration_ms": 291603,
+      "input_per_valid": 9178.0,
+      "input_tokens": 64246,
+      "model_calls": 8,
+      "output_tokens": 59670,
+      "reasoning_reported_calls": 8,
+      "reasoning_tokens": 51697,
+      "usage_reported_calls": 8,
+      "valid": 7,
+      "valid_rate": 0.875
+    }
+  },
+  "selection": "historical-baseline",
+  "success": true,
+  "temperature": 0.2,
+  "variants": {
+    "new": {
+      "cache": {
+        "hit_rate": 0.5352032761002565,
+        "hit_tokens": 43390,
+        "miss_tokens": 37682,
+        "reported_record_count": 16
+      },
+      "duration_ms": 613849,
+      "input_per_valid": 5067.0,
+      "input_tokens": 81072,
+      "model_calls": 16,
+      "output_tokens": 126038,
+      "reasoning_reported_calls": 16,
+      "reasoning_tokens": 110511,
+      "usage_reported_calls": 16,
+      "valid": 16,
+      "valid_rate": 1.0
+    },
+    "old": {
+      "cache": {
+        "hit_rate": 0.6903464807147527,
+        "hit_tokens": 88704,
+        "miss_tokens": 39788,
+        "reported_record_count": 16
+      },
+      "duration_ms": 651980,
+      "input_per_valid": 8566.133333333333,
+      "input_tokens": 128492,
+      "model_calls": 16,
+      "output_tokens": 136364,
+      "reasoning_reported_calls": 16,
+      "reasoning_tokens": 120715,
+      "usage_reported_calls": 16,
+      "valid": 15,
+      "valid_rate": 0.9375
+    }
+  }
+}

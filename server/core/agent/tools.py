@@ -1225,7 +1225,7 @@ class AgentTools:
                 classification=str(critical.get("classification") or "unclassified"),
                 criticality=str(critical.get("criticality") or "critical"),
                 candidates=candidates,
-                facts=facts,
+                facts={**facts, "signals": list(critical.get("signals") or [])},
                 provenance=_artifact_provenance(active),
             )
         except (ArtifactConsistencyError, KeyError, TypeError, ValueError, ValidationError):

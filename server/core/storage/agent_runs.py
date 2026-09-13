@@ -13,6 +13,8 @@ from typing import Iterator, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from server.core.model_usage import cache_statistics
+
 from server.core.agent.models import (
     AgentActivity,
     AgentFailureStage,
@@ -42,6 +44,7 @@ class AgentUsageSummary(BaseModel):
     input_tokens: int | float | None = Field(default=None, ge=0)
     input_cache_hit_tokens: int | float | None = Field(default=None, ge=0)
     input_cache_miss_tokens: int | float | None = Field(default=None, ge=0)
+    reasoning_tokens: int | float | None = Field(default=None, ge=0)
     output_tokens: int | float | None = Field(default=None, ge=0)
     total_tokens: int | float | None = Field(default=None, ge=0)
     context_last_input_tokens: int | None = Field(default=None, ge=0)
@@ -202,25 +205,12 @@ class AgentRunStore:
                 engine_calls += call.engine_call_count
                 cache_hits += int(call.cache_hit)
         latencies = [item.duration_ms for item in records]
-        cache_records = [
-            item for item in records
-            if item.usage.input_cache_hit_tokens is not None
-            and item.usage.input_cache_miss_tokens is not None
-        ]
-        input_hits = sum(item.usage.input_cache_hit_tokens for item in cache_records)
-        input_misses = sum(item.usage.input_cache_miss_tokens for item in cache_records)
         return {
             "schema_version": RUN_RECORD_SCHEMA_VERSION,
             "record_count": len(records),
             "status_counts": dict(sorted(statuses.items())),
             "error_counts": dict(sorted(errors.items())),
-            "input_cache": {
-                "reported_record_count": len(cache_records),
-                "hit_tokens": input_hits,
-                "miss_tokens": input_misses,
-                "hit_rate": input_hits / (input_hits + input_misses)
-                if input_hits + input_misses else None,
-            },
+            "input_cache": cache_statistics(item.usage for item in records),
             "tools": {
                 "calls": tool_calls,
                 "by_name": dict(sorted(tool_names.items())),

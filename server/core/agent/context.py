@@ -7,6 +7,8 @@ from typing import Any, Literal, Sequence
 
 import chess
 
+from server.core.facts_projection import FactsProjectionError, project_facts
+
 from server.core.agent.models import (
     AgentSessionState,
     AnalyzePositionResult,
@@ -143,50 +145,6 @@ def _position_at_ply(
             fen=fen,
         ),
     )
-
-
-def _bounded_facts(facts: dict[str, Any]) -> dict[str, Any]:
-    """Keep deterministic teaching evidence while excluding large unrelated snapshots."""
-
-    snapshots: dict[str, Any] = {}
-    for name in ("before", "after_played", "after_best"):
-        source = (facts.get("snapshots") or {}).get(name) or {}
-        snapshots[name] = {
-            key: source.get(key)
-            for key in (
-                "fen",
-                "turn",
-                "in_check",
-                "material",
-                "safety",
-                "structure",
-                "mobility",
-                "king_safety",
-                "phase",
-            )
-            if key in source
-        }
-    replies = facts.get("opponent_direct_replies") or {}
-    return {
-        key: value
-        for key, value in {
-            "facts_version": facts.get("facts_version"),
-            "snapshots": snapshots,
-            "move_effects": facts.get("move_effects"),
-            "played_line_result": facts.get("played_line_result"),
-            "best_line_result": facts.get("best_line_result"),
-            "deltas": facts.get("deltas"),
-            "opponent_direct_replies": {
-                "checks": list(replies.get("checks") or [])[:5],
-                "captures": list(replies.get("captures") or [])[:5],
-            },
-            "motifs": list(facts.get("motifs") or [])[:5],
-            "primary_category": facts.get("primary_category"),
-            "secondary_categories": list(facts.get("secondary_categories") or [])[:5],
-            "classification_evidence": list(facts.get("classification_evidence") or [])[:8],
-        }.items()
-        if value not in (None, {}, [])
-    }
 
 
 def _validated_selected_move(position: PositionContext) -> tuple[str | None, str | None]:
@@ -732,6 +690,10 @@ class ChessContextBuilder:
             if loaded.ok and loaded.data is not None:
                 review = loaded.data
                 allowed_evidence_refs = list(loaded.evidence_refs)
+                try:
+                    projected_facts = project_facts(review.facts, review.facts.get("signals") or [])
+                except FactsProjectionError as exc:
+                    raise ChessContextError("position_not_found", str(exc)) from exc
                 engine_facts = EngineFactsContext(
                     reference=review.reference,
                     played_move=review.played_move,
@@ -740,7 +702,7 @@ class ChessContextBuilder:
                     criticality=review.criticality,
                     candidates=review.candidates,
                     provenance=review.provenance,
-                    facts=_bounded_facts(review.facts),
+                    facts=projected_facts,
                     evidence_refs=allowed_evidence_refs,
                 )
         elif (

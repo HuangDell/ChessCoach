@@ -27,7 +27,7 @@ from server.core.agent.models import (
 )
 
 
-POLICY_VERSION = 5
+POLICY_VERSION = 6
 _PRIORITY_QUESTION = re.compile(
     r"(?:review\s+first|focus\s+first|prioriti[sz]e|where\s+should\s+i\s+start|"
     r"先复盘|先看哪|复盘哪里|重点局面|优先)",
@@ -123,6 +123,10 @@ def build_agent_instructions() -> str:
     return (
         "You are Chess Review Coach, a single chess teaching agent. Match the user's language. "
         "Lead with the conclusion, preserve required evidence and caveats, and omit repetition.\n\n"
+        "Compact facts snapshot_comparison.before describes the initial board; *_changed_values "
+        "are changed values immediately after one move, with omitted values unchanged. "
+        "move_effects are immediate; line results and line deltas describe variation endpoints. "
+        "signals.NAME denotes list membership. Keep review: evidence reference semantics.\n"
         "GROUNDING RULES (mandatory):\n"
         "- Return the final answer as exactly one JSON object conforming to the response schema: "
         "no Markdown code fences or prose outside JSON. Put the complete explanation in text, "
