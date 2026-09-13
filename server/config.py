@@ -506,6 +506,13 @@ AGENT_CONTEXT_TRIGGER_RATIO: float = _parse_float("CHESS_AGENT_CONTEXT_TRIGGER_R
 AGENT_CONTEXT_TARGET_RATIO: float = _parse_float("CHESS_AGENT_CONTEXT_TARGET_RATIO", 0.6)
 AGENT_MAX_OUTPUT_TOKENS: int = _parse_int("CHESS_AGENT_MAX_OUTPUT_TOKENS", 8192)
 AGENT_SUMMARY_MAX_OUTPUT_TOKENS: int = _parse_int("CHESS_AGENT_SUMMARY_MAX_OUTPUT_TOKENS", 8192)
+# Model reasoning intensity. Empty preserves each provider's native default.
+AGENT_REASONING_EFFORT: str = os.environ.get("CHESS_AGENT_REASONING_EFFORT", "").strip().lower()
+if AGENT_REASONING_EFFORT not in {"", "low", "medium", "high"}:
+    AGENT_REASONING_EFFORT = ""
+EXPLANATION_REASONING_EFFORT: str = os.environ.get("CHESS_EXPLANATION_REASONING_EFFORT", "").strip().lower()
+if EXPLANATION_REASONING_EFFORT not in {"", "low", "medium", "high"}:
+    EXPLANATION_REASONING_EFFORT = ""
 # Emit timestamped, redacted Agent lifecycle and validation diagnostics to the terminal.
 AGENT_DEBUG: bool = os.environ.get("CHESS_AGENT_DEBUG", "0") == "1"
 # Persist exact model request/response bodies locally without HTTP headers. When unset, raw tracing

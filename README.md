@@ -132,6 +132,8 @@ reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可
 | `CHESS_AGENT_CONTEXT_TARGET_RATIO` | 压缩后输入目标比例 | `0.6` |
 | `CHESS_AGENT_MAX_OUTPUT_TOKENS` | 每次教练调用的输出上限（包含 reasoning） | `8192` |
 | `CHESS_AGENT_SUMMARY_MAX_OUTPUT_TOKENS` | 每次摘要调用的输出上限 | `8192` |
+| `CHESS_AGENT_REASONING_EFFORT` | Agent 思考强度：`low` / `medium` / `high`，留空使用厂家默认 | 留空 |
+| `CHESS_EXPLANATION_REASONING_EFFORT` | Explanation 思考强度；按 OpenAI/DeepSeek 适配器映射 | 留空 |
 
 调试 Agent 对话时可运行：
 

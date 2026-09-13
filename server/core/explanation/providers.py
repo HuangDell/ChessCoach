@@ -67,12 +67,14 @@ class OpenAICompatibleProvider(ExplanationProvider):
         api_key: str = "",
         local: bool = False,
         raw_trace_store: RawHttpTraceStore | None = None,
+        reasoning_effort: str = "",
     ):
         self._base_url = base_url.strip()
         self._model = model.strip()
         self._api_key = api_key.strip()
         self._local = local
         self._raw_trace_store = raw_trace_store
+        self._reasoning_effort = reasoning_effort if reasoning_effort in {"low", "medium", "high"} else ""
 
     @property
     def info(self) -> ProviderInfo:
@@ -98,6 +100,13 @@ class OpenAICompatibleProvider(ExplanationProvider):
             "stream": False,
             "temperature": 0.2,
         }
+        if self._reasoning_effort:
+            # OpenAI Responses-style compatible endpoints generally accept this field;
+            # DeepSeek's adapter uses its documented thinking budget instead.
+            if "deepseek" in self._model.lower() or "deepseek" in self._base_url.lower():
+                payload["thinking"] = {"type": "enabled", "budget_tokens": {"low": 1024, "medium": 4096, "high": 8192}[self._reasoning_effort]}
+            else:
+                payload["reasoning_effort"] = self._reasoning_effort
         try:
             url = _chat_completions_url(self._base_url)
             trace_id = f"explanation-{request.critical_id}-{request.input_hash[:12]}"
@@ -160,6 +169,7 @@ def configured_provider(
             api_key=config.EXPLANATION_API_KEY,
             local=_is_loopback_url(base_url),
             raw_trace_store=raw_trace_store,
+            reasoning_effort=config.EXPLANATION_REASONING_EFFORT,
         )
     raise ExplanationProviderError(
         "No explanation provider is configured. Set CHESS_EXPLANATION_BASE_URL and "

@@ -1336,6 +1336,10 @@ class OpenAIAgentsRuntime:
                 model=self._model_for_run(local),
                 model_settings=self._agents.ModelSettings(
                     max_tokens=self.context_budget.max_output_tokens, preserve_raw_usage=True,
+                    reasoning=(
+                        {"effort": config.AGENT_REASONING_EFFORT}
+                        if config.AGENT_REASONING_EFFORT else None
+                    ),
                 ),
                 tools=self._sdk_tools(local),
                 output_type=self._output_schema(local),
