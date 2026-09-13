@@ -1,0 +1,41 @@
+"""Local book corpus construction and inspection APIs."""
+from .corpus import build_corpus, get_corpus_status, inspect_book, list_books
+from .models import (
+    Book,
+    BookInspection,
+    BookNotFoundError,
+    BookParseError,
+    BookSummary,
+    BuildResult,
+    Chapter,
+    Chunk,
+    CORPUS_VERSION,
+    CorpusBuildError,
+    CorpusReadError,
+    CorpusStatus,
+    KnowledgeError,
+    Paragraph,
+    SCHEMA_VERSION,
+)
+
+__all__ = [
+    "Book",
+    "BookInspection",
+    "BookNotFoundError",
+    "BookParseError",
+    "BookSummary",
+    "BuildResult",
+    "CORPUS_VERSION",
+    "Chapter",
+    "Chunk",
+    "CorpusBuildError",
+    "CorpusReadError",
+    "CorpusStatus",
+    "KnowledgeError",
+    "Paragraph",
+    "SCHEMA_VERSION",
+    "build_corpus",
+    "get_corpus_status",
+    "inspect_book",
+    "list_books",
+]

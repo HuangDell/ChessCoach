@@ -238,6 +238,27 @@ report。完整 benchmark 命令见 [Operations](docs/operations.md)。
 设置页只保存仍有效的 Web 设置到 `<DATA_DIR>/settings.json`。旧 `coach_ai_*`、`local_llm_*` 和
 `claude-cli` 值可以被旧文件读取，但会被忽略，且下次保存时不会重写。
 
+## 本地书籍语料（M3a）
+
+把个人书籍放入 `<DATA_DIR>/knowledge/books/` 后，可用无模型、无网络的 CLI 构建本地 SQLite
+corpus。首版支持 EPUB、UTF-8/UTF-8 BOM 的 `.txt`、`.md` 和 `.markdown`；PDF 与其他格式会明确
+列为 unsupported，但在同时存在有效书籍时不会阻止构建。
+
+```bash
+python -m server.knowledge status
+python -m server.knowledge build
+python -m server.knowledge books
+python -m server.knowledge inspect BOOK_ID --limit 5
+```
+
+以上命令默认使用 `CHESSCOACH_DATA_DIR`，也可在命令前增加 `--data-dir /path/to/data`。`build` 每次
+完整扫描书籍目录，在同目录临时 SQLite 中解析、规范化、分块并完成外键与完整性检查，最后原子替换
+`<DATA_DIR>/knowledge/corpus.sqlite3`；任一本受支持书籍失败或构建期间源文件变化时保留旧 corpus。
+书籍正文、生成数据库和人工检查输出只留在本机数据目录，不进入仓库。
+
+M3a 只提供可重建的书籍语料快照。Embedding、BM25/向量召回、检索评测、Agent 工具、API 与前端
+接线尚未实现，当前不能把该 corpus 视为可用的 RAG 功能。
+
 ## 数据与 API
 
 主要 artifact：
@@ -253,6 +274,8 @@ report。完整 benchmark 命令见 [Operations](docs/operations.md)。
 <DATA_DIR>/agent/sessions/<session_id>.json
 <DATA_DIR>/agent/runs.jsonl
 <DATA_DIR>/agent/traces/<timestamp>-<trace_id>/*.json  # raw trace 开启时
+<DATA_DIR>/knowledge/books/*                           # 用户手动放置的原始书籍
+<DATA_DIR>/knowledge/corpus.sqlite3                    # M3a 可重建语料快照
 ```
 
 `analysis.json`、`explanations.json`、history、attempt 和 learning schema 保持兼容。旧 analysis

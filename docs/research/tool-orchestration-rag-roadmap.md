@@ -1,6 +1,6 @@
 # 工具编排与 RAG：近期实施路线
 
-日期：2026-09-13。状态：计划；本文没有新增运行能力或产生实验结果。
+日期：2026-09-13。状态：M3a 本地书籍语料构建已完成；M3 检索与 M4 产品接线仍未完成。
 
 目标是在当前单 Agent 上完成“分析局面 → 识别教学需求 → 检索适用知识 → 给出有来源的解释与练习建议”。
 先测工具编排，再测知识检索，最后测按需检索，分别回答决策、召回和教学收益的问题。
@@ -17,7 +17,8 @@
   scorer、回放和 SDK + fake model 接线；当前 runner 明确拒绝 `live-fixture` / `engine-system`。
 - `routing.py` 的候选提供器目前是固定/预设序列；动态候选接线不等于学会了根据执行结果选择工具。
 - P0 task 合同的 split 当前仅接受 dev，正式测试集须新增版本化合同，保留冻结的 v1 fixture。
-- `lookup_opening` 只查本地开局元数据；当前未实现文档 RAG。RAG 首先接入 Ask Coach。
+- `lookup_opening` 只查本地开局元数据；M3a 已能从本地书籍构建 corpus，但当前未实现文档检索。
+  后续 RAG 首先接入 Ask Coach。
 - 已有 bounded Explanation 继续独立运行；当前棋局分析、学习 observation 和训练判定保持原事实边界。
 
 ## 四个交付阶段
@@ -26,7 +27,7 @@
 | --- | --- | --- | --- |
 | M1：编排基线 | 2–3 天 | 复核 P0，增加真实模型 + fixture 工具的研究入口，冻结原生七工具基线和测试划分。 | 可复跑基线、逐任务轨迹、失败分类、成本与延迟报告。 |
 | M2：执行结果驱动编排 | 3–4 天 | 比较全部工具、初始问题选工具、根据实际结果更新候选；检验依赖、恢复、复用和停止。 | 方法对照、配对状态实验、最小消融和适用边界。 |
-| M3：教学知识检索 | 4–6 天 | 核验资料、语义分块、BM25 基线、向量召回与 RRF 融合，独立评测检索。 | 版本化小型语料、可重建本地索引、检索报告及引用合同。 |
+| M3：教学知识检索（部分完成） | 4–6 天 | M3a 已完成 EPUB/TXT/Markdown 本地语料构建；仍需核验资料、BM25、向量召回、RRF 与独立检索评测。 | 已有可重建 SQLite corpus；检索报告及引用合同未完成。 |
 | M4：按需检索与产品验收 | 3–4 天 | 接入一个知识检索工具，对比固定检索与按需检索，完成引用展示、异常路径及真实场景评估。 | 可演示功能、分层评测报告、关键失败轨迹和复现命令。 |
 
 阶段可各自形成一次可审查提交。M2 未取得收益也应完成报告，以开发集选定的可靠基线继续 M3/M4。
@@ -65,6 +66,15 @@ B/C 先采用可审查的简单规则作为状态策略基线，不声称算法�
 tokens、请求数、p50/p95 和超时。新增规划/检索请求也计入总量。七工具无收益是允许的结果。
 
 ## M3：构建有教学用途的 RAG
+
+M3a 已交付依赖标准库的本地书籍管线：从 `<DATA_DIR>/knowledge/books/` 读取 EPUB、UTF-8 TXT 和
+Markdown，按章节与段落规范化、稳定分块，并通过临时库校验及原子替换构建
+`<DATA_DIR>/knowledge/corpus.sqlite3`。PDF 会作为 unsupported 报告。书籍与 chunk 使用内容 hash
+形成稳定身份，可通过 `python -m server.knowledge` 构建和人工检查。
+
+这只是 M3 的语料准备阶段，不代表 RAG 可用。M3b 仍需在模型选定后复核 tokenizer/分块参数，建立
+独立 embedding/检索索引与真实查询评测；BM25、向量召回、RRF、fake embedding、Agent 工具、API
+和前端均未在 M3a 实现。
 
 第一轮聚焦 `calculation.exchange_sequence`、`tactics.loose_piece_awareness` 和
 `calculation.opponent_forcing_moves`。先做约 20 个经核验的知识段落贯通链路，再按覆盖缺口扩充至
@@ -144,18 +154,20 @@ M2 选定的编排策略、语料和预算；不同阶段的实验分别报告�
 | --- | --- |
 | 现有 `server/core/agent/execution_state.py`、`routing.py` | 有界状态及候选策略，复用现有 snapshot/generation 机制。 |
 | 现有 `runtime_openai.py`、`tools.py`、`models.py`、`policy.py` | 现有运行时接线、知识工具与引用验收；复用领域能力。 |
-| 拟新增 `server/core/knowledge/` | 资料导入、知识 DTO、本地索引与检索，模块按实际职责逐步增加。 |
+| `server/core/knowledge/` | M3a 已负责书籍解析、知识 DTO、稳定分块与 SQLite corpus；后续增加独立检索索引。 |
 | 现有 `tests/evals/orchestration/` | live-fixture 入口、对照策略、测试合同和可回放报告。 |
+| `tests/backend/test_knowledge_*.py` | M3a 格式解析、分块、身份、原子构建、SQLite 与 CLI 回归。 |
 | 拟新增 `tests/evals/rag/` | 小型授权语料、查询/相关性标注、检索与端到端评测。 |
 
-首个提交只做 M1：复核现有 P0 → 定义真实研究运行合同与 split → 接入共用生产验收 → 冻结基线。
-不同时修改生产策略和加入知识工具。新增 CLI 在实现后写入相应 README，当前不提供未实现命令。
+路线最初的 M1 提交不同时修改生产策略和加入知识工具。当前 M3a 只增加本地 corpus Core 与
+`python -m server.knowledge`，仍未修改 Agent 工具、API 或前端。
 
 每阶段遵循 [AGENTS.md](../../AGENTS.md)：Core/runtime 改动运行后端 suite 和临时数据目录下的
 import smoke；保持既有 deterministic portfolio。API、存储和跨前后端增加相应集成测试；引用展示
 改动运行前端 suite。Engine 接线/facts/训练变动另跑固定棋局系统测试并确认资源关闭。
 默认测试使用 fake 模型、embedding 和外部 I/O；真实模型/embedding 实测和真实 Engine 结果分开。
-本次仅写计划，未运行上述实现验证或真实评测。
+M3a 已运行知识语料回归、后端完整 suite 与临时数据目录 app import smoke；尚未运行或产出 embedding、
+检索、真实模型或真实 Engine 评测。
 
 ## 可形成的项目经历
 
