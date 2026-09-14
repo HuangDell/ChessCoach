@@ -26,5 +26,7 @@ docs/requirements/
 
 reports/
 
-proxy.sh
+# Local RAG benchmark questions, judgments, and frozen textbook corpus.
+tests/evals/rag/datasets/
 
+proxy.sh

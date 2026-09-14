@@ -70,6 +70,23 @@ class RagDatasetValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fingerprint mismatch"):
             validate(self.root, self.corpus)
 
+    def test_model_review_requires_provenance_and_is_not_human_approval(self) -> None:
+        self.labels["q1"].update(review_status="model_reviewed", independent_human_review=False,
+                                 reviewer={"type": "model_assisted_review", "agent": "reviewer", "model": "test-model"},
+                                 review_notes_zh="Checked the synthetic passage.")
+        self.write_dataset()
+        self.assertEqual(validate(self.root, self.corpus)["semantic_review"], "model_reviewed_not_human_approved")
+        self.labels["q1"]["independent_human_review"] = True
+        self.write_dataset()
+        with self.assertRaisesRegex(ValueError, "not human approval"):
+            validate(self.root, self.corpus)
+
+    def test_model_review_without_provenance_is_rejected(self) -> None:
+        self.labels["q1"].update(review_status="model_reviewed", independent_human_review=False)
+        self.write_dataset()
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            validate(self.root, self.corpus)
+
     def test_gold_fields_cannot_enter_query_input(self) -> None:
         self.query["expected_answer"] = "Hidden answer"
         self.write_dataset()

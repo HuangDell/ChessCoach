@@ -291,6 +291,12 @@ export CHESS_KNOWLEDGE_MODEL_PATH=/path/to/Qwen3-Embedding-8B
 .venv/bin/python -m server.knowledge search "如何识别对手的强制着法？" --limit 3
 ```
 
+`pyproject.toml` 为 Linux/Windows 的 PyTorch 显式选择官方 CUDA 12.8（cu128）源，
+`uv.lock` 固定解析后的版本、来源和文件哈希。运行 `uv sync --locked --extra agent --extra rag`
+即可按锁文件安装；普通 `uv sync` 不启用可选的 RAG 依赖。uv 不会根据本机 CUDA Toolkit
+自动为此配置改选其他构建；macOS 仍使用 PyPI。这里安装的是 PyTorch CUDA 运行库，
+不安装或升级系统 NVIDIA 驱动。修改依赖或源后执行 `uv lock` 更新锁文件，不手工编辑锁文件。
+
 `index` 默认先重建 corpus，再生成新的 LanceDB generation，完成后原子切换 `active.json`。
 源书籍更新后需再次执行 `index`；仅放入文件不会自动更新索引。`status` 不加载 embedding 模型，
 不能单独证明模型可用或召回质量；`search` 才会执行实际 embedding 与混合检索。
@@ -309,7 +315,8 @@ retriever，书籍只提供通用教学背景，不决定评分、合法性、�
 
 索引或 embedding 不可用时，Agent 返回可恢复的 `knowledge_unavailable`，Explanation 使用空知识
 上下文继续生成；Engine Review 不受影响。`found` 只表示召回了候选，当前没有相关性拒答阈值或
-reranker，也没有独立检索质量报告。完整流程、引用约束、缓存及已知边界见
+reranker；已有独立 [RAG 检索诊断](tests/evals/rag/RESULTS.md)，标注仍为模型辅助复核，
+不代表正式人工验收的检索质量。完整流程、引用约束、缓存及已知边界见
 [本地书籍 RAG 工作流程](docs/rag-workflow.md)。
 
 ## 数据与 API
@@ -365,6 +372,13 @@ usage 的 `context_last_input_tokens` / `context_peak_input_tokens` 记录教练
 优化前对照数据见 [缓存基线](docs/agent-cache-baseline-2026-09-11.md)。
 
 ## Eval 与验证
+
+[评测总入口](tests/evals/README.md) 区分两套独立 Benchmark：Agent portfolio 的 26 条 baseline
+测试工具编排与回答约束；[RAG Benchmark](tests/evals/rag/README.md) 的 40 条草案测试中文问题对
+英文教材的检索与证据支持。二者不合并。RAG 当前本地数据位于
+`tests/evals/rag/datasets/zh-en-v2/`（Git 忽略，v1 历史快照保留），已支持独立索引、
+中文/固定英文查询的三路检索诊断及补标后重评分；标注为 sub-agent 模型辅助复核，
+不等同人工验收，见 [RAG 实测进展](tests/evals/rag/RESULTS.md)。
 
 Phase 0 的 26 个 case、ID 和 v1 baseline 保持不变；`agent-portfolio-v2` 在其上增加 summary、
 reference/action、recent improvement、training diversity/stale source、storage、stale/cancel、

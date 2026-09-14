@@ -10,6 +10,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 
 import chess
@@ -43,12 +44,18 @@ def validate(dataset_dir: Path, corpus: Path) -> dict:
     evidence_count = 0
     for query in queries:
         qid = query["query_id"]
+        require(isinstance(qid, str) and re.fullmatch(r"[A-Za-z0-9_-]+", qid) is not None, "Unsafe query ID.")
         require(set(query) == {"query_id", "query_zh", "query_en_reference", "context"}, f"{qid}: unexpected model-input fields.")
         require(any("\u4e00" <= char <= "\u9fff" for char in query["query_zh"]), f"{qid}: missing Chinese question.")
         require(bool(query["query_en_reference"].strip()), f"{qid}: missing English reference translation.")
         label = labels[qid]
-        require(label["review_status"] == "draft_pending_human_review", f"{qid}: draft must not claim human approval.")
-        require(label["qrels_complete"] is False, f"{qid}: draft judgments are not exhaustive.")
+        require(label["review_status"] in {"draft_pending_human_review", "model_reviewed"}, f"{qid}: unsupported review status; must not claim human approval.")
+        if label["review_status"] == "model_reviewed":
+            require(label.get("independent_human_review") is False, f"{qid}: model review is not human approval.")
+            reviewer = label.get("reviewer", {})
+            require(reviewer.get("type") == "model_assisted_review" and bool(reviewer.get("agent"))
+                    and bool(reviewer.get("model")) and bool(label.get("review_notes_zh")), f"{qid}: missing model-review provenance.")
+        require(label["qrels_complete"] is False, f"{qid}: current judgments are not exhaustive.")
         require(bool(label["expected_points_zh"]) and bool(label["group_id"]), f"{qid}: missing rubric or grouping.")
         context = query["context"]
         if context is not None:
@@ -91,7 +98,8 @@ def validate(dataset_dir: Path, corpus: Path) -> dict:
         "source_references": evidence_count,
         "kinds": dict(Counter(label["kind"] for label in labels.values())),
         "corpus_fingerprint": fingerprint,
-        "semantic_review": "pending", "retrieval_metrics": "not_run",
+        "semantic_review": "model_reviewed_not_human_approved" if all(label["review_status"] == "model_reviewed" for label in labels.values()) else "pending",
+        "retrieval_metrics": "not_run",
     }
 
 
