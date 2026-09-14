@@ -967,6 +967,7 @@ def create_default_agent_service(
     if config.KNOWLEDGE_ENABLED:
         try:
             from server.core.knowledge import LanceDBKnowledgeRetriever, QwenEmbedder
+            from server.core.knowledge.tracing import KnowledgeTraceStore
 
             knowledge_retriever = LanceDBKnowledgeRetriever(
                 root,
@@ -976,6 +977,7 @@ def create_default_agent_service(
                     batch_size=config.KNOWLEDGE_BATCH_SIZE,
                 ),
                 enabled=True,
+                trace_store=KnowledgeTraceStore(root) if config.AGENT_DEBUG else None,
             )
         except Exception:
             # Knowledge is optional and reports a typed unavailable result when no retriever exists.

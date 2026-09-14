@@ -62,6 +62,7 @@ from server.core.agent.runtime import (
 )
 from server.core.learning import taxonomy
 from server.core.storage.agent_traces import RawHttpTraceStore
+from server.core.knowledge.tracing import knowledge_trace_context
 
 
 DomainToolsFactory = Callable[[AgentRunRequest], Any]
@@ -701,15 +702,17 @@ class OpenAIAgentsRuntime:
             return _error_result(budget_error)
         started = time.monotonic()
         try:
-            executor = getattr(tools, "execute", None)
-            if executor is not None:
-                execution = await executor(name, payload)
-                result = execution.result
-                cache_hit = bool(getattr(execution, "cache_hit", False))
-                engine_calls = int(getattr(execution, "engine_calls", 0) or 0)
-            else:
-                result = await getattr(tools, name)(payload)
-                cache_hit, engine_calls = self._execution_metadata(tools)
+            with knowledge_trace_context("agent", run_id=context.request.run_id,
+                                         session_id=context.request.session_id):
+                executor = getattr(tools, "execute", None)
+                if executor is not None:
+                    execution = await executor(name, payload)
+                    result = execution.result
+                    cache_hit = bool(getattr(execution, "cache_hit", False))
+                    engine_calls = int(getattr(execution, "engine_calls", 0) or 0)
+                else:
+                    result = await getattr(tools, name)(payload)
+                    cache_hit, engine_calls = self._execution_metadata(tools)
             visible_result = result.model_dump(mode="json")
             if name == "get_review_context" and result.ok and result.data is not None:
                 full_facts = result.data.facts

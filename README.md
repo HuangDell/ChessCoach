@@ -383,3 +383,18 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
 [ADR](docs/adr/)，Agent 需求
 与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。
+
+### RAG 检索诊断记录
+
+`CHESS_AGENT_DEBUG=1` 时，Agent、Explanation 和 CLI 的每次实际书籍检索会原子写入
+`<DATA_DIR>/knowledge/traces/<timestamp>-<trace_id>.json`，保留最近 100 次记录。
+此开关独立于 `CHESS_AGENT_RAW_TRACE`；关闭 DEBUG 时不写 RAG trace。
+
+schema v1 记录原始与扩展查询、skill 参数、请求/实际 limit、索引和 embedding fingerprint、
+向量维度、双路全部候选正文及来源、cosine distance/BM25 score（缺失时为 null）、RRF
+排名与分数、重复正文和 limit 排除原因、最终段落，以及各阶段和总耗时。不会保存向量数值。
+Agent 关联 run/session，Explanation 关联 game/critical，CLI 标记入口。命中讲解缓存而没有
+执行检索时不生成记录；在检索器创建前不可用或被工具预算拒绝时也没有检索 trace。
+失败记录保留已完成阶段、失败阶段及安全错误信息；记录失败不会影响原有检索结果或降级。
+终端调试摘要只含 ID、状态、候选数量、耗时和文件路径。文件包含查询和书籍正文，只保留在
+本机数据目录，不加入仓库。现有 HTTP trace 和 run log 的行为保持不变。

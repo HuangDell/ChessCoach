@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import shutil
 import threading
+import time
+from contextlib import contextmanager
 from typing import Protocol, Sequence
 from uuid import uuid4
 
@@ -444,7 +446,8 @@ def get_index_status(
 
 
 class LanceDBKnowledgeRetriever:
-    def __init__(self, data_dir: str | os.PathLike[str], embedder: Embedder, *, enabled: bool = True):
+    def __init__(self, data_dir: str | os.PathLike[str], embedder: Embedder, *, enabled: bool = True, trace_store=None):
+        self.trace_store = trace_store
         self.data_dir = Path(data_dir).expanduser()
         self.embedder = embedder
         self.enabled = enabled
@@ -469,10 +472,37 @@ class LanceDBKnowledgeRetriever:
         return status.index_fingerprint
 
     def search(self, query: str, *, skill_ids: Sequence[str] = (), limit: int = 5) -> KnowledgeSearchResult:
+        trace = self.trace_store.start() if self.trace_store is not None else None
+        started = time.perf_counter()
+        if trace is not None:
+            trace.update(query=query, skill_ids=list(skill_ids), requested_limit=limit,
+                         parameters={"candidates_per_route": RETRIEVAL_CANDIDATES, "rrf_k": RRF_K,
+                                     "distance_type": "cosine", "query_instruction": QUERY_INSTRUCTION})
+        try:
+            result = self._search(query, skill_ids=skill_ids, limit=limit, trace=trace)
+            if trace is not None:
+                trace.update(status=result.status, final_passages=[asdict(p) for p in result.passages])
+            return result
+        except Exception as exc:
+            if trace is not None:
+                trace["error"] = {"type": type(exc).__name__,
+                                  "cause_type": type(exc.__cause__).__name__ if exc.__cause__ else None,
+                                  "message": "Retrieval failed; inspect the recorded stage and local index/model configuration."}
+            raise
+        finally:
+            if trace is not None:
+                trace["timings_ms"]["total"] = (time.perf_counter() - started) * 1000
+                self.trace_store.save(trace)
+
+    def _search(self, query, *, skill_ids, limit, trace):
+        if trace is not None:
+            trace["stage"] = "validation"
         query = query.strip()
         if not query:
             raise ValueError("query must not be empty")
         limit = max(1, min(int(limit), 5))
+        if trace is not None:
+            trace["effective_limit"] = limit
         additions: list[str] = []
         for raw in list(skill_ids)[:5]:
             canonical = resolve_skill_id(str(raw))
@@ -480,53 +510,75 @@ class LanceDBKnowledgeRetriever:
             if definition is not None:
                 additions.append(f"{definition.label}: {definition.description}")
         expanded = query + ("\nRelevant coaching skills: " + "; ".join(additions) if additions else "")
-        vector = _finite_normalized(self.embedder.encode_query(expanded), self.embedder.dimension)
+        if trace is not None:
+            trace["expanded_query"] = expanded
+        with _trace_stage(trace, "embedding"):
+            vector = _finite_normalized(self.embedder.encode_query(expanded), self.embedder.dimension)
+            if trace is not None:
+                trace.update(embedding_fingerprint=self.embedder.fingerprint, dimension=self.embedder.dimension)
+        lock_started = time.perf_counter()
         with self._lock:
-            table, fingerprint = self._open()
+            if trace is not None:
+                trace["timings_ms"]["lock_wait"] = (time.perf_counter() - lock_started) * 1000
+            with _trace_stage(trace, "open_index"):
+                table, fingerprint = self._open()
+                if trace is not None:
+                    trace["index_fingerprint"] = fingerprint
             columns = [
                 "chunk_id", "text_hash", "book_id", "ordinal", "title", "author",
                 "heading_path", "source_locator", "source_uri", "text",
             ]
             try:
-                dense = (
-                    table.search(vector, vector_column_name="vector", query_type="vector")
-                    .distance_type("cosine").select(columns).limit(RETRIEVAL_CANDIDATES).to_list()
-                )
-                lexical = (
-                    table.search(expanded, query_type="fts", fts_columns="search_text")
-                    .select(columns).limit(RETRIEVAL_CANDIDATES).to_list()
-                )
+                with _trace_stage(trace, "dense"):
+                    dense = (
+                        table.search(vector, vector_column_name="vector", query_type="vector")
+                        .distance_type("cosine").select(columns).limit(RETRIEVAL_CANDIDATES).to_list()
+                    )
+                    if trace is not None:
+                        trace["dense"] = _trace_candidates(dense, "_distance", "cosine_distance")
+                with _trace_stage(trace, "lexical"):
+                    lexical = (
+                        table.search(expanded, query_type="fts", fts_columns="search_text")
+                        .select(columns).limit(RETRIEVAL_CANDIDATES).to_list()
+                    )
+                    if trace is not None:
+                        trace["lexical"] = _trace_candidates(lexical, "_score", "bm25_score")
             except Exception as exc:
                 raise KnowledgeUnavailableError(
                     f"Knowledge search failed: {type(exc).__name__}."
                 ) from exc
-        ranks: dict[str, float] = {}
-        records: dict[str, dict] = {}
-        for result_set in (dense, lexical):
-            for rank, row in enumerate(result_set, start=1):
+        with _trace_stage(trace, "fusion"):
+            ranks: dict[str, float] = {}
+            records: dict[str, dict] = {}
+            for result_set in (dense, lexical):
+                for rank, row in enumerate(result_set, start=1):
+                    chunk_id = str(row["chunk_id"])
+                    ranks[chunk_id] = ranks.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
+                    records[chunk_id] = row
+            ordered = sorted(records.values(), key=lambda row: (-ranks[str(row["chunk_id"])], str(row["chunk_id"])))
+            passages: list[KnowledgePassage] = []
+            seen_hashes: set[str] = set()
+            for fusion_rank, row in enumerate(ordered, start=1):
+                if trace is None and len(passages) >= limit:
+                    break
+                text_hash = str(row["text_hash"])
+                reason = "duplicate_text" if text_hash in seen_hashes else "limit" if len(passages) >= limit else "selected"
+                if trace is not None:
+                    trace.setdefault("fusion", []).append({"chunk_id": str(row["chunk_id"]),
+                        "rank": fusion_rank, "rrf_score": ranks[str(row["chunk_id"])], "decision": reason})
+                if reason != "selected":
+                    continue
+                seen_hashes.add(text_hash)
                 chunk_id = str(row["chunk_id"])
-                ranks[chunk_id] = ranks.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
-                records[chunk_id] = row
-        ordered = sorted(records.values(), key=lambda row: (-ranks[str(row["chunk_id"])], str(row["chunk_id"])))
-        passages: list[KnowledgePassage] = []
-        seen_hashes: set[str] = set()
-        for row in ordered:
-            text_hash = str(row["text_hash"])
-            if text_hash in seen_hashes:
-                continue
-            seen_hashes.add(text_hash)
-            chunk_id = str(row["chunk_id"])
-            citation_id = f"knowledge:{chunk_id}:{text_hash[:12]}"
-            citation = KnowledgeCitation(
-                citation_id=citation_id, book_id=str(row["book_id"]), title=str(row["title"]),
-                author=str(row.get("author") or ""), heading=str(row.get("heading_path") or ""),
-                source_locator=str(row["source_locator"]), source_url=str(row.get("source_uri") or "") or None,
-            )
-            passages.append(KnowledgePassage(
-                passage_id=chunk_id, text=str(row["text"]), text_hash=text_hash, citation=citation,
-            ))
-            if len(passages) >= limit:
-                break
+                citation_id = f"knowledge:{chunk_id}:{text_hash[:12]}"
+                citation = KnowledgeCitation(
+                    citation_id=citation_id, book_id=str(row["book_id"]), title=str(row["title"]),
+                    author=str(row.get("author") or ""), heading=str(row.get("heading_path") or ""),
+                    source_locator=str(row["source_locator"]), source_url=str(row.get("source_uri") or "") or None,
+                )
+                passages.append(KnowledgePassage(
+                    passage_id=chunk_id, text=str(row["text"]), text_hash=text_hash, citation=citation,
+                ))
         return KnowledgeSearchResult(
             status="found" if passages else "no_match", passages=tuple(passages),
             index_fingerprint=fingerprint,
@@ -538,3 +590,22 @@ class LanceDBKnowledgeRetriever:
 
 def manifest_json(result: IndexBuildResult) -> dict:
     return {key: str(value) if isinstance(value, Path) else value for key, value in asdict(result).items()}
+
+
+@contextmanager
+def _trace_stage(trace, stage):
+    started = time.perf_counter()
+    if trace is not None:
+        trace["stage"] = stage
+    try:
+        yield
+    finally:
+        if trace is not None:
+            trace["timings_ms"][stage] = (time.perf_counter() - started) * 1000
+
+
+def _trace_candidates(rows, score_key, score_kind):
+    return [{**{key: value for key, value in row.items() if key != "vector"},
+             "rank": rank, "score_kind": score_kind,
+             "score": float(row[score_key]) if row.get(score_key) is not None else None}
+            for rank, row in enumerate(rows, start=1)]

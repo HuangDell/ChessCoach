@@ -16,6 +16,7 @@ from server.core.explanation.builder import (
 )
 from server.core.explanation.models import Explanation, ExplanationRequest
 from server.core.knowledge import KnowledgeRetriever
+from server.core.knowledge.tracing import knowledge_trace_context
 from server.core.learning.taxonomy import resolve_skill_id
 from server.core.explanation.providers import (
     ExplanationProvider,
@@ -309,9 +310,11 @@ def generate_explanations(
             if prior is not None and not force:
                 cached.append(base_request.critical_id)
                 continue
-            knowledge_context, knowledge_status, index_fingerprint, citations = _retrieve_knowledge(
-                knowledge_retriever, position
-            )
+            with knowledge_trace_context("explanation", game_id=game_id,
+                                         critical_id=base_request.critical_id):
+                knowledge_context, knowledge_status, index_fingerprint, citations = _retrieve_knowledge(
+                    knowledge_retriever, position
+                )
             request = build_request(analysis, position, knowledge_context=knowledge_context)
             request = request.model_copy(update={
                 "knowledge_status": knowledge_status,

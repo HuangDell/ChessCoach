@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 import sys
 from typing import Sequence
 
+from server.core.knowledge.tracing import KnowledgeTraceStore, knowledge_trace_context
 from server import config
 from server.core.knowledge import (
     KnowledgeError,
@@ -118,9 +120,13 @@ def _print_index(data_dir: Path) -> int:
 
 
 def _print_search(data_dir: Path, query: str, skill_ids: list[str], limit: int) -> int:
-    retriever = LanceDBKnowledgeRetriever(data_dir, _embedder(), enabled=config.KNOWLEDGE_ENABLED)
+    retriever = LanceDBKnowledgeRetriever(
+        data_dir, _embedder(), enabled=config.KNOWLEDGE_ENABLED,
+        trace_store=KnowledgeTraceStore(data_dir) if config.AGENT_DEBUG else None,
+    )
     try:
-        result = retriever.search(query, skill_ids=skill_ids[:5], limit=limit)
+        with knowledge_trace_context("cli"):
+            result = retriever.search(query, skill_ids=skill_ids[:5], limit=limit)
     finally:
         retriever.close()
     print(f"Status: {result.status}")
@@ -169,6 +175,9 @@ def _print_inspection(data_dir: Path, book_id: str, limit: int) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if config.AGENT_DEBUG:
+        logging.basicConfig(level=logging.WARNING)
+        logging.getLogger("chesscoach.agent").setLevel(logging.DEBUG)
     arguments = _parser().parse_args(argv)
     data_dir = _data_dir(arguments)
     try:
