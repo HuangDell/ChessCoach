@@ -107,7 +107,7 @@ SQLite conversation session 和非流式 bounded runs。response schema v4 要�
 和本次成功工具结果确定性校验。`suggested_actions` 直接使用按 action kind 区分的窄 JSON schema，
 例如 `compare_move` 只能返回 `move_uci` 和可选 `fen`；未经验证的模型输出不会作为成功响应提交。
 
-每次 run 都向 Agent 注册全部七个领域工具，不用问题关键词预先裁剪；当前 FEN、review ownership、
+每次 run 都向 Agent 注册全部八个领域工具（含 `search_coaching_knowledge`），不用问题关键词预先裁剪；当前 FEN、review ownership、
 个性化开关、训练候选 allowlist 和调用预算仍由后端强校验。Free analysis 会用服务端生成的 opaque
 reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可被信任的评分或 PV；已完成的关键
 局面继续使用保存的 Stage 2 artifact，不被交互式 live 搜索覆盖。
@@ -238,7 +238,7 @@ report。完整 benchmark 命令见 [Operations](docs/operations.md)。
 设置页只保存仍有效的 Web 设置到 `<DATA_DIR>/settings.json`。旧 `coach_ai_*`、`local_llm_*` 和
 `claude-cli` 值可以被旧文件读取，但会被忽略，且下次保存时不会重写。
 
-## 本地书籍语料（M3a）
+## 本地书籍 RAG
 
 把个人书籍放入 `<DATA_DIR>/knowledge/books/` 后，可用无模型、无网络的 CLI 构建本地 SQLite
 corpus。首版支持 EPUB、UTF-8/UTF-8 BOM 的 `.txt`、`.md` 和 `.markdown`；PDF 与其他格式会明确
@@ -256,8 +256,42 @@ python -m server.knowledge inspect BOOK_ID --limit 5
 `<DATA_DIR>/knowledge/corpus.sqlite3`；任一本受支持书籍失败或构建期间源文件变化时保留旧 corpus。
 书籍正文、生成数据库和人工检查输出只留在本机数据目录，不进入仓库。
 
-M3a 只提供可重建的书籍语料快照。Embedding、BM25/向量召回、检索评测、Agent 工具、API 与前端
-接线尚未实现，当前不能把该 corpus 视为可用的 RAG 功能。
+当前已实现本地 Qwen3-Embedding-8B、LanceDB 向量与全文混合检索、RRF 排名融合，以及两条教练
+路径和 Sources 展示。`build` 只构建文本语料；实际检索还需要安装 `rag` extra、准备完整的本地
+embedding 模型目录，并执行 `index`：
+
+```bash
+# 同时保留 Ask Coach 与 RAG 的可选依赖
+uv sync --extra agent --extra rag
+
+# 指向已准备好的本地模型；程序不会自动下载模型
+export CHESS_KNOWLEDGE_MODEL_PATH=/path/to/Qwen3-Embedding-8B
+
+.venv/bin/python -m server.knowledge index
+.venv/bin/python -m server.knowledge status
+.venv/bin/python -m server.knowledge search "如何识别对手的强制着法？" --limit 3
+```
+
+`index` 默认先重建 corpus，再生成新的 LanceDB generation，完成后原子切换 `active.json`。
+源书籍更新后需再次执行 `index`；仅放入文件不会自动更新索引。`status` 不加载 embedding 模型，
+不能单独证明模型可用或召回质量；`search` 才会执行实际 embedding 与混合检索。
+
+| 环境变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `CHESS_KNOWLEDGE_ENABLED` | 启用本地知识检索，`0` 关闭 | `1` |
+| `CHESS_KNOWLEDGE_MODEL_PATH` | 本地 Qwen3-Embedding-8B 模型目录 | `<DATA_DIR>/knowledge/models/Qwen3-Embedding-8B` |
+| `CHESS_KNOWLEDGE_DEVICE` | embedding 推理设备 | `auto`：CUDA 可用时用 CUDA，否则 CPU |
+| `CHESS_KNOWLEDGE_BATCH_SIZE` | embedding 模型 batch size | `4` |
+
+Ask Coach 由 Agent 按需检索，每个 run 最多两次、每次最多五段；单局面 Explanation 在缓存未命中时，
+由后端根据已验证 facts 固定检索最多三段，然后交给独立 Explanation Provider。两条路径共享
+retriever，书籍只提供通用教学背景，不决定评分、合法性、分类或个人弱项。
+语料和 embedding 推理在本机；选中的段落会随教练请求发送至所配置的模型 endpoint。
+
+索引或 embedding 不可用时，Agent 返回可恢复的 `knowledge_unavailable`，Explanation 使用空知识
+上下文继续生成；Engine Review 不受影响。`found` 只表示召回了候选，当前没有相关性拒答阈值或
+reranker，也没有独立检索质量报告。完整流程、引用约束、缓存及已知边界见
+[本地书籍 RAG 工作流程](docs/rag-workflow.md)。
 
 ## 数据与 API
 
@@ -275,7 +309,10 @@ M3a 只提供可重建的书籍语料快照。Embedding、BM25/向量召回、�
 <DATA_DIR>/agent/runs.jsonl
 <DATA_DIR>/agent/traces/<timestamp>-<trace_id>/*.json  # raw trace 开启时
 <DATA_DIR>/knowledge/books/*                           # 用户手动放置的原始书籍
-<DATA_DIR>/knowledge/corpus.sqlite3                    # M3a 可重建语料快照
+<DATA_DIR>/knowledge/corpus.sqlite3                    # 可重建文本语料快照
+<DATA_DIR>/knowledge/models/Qwen3-Embedding-8B/         # 默认本地 embedding 模型目录
+<DATA_DIR>/knowledge/active.json                       # 当前检索索引 manifest
+<DATA_DIR>/knowledge/generations/<id>/lancedb/          # 向量、全文索引及来源元数据
 ```
 
 `analysis.json`、`explanations.json`、history、attempt 和 learning schema 保持兼容。旧 analysis
