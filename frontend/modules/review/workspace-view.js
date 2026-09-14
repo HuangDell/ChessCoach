@@ -5,6 +5,7 @@ import {
   reviewMoveLabel,
   scoreLabel,
 } from "./helpers.js";
+import { knowledgeSourcesHtml } from "./knowledge-sources.js";
 
 export function createWorkspaceView({
   $,
@@ -205,6 +206,7 @@ export function createWorkspaceView({
       html += `<section class="explanation-section"><h3>Error category</h3><div class="category-row">${[explanation.primary_category, ...explanation.secondary_categories].filter(Boolean).map((item) => `<span class="category-chip">${escapeHtml(categoryLabel(item))}</span>`).join("") || '<span class="muted">Uncategorized</span>'}</div></section>`;
       html += `<section class="explanation-section"><h3>Transferable principle</h3><p>${escapeHtml(explanation.transferable_principle)}</p></section>`;
       html += `<section class="explanation-section"><h3>Next-time checklist</h3><ul class="explanation-list">${explanation.next_time_checklist.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
+      html += knowledgeSourcesHtml(explanation.knowledge_citations || []);
     }
     $("ai-explanation-content").innerHTML = html || "Get a saved explanation of this position, or ask a question below.";
     $("ai-explanation-action").hidden = false;

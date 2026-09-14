@@ -16,6 +16,13 @@ dependencies = [
 
 [project.optional-dependencies]
 agent = ["openai-agents==0.22.0"]
+rag = [
+    "lancedb>=0.38,<0.39",
+    "numpy>=2,<3",
+    "sentence-transformers==6.0.1",
+    "torch==2.11.0",
+    "transformers==5.17.0",
+]
 
 [project.scripts]
 chess-review-coach = "server.web.runner:main"

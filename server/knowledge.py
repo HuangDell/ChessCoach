@@ -11,8 +11,12 @@ from server.core.knowledge import (
     KnowledgeError,
     build_corpus,
     get_corpus_status,
+    get_index_status,
     inspect_book,
     list_books,
+    build_index,
+    LanceDBKnowledgeRetriever,
+    QwenEmbedder,
 )
 
 
@@ -21,8 +25,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", help="override CHESSCOACH_DATA_DIR")
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
-        ("status", "show source and corpus status"),
+        ("status", "show source, corpus, and search-index status"),
         ("build", "atomically rebuild the corpus"),
+        ("index", "rebuild the corpus and atomically activate a LanceDB index"),
         ("books", "list indexed books"),
     ):
         command = commands.add_parser(name, help=help_text)
@@ -31,6 +36,11 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument("book_id")
     inspect.add_argument("--limit", type=int, default=10)
     inspect.add_argument("--data-dir", dest="command_data_dir", help=argparse.SUPPRESS)
+    search = commands.add_parser("search", help="search the active local knowledge index")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=5, choices=range(1, 6))
+    search.add_argument("--skill-id", action="append", default=[])
+    search.add_argument("--data-dir", dest="command_data_dir", help=argparse.SUPPRESS)
     return parser
 
 
@@ -55,8 +65,15 @@ def _print_status(data_dir: Path) -> int:
         print("Unsupported files: none")
     if status.error:
         print(f"Error: {status.error}", file=sys.stderr)
-        return 1
-    return 0
+    index = get_index_status(data_dir, enabled=config.KNOWLEDGE_ENABLED)
+    print(f"Knowledge search: {'ready' if index.available else 'unavailable'}")
+    if index.index_fingerprint:
+        print(f"Index fingerprint: {index.index_fingerprint}")
+        print(f"Embedding fingerprint: {index.embedding_fingerprint}")
+        print(f"Vectors: {index.vector_count} ({index.dimension} dimensions)")
+    if index.error:
+        print(f"Index reason: {index.error}")
+    return 1 if status.error else 0
 
 
 def _print_build(data_dir: Path) -> int:
@@ -68,6 +85,44 @@ def _print_build(data_dir: Path) -> int:
     print(f"Books: {result.book_count}")
     print(f"Chunks: {result.chunk_count}")
     print(f"Source collection hash: {result.source_collection_hash}")
+    return 0
+
+
+def _embedder() -> QwenEmbedder:
+    return QwenEmbedder(
+        config.KNOWLEDGE_MODEL_PATH,
+        device=config.KNOWLEDGE_DEVICE,
+        batch_size=config.KNOWLEDGE_BATCH_SIZE,
+    )
+
+
+def _print_index(data_dir: Path) -> int:
+    embedder = _embedder()
+    try:
+        result = build_index(data_dir, embedder, rebuild_corpus=True)
+    finally:
+        embedder.close()
+    print(f"Activated {result.index_path}")
+    print(f"Index fingerprint: {result.index_fingerprint}")
+    print(f"Corpus fingerprint: {result.corpus_fingerprint}")
+    print(f"Embedding fingerprint: {result.embedding_fingerprint}")
+    print(f"Vectors: {result.vector_count} ({result.reused_vectors} reused, {result.encoded_vectors} encoded)")
+    return 0
+
+
+def _print_search(data_dir: Path, query: str, skill_ids: list[str], limit: int) -> int:
+    retriever = LanceDBKnowledgeRetriever(data_dir, _embedder(), enabled=config.KNOWLEDGE_ENABLED)
+    try:
+        result = retriever.search(query, skill_ids=skill_ids[:5], limit=limit)
+    finally:
+        retriever.close()
+    print(f"Status: {result.status}")
+    print(f"Index fingerprint: {result.index_fingerprint}")
+    for index, passage in enumerate(result.passages, start=1):
+        citation = passage.citation
+        byline = f" — {citation.author}" if citation.author else ""
+        print(f"\n[{index}] {citation.title}{byline} | {citation.heading} | {citation.source_locator}")
+        print(passage.text)
     return 0
 
 
@@ -114,10 +169,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _print_status(data_dir)
         if arguments.command == "build":
             return _print_build(data_dir)
+        if arguments.command == "index":
+            return _print_index(data_dir)
         if arguments.command == "books":
             return _print_books(data_dir)
         if arguments.command == "inspect":
             return _print_inspection(data_dir, arguments.book_id, arguments.limit)
+        if arguments.command == "search":
+            return _print_search(data_dir, arguments.query, arguments.skill_id, arguments.limit)
     except (KnowledgeError, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

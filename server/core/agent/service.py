@@ -103,7 +103,7 @@ def _session_error(code: str, message: str, *, recoverable: bool) -> AgentServic
     )
 
 
-def _default_tools(bundle: ResolvedContextBundle) -> AgentTools:
+def _default_tools(bundle: ResolvedContextBundle, knowledge_retriever=None) -> AgentTools:
     opening_history_fens = _opening_history_fens(bundle)
     if bundle.analysis is not None and bundle.critical is not None:
         critical_id = str(bundle.critical.get("critical_id") or "")
@@ -112,11 +112,13 @@ def _default_tools(bundle: ResolvedContextBundle) -> AgentTools:
             current_game_id=bundle.context.session.active_game_id,
             opening_history_fens=opening_history_fens,
             personalization_enabled=config.PERSONALIZE_HISTORY,
+            knowledge_retriever=knowledge_retriever,
         )
     return AgentTools(
         current_game_id=bundle.context.session.active_game_id,
         opening_history_fens=opening_history_fens,
         personalization_enabled=config.PERSONALIZE_HISTORY,
+        knowledge_retriever=knowledge_retriever,
     )
 
 
@@ -252,7 +254,8 @@ class ChessAgentService:
         context_builder: ChessContextBuilder | None = None,
         coordinator: SessionMutationCoordinator | None = None,
         message_gate: SessionMessageGate | None = None,
-        tools_factory: ToolsFactory = _default_tools,
+        tools_factory: ToolsFactory | None = None,
+        knowledge_retriever: Any | None = None,
         run_store: AgentRunStore | None = None,
         max_turns: int = 4,
         max_total_tool_calls: int = 6,
@@ -265,7 +268,10 @@ class ChessAgentService:
         self.context_builder = context_builder or ChessContextBuilder()
         self.coordinator = coordinator or SessionMutationCoordinator()
         self.message_gate = message_gate or SessionMessageGate()
-        self.tools_factory = tools_factory
+        self.knowledge_retriever = knowledge_retriever
+        self.tools_factory = tools_factory or (
+            lambda bundle: _default_tools(bundle, self.knowledge_retriever)
+        )
         self.run_store = run_store
         self._last_run_log_error: str | None = None
         self.max_turns = max_turns
@@ -932,6 +938,13 @@ class ChessAgentService:
         except BaseException as exc:
             if first_error is None:
                 first_error = exc
+        close_knowledge = getattr(self.knowledge_retriever, "close", None)
+        if callable(close_knowledge):
+            try:
+                close_knowledge()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
         if first_error is not None:
             raise first_error
 
@@ -950,6 +963,23 @@ def create_default_agent_service(
     )
 
     root = data_dir or config.DATA_DIR
+    knowledge_retriever = None
+    if config.KNOWLEDGE_ENABLED:
+        try:
+            from server.core.knowledge import LanceDBKnowledgeRetriever, QwenEmbedder
+
+            knowledge_retriever = LanceDBKnowledgeRetriever(
+                root,
+                QwenEmbedder(
+                    config.KNOWLEDGE_MODEL_PATH,
+                    device=config.KNOWLEDGE_DEVICE,
+                    batch_size=config.KNOWLEDGE_BATCH_SIZE,
+                ),
+                enabled=True,
+            )
+        except Exception:
+            # Knowledge is optional and reports a typed unavailable result when no retriever exists.
+            knowledge_retriever = None
     placeholder = UnavailableAgentRuntime(
         AgentRuntimeAvailability(
             enabled=config.AGENT_ENABLED,
@@ -969,6 +999,7 @@ def create_default_agent_service(
         max_total_tool_calls=config.AGENT_MAX_TOOL_CALLS,
         max_engine_tool_calls=config.AGENT_MAX_ENGINE_CALLS,
         timeout_seconds=config.AGENT_TIMEOUT,
+        knowledge_retriever=knowledge_retriever,
     )
     if raw_trace_store is None and config.AGENT_RAW_TRACE:
         raw_trace_store = RawHttpTraceStore(root)

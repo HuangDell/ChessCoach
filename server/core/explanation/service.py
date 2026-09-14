@@ -15,6 +15,8 @@ from server.core.explanation.builder import (
     build_request,
 )
 from server.core.explanation.models import Explanation, ExplanationRequest
+from server.core.knowledge import KnowledgeRetriever
+from server.core.learning.taxonomy import resolve_skill_id
 from server.core.explanation.providers import (
     ExplanationProvider,
     ExplanationProviderError,
@@ -61,6 +63,9 @@ def _request_hash(request: ExplanationRequest, provider: ProviderInfo) -> str:
         "user_prompt": request.user_prompt,
         "provider": provider.provider,
         "model": provider.model,
+        "knowledge_status": request.knowledge_status,
+        "knowledge_index_fingerprint": request.knowledge_index_fingerprint,
+        "knowledge_citations": request.knowledge_citations,
     }
     encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -165,6 +170,61 @@ def _replace_position(artifact: dict, position: dict, order: dict[str, int]) -> 
     artifact["positions"] = positions
 
 
+def _knowledge_query(critical: dict) -> tuple[str, list[str]]:
+    facts = critical.get("facts") or {}
+    primary = str(facts.get("primary_category") or "").strip()
+    secondary = [str(item) for item in facts.get("secondary_categories") or []]
+    signals = [
+        str(item.get("name") or item.get("id") or "") if isinstance(item, dict) else str(item)
+        for item in critical.get("signals") or []
+    ]
+    played = str((critical.get("played_move") or {}).get("san") or "")
+    recommended = str(((critical.get("best_line") or {}).get("san") or [""])[0])
+    classification = str(critical.get("classification") or "")
+    parts = [
+        f"Chess lesson for a {classification} move.",
+        f"Primary category: {primary}." if primary else "",
+        f"Secondary categories: {', '.join(secondary)}." if secondary else "",
+        f"Verified signals: {', '.join(filter(None, signals))}." if any(signals) else "",
+        f"Played move: {played}; recommended move: {recommended}.",
+    ]
+    skill_ids = []
+    for value in [primary, *secondary, *signals]:
+        resolved = resolve_skill_id(value)
+        if resolved and resolved not in skill_ids:
+            skill_ids.append(resolved)
+    return " ".join(item for item in parts if item), skill_ids[:5]
+
+
+def _retrieve_knowledge(retriever: KnowledgeRetriever | None, critical: dict) -> tuple[dict, str, str, list[dict]]:
+    if retriever is None:
+        return {}, "unavailable", "", []
+    query, skill_ids = _knowledge_query(critical)
+    try:
+        result = retriever.search(query, skill_ids=skill_ids, limit=3)
+    except Exception:  # noqa: BLE001 - optional RAG cannot block Engine-facts explanations
+        return {}, "unavailable", "", []
+    passages = [
+        {
+            "passage_id": item.passage_id,
+            "text": item.text,
+            "text_hash": item.text_hash,
+            "citation": {
+                "citation_id": item.citation.citation_id,
+                "book_id": item.citation.book_id,
+                "title": item.citation.title,
+                "author": item.citation.author,
+                "heading": item.citation.heading,
+                "source_locator": item.citation.source_locator,
+                **({"source_url": item.citation.source_url} if item.citation.source_url else {}),
+            },
+        }
+        for item in result.passages[:3]
+    ]
+    citations = [item["citation"] for item in passages]
+    return {"passages": passages}, result.status, result.index_fingerprint, citations
+
+
 def generate_explanations(
     game_id: str,
     *,
@@ -172,6 +232,7 @@ def generate_explanations(
     critical_id: str | None = None,
     force: bool = False,
     provider: ExplanationProvider | None = None,
+    knowledge_retriever: KnowledgeRetriever | None = None,
 ) -> dict:
     """Generate one or every critical explanation, reusing unchanged validated entries."""
     try:
@@ -196,17 +257,17 @@ def generate_explanations(
     except ExplanationProviderError as exc:
         raise ExplanationError(str(exc)) from exc
     provider_info = active_provider.info
-    requests: list[ExplanationRequest] = []
+    requests: list[tuple[dict, ExplanationRequest]] = []
     try:
         for position in critical_positions:
             request = build_request(analysis, position)
-            requests.append(
-                request.model_copy(update={"input_hash": _request_hash(request, provider_info)})
-            )
+            requests.append((position, request.model_copy(
+                update={"input_hash": _request_hash(request, provider_info)}
+            )))
     except ExplanationInputError as exc:
         raise ExplanationError(str(exc)) from exc
 
-    first_request = requests[0]
+    first_request = requests[0][1]
     template = _empty_artifact(
         analysis, provider_info, first_request.prompt_version, first_request.language
     )
@@ -225,19 +286,39 @@ def generate_explanations(
             existing = {}
         artifact = existing if _compatible(existing, template) else template
 
-        for request in requests:
+        try:
+            current_index_fingerprint = (
+                knowledge_retriever.current_index_fingerprint()
+                if knowledge_retriever is not None
+                else ""
+            )
+        except Exception:  # noqa: BLE001 - optional status lookup follows the same degradation path
+            current_index_fingerprint = ""
+
+        for position, base_request in requests:
             prior = next(
                 (
                     item
                     for item in artifact.get("positions") or []
-                    if item.get("critical_id") == request.critical_id
-                    and item.get("input_hash") == request.input_hash
+                    if item.get("critical_id") == base_request.critical_id
+                    and item.get("base_input_hash") == base_request.input_hash
+                    and item.get("knowledge_index_fingerprint", "") == current_index_fingerprint
                 ),
                 None,
             )
             if prior is not None and not force:
-                cached.append(request.critical_id)
+                cached.append(base_request.critical_id)
                 continue
+            knowledge_context, knowledge_status, index_fingerprint, citations = _retrieve_knowledge(
+                knowledge_retriever, position
+            )
+            request = build_request(analysis, position, knowledge_context=knowledge_context)
+            request = request.model_copy(update={
+                "knowledge_status": knowledge_status,
+                "knowledge_index_fingerprint": index_fingerprint,
+                "knowledge_citations": citations,
+            })
+            request = request.model_copy(update={"input_hash": _request_hash(request, provider_info)})
             try:
                 response = active_provider.explain_position(request)
                 explanation = _validated_explanation(response.text, request)
@@ -249,6 +330,13 @@ def generate_explanations(
             entry = {
                 **explanation.model_dump(mode="json"),
                 "input_hash": request.input_hash,
+                "base_input_hash": base_request.input_hash,
+                "knowledge_status": request.knowledge_status,
+                "knowledge_index_fingerprint": request.knowledge_index_fingerprint,
+                "knowledge_passage_hashes": [
+                    item.get("text_hash") for item in knowledge_context.get("passages", [])
+                ],
+                "knowledge_citations": citations,
                 "generated_at": _now_iso(),
             }
             _replace_position(artifact, entry, order)

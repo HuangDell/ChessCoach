@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-CORPUS_VERSION = "book-corpus-v1"
-SCHEMA_VERSION = 1
+CORPUS_VERSION = "book-corpus-v2"
+SCHEMA_VERSION = 2
 
 
 class KnowledgeError(Exception):
@@ -53,6 +53,9 @@ class Book:
     source_name: str
     source_size: int
     chapters: tuple[Chapter, ...]
+    source: str = ""
+    source_uri: str = ""
+    rights: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,9 +104,32 @@ class BookSummary:
     format: str
     source_name: str
     chunk_count: int
+    source: str = ""
+    source_uri: str = ""
+    rights: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class BookInspection:
     book: BookSummary
     chunks: tuple[Chunk, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusChunkRecord:
+    chunk: Chunk
+    title: str
+    author: str
+    language: str
+    source: str
+    source_uri: str
+    rights: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusSnapshot:
+    corpus_version: str
+    schema_version: int
+    source_collection_hash: str
+    corpus_fingerprint: str
+    chunks: tuple[CorpusChunkRecord, ...]

@@ -339,6 +339,7 @@ _compose_identity(
 # (_default_data_dir / _resolve_data_dir are defined near the top so Stockfish detection can
 # also see the managed-engine path under DATA_DIR.)
 DATA_DIR: str = _resolve_data_dir()
+
 HISTORY_ENABLED: bool = os.environ.get("CHESS_HISTORY", "1") != "0"
 
 # Disk cache of fully-analysed games
@@ -378,6 +379,16 @@ def _parse_float(name: str, default: float) -> float:
         return float(os.environ.get(name, str(default)))
     except ValueError:
         return default
+
+
+# Optional local teaching-book retrieval. Heavy libraries and the model are loaded only by the
+# explicit index command or an actual search request.
+KNOWLEDGE_ENABLED: bool = os.environ.get("CHESS_KNOWLEDGE_ENABLED", "1") != "0"
+KNOWLEDGE_MODEL_PATH: str = clean_path(os.environ.get("CHESS_KNOWLEDGE_MODEL_PATH")) or os.path.join(
+    DATA_DIR, "knowledge", "models", "Qwen3-Embedding-8B"
+)
+KNOWLEDGE_DEVICE: str = os.environ.get("CHESS_KNOWLEDGE_DEVICE", "auto").strip().lower() or "auto"
+KNOWLEDGE_BATCH_SIZE: int = max(1, _parse_int("CHESS_KNOWLEDGE_BATCH_SIZE", 4))
 
 
 # Coaching profile is a HYBRID of two views so it adapts as a player improves:

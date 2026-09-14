@@ -50,6 +50,11 @@ def post_game_explanations(
             critical_id=(generation.critical_id or "").strip() or None,
             force=generation.force,
             provider=getattr(http_request.app.state, "explanation_provider", None),
+            knowledge_retriever=getattr(
+                getattr(http_request.app.state, "agent_service", None),
+                "knowledge_retriever",
+                None,
+            ),
         )
     except ExplanationNotFoundError as exc:
         return _error("explanation_input_not_found", str(exc), 404)

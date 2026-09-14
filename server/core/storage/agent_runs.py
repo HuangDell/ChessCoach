@@ -24,7 +24,7 @@ from server.core.agent.models import (
 
 
 RUN_RECORD_SCHEMA_VERSION = 1
-RESPONSE_SCHEMA_VERSION = 4
+RESPONSE_SCHEMA_VERSION = 5
 _PROCESS_LOCK = threading.RLock()
 
 RunStatus = Literal[

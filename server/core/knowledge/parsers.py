@@ -441,6 +441,19 @@ def _metadata_value(metadata: ET.Element | None, name: str) -> str:
     return "; ".join(value for value in values if value)
 
 
+def _source_uri(metadata: ET.Element | None) -> str:
+    """Prefer an absolute dc:source/identifier value as the optional citation URL."""
+    candidates = [
+        *_metadata_value(metadata, "source").split("; "),
+        *_metadata_value(metadata, "identifier").split("; "),
+    ]
+    for value in candidates:
+        parsed = urlsplit(value)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return value
+    return ""
+
+
 def _parse_epub(source_name: str, content: bytes, book_id: str) -> Book:
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
@@ -539,6 +552,9 @@ def _parse_epub(source_name: str, content: bytes, book_id: str) -> Book:
             source_name=source_name,
             source_size=len(content),
             chapters=tuple(chapters),
+            source=_metadata_value(metadata, "source"),
+            source_uri=_source_uri(metadata),
+            rights=_metadata_value(metadata, "rights"),
         )
 
 

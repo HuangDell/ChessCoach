@@ -52,6 +52,9 @@ class ExplanationRequest(BaseModel):
     system_prompt: str
     user_prompt: str
     input_hash: str = ""
+    knowledge_status: str = "unavailable"
+    knowledge_index_fingerprint: str = ""
+    knowledge_citations: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
 
 
 class ProviderResponse(BaseModel):

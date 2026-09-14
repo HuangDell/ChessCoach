@@ -35,6 +35,10 @@ from server.core.agent.models import (
     GetTrainingCandidatesResult,
     LookupOpeningInput,
     LookupOpeningResult,
+    SearchCoachingKnowledgeInput,
+    SearchCoachingKnowledgeResult,
+    CoachingKnowledgePassage,
+    AgentKnowledgeCitation,
     LearningMemoryItem,
     MemoryQuery,
     MoveReference,
@@ -51,6 +55,7 @@ from server.core.evaluation import classify
 from server.core.learning import memory, taxonomy
 from server.core.storage import games
 from server.core import training_planner
+from server.core.knowledge import KnowledgeRetriever, KnowledgeUnavailableError
 
 
 ResultT = TypeVar("ResultT", bound=BaseModel)
@@ -490,6 +495,7 @@ class AgentTools:
         depth: int | None = None,
         multipv: int = 3,
         line_plies: int | None = None,
+        knowledge_retriever: KnowledgeRetriever | None = None,
     ) -> None:
         if active_review is not None:
             if review_scope is not None and review_scope != active_review.scope:
@@ -519,6 +525,8 @@ class AgentTools:
         )
         self.executions: list[ToolExecution[Any]] = []
         self._training_candidate_allowlist: dict[str, TrainingCandidate] = {}
+        self._knowledge_retriever = knowledge_retriever
+        self._knowledge_calls = 0
 
     @property
     def last_execution(self) -> ToolExecution[Any] | None:
@@ -707,10 +715,77 @@ class AgentTools:
             request, CreateTrainingDraftInput
         ):
             execution = await self._create_training_draft(request)
+        elif name == "search_coaching_knowledge" and isinstance(
+            request, SearchCoachingKnowledgeInput
+        ):
+            execution = await self._search_coaching_knowledge(request)
         else:
             raise ValueError(f"Unsupported Agent tool or input type: {name}")
         self.executions.append(execution)
         return execution
+
+    async def _search_coaching_knowledge(
+        self, request: SearchCoachingKnowledgeInput
+    ) -> ToolExecution[SearchCoachingKnowledgeResult]:
+        if self._knowledge_calls >= 2:
+            return _failure(
+                "search_coaching_knowledge",
+                _tool_error(
+                    "tool_budget_exceeded",
+                    "At most two knowledge searches are allowed in one Agent run.",
+                    recoverable=True,
+                ),
+            )
+        self._knowledge_calls += 1
+        if self._knowledge_retriever is None:
+            return _failure(
+                "search_coaching_knowledge",
+                _tool_error(
+                    "knowledge_unavailable",
+                    "Local coaching knowledge is unavailable; continue with Engine facts.",
+                    recoverable=True,
+                ),
+            )
+        try:
+            result = await asyncio.to_thread(
+                self._knowledge_retriever.search,
+                request.query,
+                skill_ids=request.skill_ids,
+                limit=request.limit,
+            )
+        except (KnowledgeUnavailableError, OSError, ValueError):
+            return _failure(
+                "search_coaching_knowledge",
+                _tool_error(
+                    "knowledge_unavailable",
+                    "Local coaching knowledge is unavailable; continue with Engine facts.",
+                    recoverable=True,
+                ),
+            )
+        data = SearchCoachingKnowledgeResult(
+            status=result.status,
+            index_fingerprint=result.index_fingerprint,
+            passages=[
+                CoachingKnowledgePassage(
+                    passage_id=item.passage_id,
+                    text=item.text,
+                    text_hash=item.text_hash,
+                    citation=AgentKnowledgeCitation(
+                        citation_id=item.citation.citation_id,
+                        book_id=item.citation.book_id,
+                        title=item.citation.title,
+                        author=item.citation.author,
+                        heading=item.citation.heading,
+                        source_locator=item.citation.source_locator,
+                        source_url=item.citation.source_url,
+                    ),
+                )
+                for item in result.passages
+            ],
+        )
+        return _success(
+            "search_coaching_knowledge", data, [], cache_hit=False, engine_call_count=0
+        )
 
     async def get_review_context(
         self,

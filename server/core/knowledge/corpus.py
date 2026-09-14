@@ -21,6 +21,8 @@ from .models import (
     CORPUS_VERSION,
     CorpusBuildError,
     CorpusReadError,
+    CorpusChunkRecord,
+    CorpusSnapshot,
     CorpusStatus,
     KnowledgeError,
     SCHEMA_VERSION,
@@ -131,6 +133,9 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             format TEXT NOT NULL,
             source_name TEXT NOT NULL,
             source_size INTEGER NOT NULL CHECK (source_size >= 0),
+            source TEXT NOT NULL,
+            source_uri TEXT NOT NULL,
+            rights TEXT NOT NULL,
             chunk_count INTEGER NOT NULL CHECK (chunk_count > 0)
         ) WITHOUT ROWID;
         CREATE TABLE chunks (
@@ -245,8 +250,9 @@ def build_corpus(data_dir: str | os.PathLike[str]) -> BuildResult:
                 connection.execute(
                     """
                     INSERT INTO books(
-                        book_id, title, author, language, format, source_name, source_size, chunk_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        book_id, title, author, language, format, source_name, source_size,
+                        source, source_uri, rights, chunk_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         book.book_id,
@@ -256,6 +262,9 @@ def build_corpus(data_dir: str | os.PathLike[str]) -> BuildResult:
                         book.format,
                         book.source_name,
                         book.source_size,
+                        book.source,
+                        book.source_uri,
+                        book.rights,
                         len(chunks),
                     ),
                 )
@@ -401,7 +410,8 @@ def list_books(data_dir: str | os.PathLike[str]) -> tuple[BookSummary, ...]:
     try:
         rows = connection.execute(
             """
-            SELECT book_id, title, author, language, format, source_name, chunk_count
+            SELECT book_id, title, author, language, format, source_name, chunk_count,
+                   source, source_uri, rights
             FROM books ORDER BY title COLLATE NOCASE, book_id
             """
         ).fetchall()
@@ -418,6 +428,9 @@ def list_books(data_dir: str | os.PathLike[str]) -> tuple[BookSummary, ...]:
             format=row["format"],
             source_name=row["source_name"],
             chunk_count=row["chunk_count"],
+            source=row["source"],
+            source_uri=row["source_uri"],
+            rights=row["rights"],
         )
         for row in rows
     )
@@ -436,7 +449,8 @@ def inspect_book(
     try:
         row = connection.execute(
             """
-            SELECT book_id, title, author, language, format, source_name, chunk_count
+            SELECT book_id, title, author, language, format, source_name, chunk_count,
+                   source, source_uri, rights
             FROM books WHERE book_id = ?
             """,
             (book_id,),
@@ -463,6 +477,9 @@ def inspect_book(
         format=row["format"],
         source_name=row["source_name"],
         chunk_count=row["chunk_count"],
+        source=row["source"],
+        source_uri=row["source_uri"],
+        rights=row["rights"],
     )
     chunks: list[Chunk] = []
     for item in chunk_rows:
@@ -483,3 +500,53 @@ def inspect_book(
             )
         )
     return BookInspection(book=summary, chunks=tuple(chunks))
+
+
+def load_corpus_snapshot(data_dir: str | os.PathLike[str]) -> CorpusSnapshot:
+    """Load the immutable corpus rows needed to construct a derived search index."""
+    status = get_corpus_status(data_dir)
+    if not status.available:
+        raise CorpusReadError(status.error or "No valid corpus has been built yet.")
+    if status.version != CORPUS_VERSION or status.schema_version != SCHEMA_VERSION:
+        raise CorpusReadError("The corpus version is stale; run the build command again.")
+    _knowledge_dir, _books_dir, corpus_path = _paths(data_dir)
+    connection = _read_connection(corpus_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT c.chunk_id, c.book_id, c.ordinal, c.heading_path, c.source_locator,
+                   c.text, c.text_hash, c.unit_count, b.title, b.author, b.language,
+                   b.source, b.source_uri, b.rights
+            FROM chunks c JOIN books b ON b.book_id = c.book_id
+            ORDER BY b.book_id, c.ordinal
+            """
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise CorpusReadError("The current corpus cannot be indexed; rebuild it.") from exc
+    finally:
+        connection.close()
+    records: list[CorpusChunkRecord] = []
+    fingerprint_items: list[str] = []
+    for row in rows:
+        try:
+            heading_path = tuple(json.loads(row["heading_path"]))
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise CorpusReadError("The current corpus contains invalid chunk metadata; rebuild it.") from exc
+        chunk = Chunk(
+            chunk_id=row["chunk_id"], book_id=row["book_id"], ordinal=row["ordinal"],
+            heading_path=heading_path, source_locator=row["source_locator"], text=row["text"],
+            text_hash=row["text_hash"], unit_count=row["unit_count"],
+        )
+        records.append(CorpusChunkRecord(
+            chunk=chunk, title=row["title"], author=row["author"], language=row["language"],
+            source=row["source"], source_uri=row["source_uri"], rights=row["rights"],
+        ))
+        fingerprint_items.append(f"{chunk.chunk_id}:{chunk.text_hash}")
+    payload = "\0".join((CORPUS_VERSION, status.source_collection_hash or "", *fingerprint_items))
+    return CorpusSnapshot(
+        corpus_version=CORPUS_VERSION,
+        schema_version=SCHEMA_VERSION,
+        source_collection_hash=status.source_collection_hash or "",
+        corpus_fingerprint=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        chunks=tuple(records),
+    )

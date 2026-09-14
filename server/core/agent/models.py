@@ -24,6 +24,7 @@ AgentToolName = Literal[
     "get_player_profile",
     "get_training_candidates",
     "create_training_draft",
+    "search_coaching_knowledge",
 ]
 ToolErrorCode = Literal[
     "invalid_fen",
@@ -34,6 +35,7 @@ ToolErrorCode = Literal[
     "position_not_found",
     "profile_unavailable",
     "training_unavailable",
+    "knowledge_unavailable",
     "tool_budget_exceeded",
 ]
 AgentFailureStage = Literal[
@@ -54,6 +56,7 @@ AGENT_TOOL_PERMISSIONS: Mapping[AgentToolName, ToolPermission] = MappingProxyTyp
         "get_player_profile": "read",
         "get_training_candidates": "read",
         "create_training_draft": "compute",
+        "search_coaching_knowledge": "read",
     }
 )
 AgentActivity = Literal[
@@ -946,10 +949,21 @@ class AgentResponseGrounding(ContractModel):
     error_code: ToolErrorCode | None = None
 
 
+class AgentKnowledgeCitation(ContractModel):
+    citation_id: str = Field(min_length=1)
+    book_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    author: str = ""
+    heading: str = ""
+    source_locator: str = Field(min_length=1)
+    source_url: str | None = None
+
+
 class AgentResponse(ContractModel):
     text: str = Field(min_length=1)
     references: list[AgentReference] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
+    knowledge_citations: list[AgentKnowledgeCitation] = Field(default_factory=list, max_length=5)
     suggested_actions: list[SuggestedAction] = Field(default_factory=list)
     grounding: AgentResponseGrounding = Field(default_factory=AgentResponseGrounding)
 
@@ -1246,6 +1260,33 @@ class LookupOpeningResult(ContractModel):
     name: str | None = None
     classification: Literal["recognized", "unrecognized"] = "unrecognized"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SearchCoachingKnowledgeInput(ContractModel):
+    query: str = Field(min_length=1, max_length=1000)
+    skill_ids: list[str] = Field(default_factory=list, max_length=5)
+    limit: int = Field(default=3, ge=1, le=5)
+
+    _valid_skill_ids = field_validator("skill_ids")(_clean_unique_strings)
+
+
+class CoachingKnowledgePassage(ContractModel):
+    passage_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    text_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    citation: AgentKnowledgeCitation
+
+
+class SearchCoachingKnowledgeResult(ContractModel):
+    status: Literal["found", "no_match"]
+    passages: list[CoachingKnowledgePassage] = Field(default_factory=list, max_length=5)
+    index_fingerprint: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _status_matches_passages(self) -> "SearchCoachingKnowledgeResult":
+        if (self.status == "found") != bool(self.passages):
+            raise ValueError("knowledge status must match returned passages")
+        return self
 
 
 class GetPlayerProfileInput(ContractModel):

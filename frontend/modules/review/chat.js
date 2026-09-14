@@ -2,6 +2,7 @@ import { createLatestRequestScope } from "../core/async.js";
 import { errorMessage } from "../core/errors.js";
 import { renderMarkdown } from "../core/format.js";
 import { storageGet, storageSet } from "../core/storage.js";
+import { knowledgeSourcesHtml } from "./knowledge-sources.js";
 
 const AGENT_SESSION_KEY = "chessAgentSessionId";
 const FAILURE_LABELS = {
@@ -323,6 +324,12 @@ export function createReviewChat({
 
   function addAgentResponse(response = {}, calls = [], actionContext = {}) {
     const message = addMessage("bot", response.text || "(no answer)");
+    const sources = knowledgeSourcesHtml(response.knowledge_citations || []);
+    if (sources) {
+      const sourceBlock = document.createElement("div");
+      sourceBlock.innerHTML = sources;
+      message.appendChild(sourceBlock);
+    }
     const references = response.references || [];
     const actions = response.suggested_actions || [];
     if (references.length || actions.length) {

@@ -36,6 +36,8 @@ from server.core.agent.models import (
     GetTrainingCandidatesResult,
     LookupOpeningInput,
     LookupOpeningResult,
+    SearchCoachingKnowledgeInput,
+    SearchCoachingKnowledgeResult,
     ToolError,
     ToolResult,
     TrainingDraft,
@@ -61,6 +63,7 @@ TOOL_CAPABILITIES: tuple[ToolCapability, ...] = (
     ToolCapability("get_player_profile", GetPlayerProfileInput, GetPlayerProfileResult, "Read bounded evidence-backed profile items.", ("personalization",), "profile", "read"),
     ToolCapability("get_training_candidates", GetTrainingCandidatesInput, GetTrainingCandidatesResult, "Retrieve verified training positions.", ("personalization",), "training_candidates", "read"),
     ToolCapability("create_training_draft", CreateTrainingDraftInput, TrainingDraft, "Create a temporary draft from retrieved positions.", ("personalization", "training_candidates"), "training_draft", "compute"),
+    ToolCapability("search_coaching_knowledge", SearchCoachingKnowledgeInput, SearchCoachingKnowledgeResult, "Retrieve bounded local chess teaching passages.", (), "coaching_knowledge", "read"),
 )
 CAPABILITY_BY_NAME = {item.name: item for item in TOOL_CAPABILITIES}
 
@@ -330,6 +333,8 @@ def observation_from_result(
         references.extend(dumped.get("position_references", []))
         skill_ids.extend(dumped.get("objective_skill_ids", []))
         item_count = len(references)
+    elif name == "search_coaching_knowledge":
+        item_count = len(dumped.get("passages", []))
     elif dumped.get("reference"):
         references.append(dumped["reference"])
     elif dumped.get("fen") or dumped.get("fen_before"):
@@ -458,6 +463,8 @@ class OrchestrationController:
                     if name == "get_player_profile"
                     else "training_unavailable"
                     if name in {"get_training_candidates", "create_training_draft"}
+                    else "knowledge_unavailable"
+                    if name == "search_coaching_knowledge"
                     else "position_not_found"
                 ),
                 message="The tool is not available for the current orchestration decision.",

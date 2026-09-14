@@ -1,5 +1,5 @@
 """Local book corpus construction and inspection APIs."""
-from .corpus import build_corpus, get_corpus_status, inspect_book, list_books
+from .corpus import build_corpus, get_corpus_status, inspect_book, list_books, load_corpus_snapshot
 from .models import (
     Book,
     BookInspection,
@@ -13,9 +13,26 @@ from .models import (
     CorpusBuildError,
     CorpusReadError,
     CorpusStatus,
+    CorpusChunkRecord,
+    CorpusSnapshot,
     KnowledgeError,
     Paragraph,
     SCHEMA_VERSION,
+)
+from .index import (
+    Embedder,
+    IndexBuildResult,
+    IndexStatus,
+    KnowledgeCitation,
+    KnowledgeIndexBuildError,
+    KnowledgePassage,
+    KnowledgeRetriever,
+    KnowledgeSearchResult,
+    KnowledgeUnavailableError,
+    LanceDBKnowledgeRetriever,
+    QwenEmbedder,
+    build_index,
+    get_index_status,
 )
 
 __all__ = [
@@ -31,6 +48,8 @@ __all__ = [
     "CorpusBuildError",
     "CorpusReadError",
     "CorpusStatus",
+    "CorpusChunkRecord",
+    "CorpusSnapshot",
     "KnowledgeError",
     "Paragraph",
     "SCHEMA_VERSION",
@@ -38,4 +57,18 @@ __all__ = [
     "get_corpus_status",
     "inspect_book",
     "list_books",
+    "load_corpus_snapshot",
+    "Embedder",
+    "IndexBuildResult",
+    "IndexStatus",
+    "KnowledgeCitation",
+    "KnowledgeIndexBuildError",
+    "KnowledgePassage",
+    "KnowledgeRetriever",
+    "KnowledgeSearchResult",
+    "KnowledgeUnavailableError",
+    "LanceDBKnowledgeRetriever",
+    "QwenEmbedder",
+    "build_index",
+    "get_index_status",
 ]
