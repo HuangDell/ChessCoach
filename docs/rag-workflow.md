@@ -308,6 +308,10 @@ export CHESS_KNOWLEDGE_MODEL_PATH=/path/to/Qwen3-Embedding-8B
 
 ## 12. 实现边界与验证证据
 
+独立 RAG Benchmark 现已迁入 `tests/evals/rag/`，完成 v3 语料索引和40题中文/英文参考检索对照，
+与 Agent 26 条 portfolio 分开。最新配置、模型辅助标注范围及已知证据诊断见
+[评测结果](../tests/evals/rag/RESULTS.md)；不等同独立人工验收或端到端讲解质量。
+
 当前已具备代码接线，但以下边界仍需明确：
 
 - 没有相关性门槛、无答案检测或 reranker；`found` 只能说明有候选。
