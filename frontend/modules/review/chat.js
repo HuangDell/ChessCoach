@@ -13,6 +13,7 @@ const FAILURE_LABELS = {
   timeout: "timeout",
   context_budget: "context budget",
   turn_limit: "turn limit",
+  tool_execution: "internal tool error",
 };
 
 function unavailable(capability) {

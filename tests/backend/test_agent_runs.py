@@ -52,6 +52,22 @@ class AgentRunStoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_internal_tool_failure_and_legacy_records_round_trip_together(self):
+        store = AgentRunStore(self.temporary.name)
+        legacy = _record(0)
+        failure = _record(1).model_copy(update={
+            "status": "runtime_failure", "error_code": "agent_runtime_error",
+            "failure_stage": "tool_execution",
+            "tool_calls": [ToolCallRecord(
+                name="lookup_opening", permission="read", status="error", duration_ms=1,
+                error_code="tool_execution_failed",
+            )],
+        })
+        store.append(legacy)
+        store.append(failure)
+        self.assertEqual([legacy, failure], store.read())
+        self.assertEqual({"success": 1, "runtime_failure": 1}, store.metrics()["status_counts"])
+
     def test_concurrent_append_is_complete_and_bounded(self) -> None:
         store = AgentRunStore(self.temporary.name, max_records=30)
         threads = [threading.Thread(target=store.append, args=(_record(index),)) for index in range(50)]

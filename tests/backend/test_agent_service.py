@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from collections.abc import Awaitable, Callable
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import httpx
 
 from server import config
 from server.core.agent.models import (
@@ -340,6 +345,59 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("timeout", record.status)
         self.assertEqual("agent_timeout", record.error_code)
         self.assertEqual("timeout", record.failure_stage)
+
+    @unittest.skipUnless(importlib.util.find_spec("agents"), "optional Agent SDK is not installed")
+    async def test_internal_tool_failure_returns_500_and_discards_staged_history_and_summary(self):
+        from agents.testing import ScriptedModel, function_call
+        from server.core.agent.runtime_openai import OpenAIAgentsRuntime
+        from server.web.app import create_app
+
+        before = self.store.get(self.session.session_id)
+        guarded_session = None
+
+        async def execute(name, payload):
+            nonlocal guarded_session
+            guarded_session = self.service.session_for_runtime(self.session.session_id)
+            await guarded_session.add_items([{"role": "assistant", "content": "private-data"}])
+            guarded_session.stage_context(
+                summary="uncommitted summary", covered_items=1, summary_version=1,
+                input_measurement=None,
+            )
+            raise RuntimeError("private-data")
+
+        model = ScriptedModel([[function_call("lookup_opening", {
+            "fen": TACTICAL_FEN, "recent_moves_uci": None,
+        }, call_id="call-1")]])
+        runtime = OpenAIAgentsRuntime(
+            model="test-model", api_key="test-only", base_url="https://api.openai.com/v1",
+            endpoint_type="openai_responses", domain_tools_factory=lambda request: SimpleNamespace(execute=execute),
+            session_provider=self.service.session_for_runtime, research_model=model,
+        )
+        self.addAsyncCleanup(runtime.close)
+        self.service.runtime = runtime
+        with patch("server.web.app.app_liveness.start"), patch.object(config, "WEB_HOST", "127.0.0.1"):
+            app = create_app(agent_service=self.service)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            response = await client.post(f"/api/agent/sessions/{self.session.session_id}/messages", json={
+                "message": "Explain the opening.", "expected_generation": 0,
+            })
+
+        self.assertEqual(500, response.status_code, response.text)
+        error = response.json()["error"]
+        self.assertEqual("agent_runtime_error", error["code"])
+        self.assertEqual("tool_execution", error["failure_stage"])
+        self.assertFalse(error["recoverable"])
+        self.assertNotIn("private-data", response.text)
+        self.assertEqual(1, len(model.calls))
+        self.assertEqual([], await self.conversation_items())
+        self.assertEqual(before, self.store.get(self.session.session_id))
+        self.assertIsNone(guarded_session.pending_context)
+        self.assertEqual([], guarded_session.staged_items)
+        record = self.runs.read()[0]
+        self.assertEqual("runtime_failure", record.status)
+        self.assertEqual("tool_execution", record.failure_stage)
+        self.assertEqual("tool_execution_failed", record.tool_calls[0].error_code)
+        self.assertNotIn("private-data", self.runs.path.read_text())
 
     async def test_run_log_failure_does_not_roll_back_conversation(self) -> None:
         class FailingRunStore:

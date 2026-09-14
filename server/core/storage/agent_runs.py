@@ -30,6 +30,7 @@ _PROCESS_LOCK = threading.RLock()
 RunStatus = Literal[
     "success",
     "provider_failure",
+    "runtime_failure",
     "timeout",
     "invalid_output",
     "stale",

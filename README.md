@@ -107,6 +107,15 @@ SQLite conversation session 和非流式 bounded runs。response schema v4 要�
 和本次成功工具结果确定性校验。`suggested_actions` 直接使用按 action kind 区分的窄 JSON schema，
 例如 `compare_move` 只能返回 `move_uci` 和可选 `fen`；未经验证的模型输出不会作为成功响应提交。
 
+OpenAI 适配器按职责分为 runtime 装配、`runtime_openai_tools.py` 工具执行和
+`runtime_openai_session.py` SQLite 会话管理，SDK 类型不进入领域接口。
+工具正常返回的 Engine/RAG 不可用结果继续支持降级回答；工具执行、facts 投影、序列化或审计的
+内部异常会终止 run，返回 `agent_runtime_error`（HTTP 500，`recoverable=false`），失败阶段为
+`tool_execution`。失败不提交会话或摘要，Engine Review 保持可用。诊断只包含工具名、处理阶段和
+异常类型，不包含异常正文。run log 新增 `runtime_failure` 状态；未形成终态记录的内部失败以
+`tool_execution_failed` 记录，每次调用最多一条终态记录。已有记录兼容读取，无需数据迁移；这些
+内部错误不进入模型的 grounding 错误枚举。
+
 每次 run 都向 Agent 注册全部八个领域工具（含 `search_coaching_knowledge`），不用问题关键词预先裁剪；当前 FEN、review ownership、
 个性化开关、训练候选 allowlist 和调用预算仍由后端强校验。Free analysis 会用服务端生成的 opaque
 reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可被信任的评分或 PV；已完成的关键
@@ -383,6 +392,10 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c \
 详细命令、降级语义和清理规则见 [Operations](docs/operations.md)。架构决策见
 [ADR](docs/adr/)，Agent 需求
 与阶段状态见 [Agent requirements](docs/requirements/agent-design.md)。
+
+SQLite 会话测试停滞时可运行 `timeout 35s .venv/bin/python -m tests.backend.diagnose_runtime_session`。
+该诊断仅使用临时数据库，逐步检查线程调度及 SQLite 读写/清理，不调用模型或 Engine；外层进程
+超时也能终止事件循环本身被阻塞的情况。
 
 ### RAG 检索诊断记录
 

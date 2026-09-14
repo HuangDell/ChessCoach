@@ -10,6 +10,11 @@ depend on the local `AgentRuntime` protocol and project DTOs, never SDK types. T
 Responses path, typed function tools, structured `AgentResponse`, bounded turns, non-streaming runs,
 SQLite conversation sessions, and disabled sensitive tracing.
 
+The runtime delegates per-run tool adaptation and auditing to `runtime_openai_tools.py`, and SQLite
+lifecycle/version compatibility to `runtime_openai_session.py`. The original runtime module continues
+to export the SQLite factory. Internal tool failures abort the run rather than becoming recoverable
+tool results; the adapter restores typed failures wrapped by the SDK before service-level handling.
+
 ## Consequences
 
 SDK upgrades require compatibility tests and an eval report. Eval results are model benchmarks and

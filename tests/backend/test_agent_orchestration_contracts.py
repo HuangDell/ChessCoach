@@ -14,10 +14,9 @@ import chess
 
 from server.core.agent.models import AGENT_TOOL_PERMISSIONS, ToolResult
 from server.core.agent.routing import TOOL_CAPABILITIES
+from server.core.agent.runtime_openai_tools import OpenAIToolAdapter
 from server.core.agent.runtime_openai import (
     OpenAIAgentsRuntime,
-    _LocalRunContext,
-    _ToolBudget,
 )
 from tests.evals.orchestration.contracts import (
     ROOT,
@@ -187,21 +186,23 @@ class OrchestrationRegistryTests(unittest.IsolatedAsyncioTestCase):
         request = _request(task, variant).model_copy(
             update={"allowed_tools": list(AGENT_TOOL_PERMISSIONS)}
         )
-        local = _LocalRunContext(
+        import agents
+
+        adapter = OpenAIToolAdapter(
             request=request,
             tools=FixtureExecutor(variant.fixture_ids),
-            budget=_ToolBudget(max_total=6, max_engine=2),
+            agents=agents, schema_adapter="openai", debug_event=lambda *args, **kwargs: None,
         )
         runtime = OpenAIAgentsRuntime(
             model="registry-test",
             api_key="no-network",
             base_url="https://api.openai.com/v1",
             endpoint_type="openai_responses",
-            domain_tools_factory=lambda _request: local.tools,
+            domain_tools_factory=lambda _request: adapter.tools,
             session_provider=lambda _session_id: object(),
         )
         try:
-            sdk_tools = {item.name: item for item in runtime._sdk_tools(local)}
+            sdk_tools = {item.name: item for item in adapter.build_sdk_tools()}
             for name, entry in entries.items():
                 capability = capabilities[name]
                 self.assertEqual(AGENT_TOOL_PERMISSIONS[name], entry["permission"])

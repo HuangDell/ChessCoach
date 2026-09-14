@@ -220,6 +220,37 @@ test("recoverable Agent errors show diagnostics and retry the same question once
   }
 });
 
+test("internal tool errors show their stage and omit Retry", async () => {
+  const fixture = setupChat({
+    agentApi: {
+      createSession: async () => ({ session: { session_id: "agent-internal", generation: 0 } }),
+      updateContext: async (id, body) => ({
+        session: { session_id: id, generation: body.expected_generation + 1 },
+      }),
+      sendMessage: async () => {
+        throw apiFailure({
+          code: "agent_runtime_error",
+          message: "Engine Review remains available.",
+          recoverable: false,
+          run_id: "run-internal",
+          failure_stage: "tool_execution",
+        }, 500);
+      },
+    },
+  });
+  try {
+    fixture.chat.setAgentCapability(enabledCapability());
+    fixture.$("chat-input").value = "Explain the opening.";
+    await fixture.$("chat-form").emit("submit", { preventDefault() {} });
+    const error = visibleMessages(fixture.elements).at(-1);
+    assert.match(error.innerHTML, /internal tool error/);
+    assert.match(error.innerHTML, /run-internal/);
+    assert.equal(error.children.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("non-recoverable errors omit Retry and context changes disable old Retry controls", async () => {
   let recoverable = false;
   let serverGeneration = 0;

@@ -251,6 +251,7 @@ class AgentRouteTests(unittest.TestCase):
             (SessionError(code="session_busy", message="busy", recoverable=True), 409),
             (SessionError(code="invalid_session_context", message="invalid", recoverable=False), 400),
             (AgentError(code="agent_provider_error", message="provider", recoverable=True), 502),
+            (AgentError(code="agent_runtime_error", message="internal tool error", recoverable=False, failure_stage="tool_execution"), 500),
             (
                 AgentError(
                     code="invalid_agent_response",
@@ -335,7 +336,7 @@ class AgentRouteTests(unittest.TestCase):
             set(paths["/api/agent/sessions/{session_id}/messages"]),
         )
         responses = paths["/api/agent/sessions/{session_id}/messages"]["post"]["responses"]
-        for status in ("400", "404", "409", "502", "503", "504", "422"):
+        for status in ("400", "404", "409", "500", "502", "503", "504", "422"):
             self.assertIn(status, responses)
 
         self.assertEqual(200, self.request("GET", "/api/session").status_code)

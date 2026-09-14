@@ -46,6 +46,7 @@ AgentFailureStage = Literal[
     "timeout",
     "context_budget",
     "turn_limit",
+    "tool_execution",
 ]
 AGENT_TOOL_PERMISSIONS: Mapping[AgentToolName, ToolPermission] = MappingProxyType(
     {
@@ -1003,7 +1004,7 @@ class ToolCallRecord(ContractModel):
     engine_call_count: int = Field(default=0, ge=0)
     position_reference: ToolPositionReference | None = None
     evidence_refs: list[str] = Field(default_factory=list)
-    error_code: ToolErrorCode | None = None
+    error_code: ToolErrorCode | Literal["tool_execution_failed"] | None = None
 
     _valid_evidence_refs = field_validator("evidence_refs")(_clean_unique_strings)
 
@@ -1056,6 +1057,7 @@ class AgentError(ContractModel):
         "agent_authentication_failed",
         "agent_rate_limited",
         "agent_provider_error",
+        "agent_runtime_error",
         "agent_context_budget_exceeded",
         "invalid_agent_response",
         "max_turns_exceeded",

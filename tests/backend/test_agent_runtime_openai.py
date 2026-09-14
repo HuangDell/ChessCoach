@@ -25,10 +25,9 @@ from server.core.agent.runtime_openai import (
     OpenAIAgentsRuntime,
     SQLiteConversationSessionFactory,
     _LocalRunContext,
-    _ToolBudget,
-    _canonical_tool_focus,
     create_openai_runtime,
 )
+from server.core.agent.runtime_openai_tools import OpenAIToolAdapter, _canonical_tool_focus
 from server.core.agent.sessions import (
     ChessSessionCheckpointStore,
     GenerationGuardedSession,
@@ -264,11 +263,11 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
                 debug=True,
             )
         request = _request("session-1")
-        local = _LocalRunContext(
-            request=request,
-            tools=object(),
-            budget=_ToolBudget(max_total=6, max_engine=2),
+        adapter = OpenAIToolAdapter(
+            request=request, tools=object(), agents=_FakeAgents,
+            schema_adapter="openai", debug_event=lambda *args, **kwargs: None,
         )
+        local = _LocalRunContext(request=request, tool_adapter=adapter)
         raw = '{"text":"ok","grounding":{"completion":"private-broken-value"}}'
 
         with self.assertLogs("chesscoach.agent", level="DEBUG") as logs:
@@ -443,62 +442,34 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
         request = _request("session-1").model_copy(
             update={"allowed_tools": ["analyze_move"], "max_engine_tool_calls": 1}
         )
-        local = _LocalRunContext(
-            request=request,
-            tools=tools,
-            budget=_ToolBudget(max_total=6, max_engine=1),
+        adapter = OpenAIToolAdapter(
+            request=request, tools=tools, agents=_FakeAgents,
+            schema_adapter="openai", debug_event=lambda *args, **kwargs: None,
         )
-        with patch(
-            "server.core.agent.runtime_openai.importlib.import_module",
-            side_effect=self._imports,
-        ):
-            runtime = OpenAIAgentsRuntime(
-                model="gpt-test",
-                api_key="secret",
-                base_url="https://api.openai.com/v1",
-                endpoint_type="openai_responses",
-                domain_tools_factory=lambda _request: tools,
-                session_provider=lambda _session_id: object(),
-            )
-            payload = AnalyzeMoveInput(fen_before=START_FEN, move_uci="e2e4")
-            result = json.loads(await runtime._call_tool(local, "analyze_move", payload))
-            await runtime.close()
+        payload = AnalyzeMoveInput(fen_before=START_FEN, move_uci="e2e4")
+        result = json.loads(await adapter.call("analyze_move", payload))
 
         self.assertFalse(tools.called)
         self.assertEqual("tool_budget_exceeded", result["error"]["code"])
-        self.assertEqual("budget_exceeded", local.budget.records[0].status)
+        self.assertEqual("budget_exceeded", adapter.budget.records[0].status)
 
     async def test_invalid_tool_arguments_consume_total_budget_and_are_audited(self) -> None:
         request = _request("session-1").model_copy(
             update={"allowed_tools": ["analyze_position"], "max_total_tool_calls": 1}
         )
-        local = _LocalRunContext(
-            request=request,
-            tools=object(),
-            budget=_ToolBudget(max_total=1, max_engine=2),
+        adapter = OpenAIToolAdapter(
+            request=request, tools=object(), agents=_FakeAgents,
+            schema_adapter="openai", debug_event=lambda *args, **kwargs: None,
         )
-        with patch(
-            "server.core.agent.runtime_openai.importlib.import_module",
-            side_effect=self._imports,
-        ):
-            runtime = OpenAIAgentsRuntime(
-                model="gpt-test",
-                api_key="secret",
-                base_url="https://api.openai.com/v1",
-                endpoint_type="openai_responses",
-                domain_tools_factory=lambda _request: object(),
-                session_provider=lambda _session_id: object(),
-            )
-            analyze_position = runtime._sdk_tools(local)[0]
-            first = json.loads(await analyze_position("not-a-fen", "compare_candidates"))
-            second = json.loads(await analyze_position("still-not-a-fen", "compare_candidates"))
-            await runtime.close()
+        analyze_position = adapter.build_sdk_tools()[0]
+        first = json.loads(await analyze_position("not-a-fen", "compare_candidates"))
+        second = json.loads(await analyze_position("still-not-a-fen", "compare_candidates"))
 
         self.assertEqual("invalid_fen", first["error"]["code"])
         self.assertEqual("tool_budget_exceeded", second["error"]["code"])
         self.assertEqual(
             ["error", "budget_exceeded"],
-            [item.status for item in local.budget.records],
+            [item.status for item in adapter.budget.records],
         )
 
     async def test_phase2_read_tools_are_registered_gated_and_audited(self) -> None:
@@ -534,30 +505,16 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
                 "allowed_tools": ["lookup_opening", "get_player_profile"],
             }
         )
-        local = _LocalRunContext(
-            request=request,
-            tools=Tools(),
-            budget=_ToolBudget(max_total=6, max_engine=2),
+        adapter = OpenAIToolAdapter(
+            request=request, tools=Tools(), agents=_FakeAgents,
+            schema_adapter="openai", debug_event=lambda *args, **kwargs: None,
         )
-        with patch(
-            "server.core.agent.runtime_openai.importlib.import_module",
-            side_effect=self._imports,
-        ):
-            runtime = OpenAIAgentsRuntime(
-                model="gpt-test",
-                api_key="secret",
-                base_url="https://api.openai.com/v1",
-                endpoint_type="openai_responses",
-                domain_tools_factory=lambda _request: Tools(),
-                session_provider=lambda _session_id: object(),
-            )
-            registered = {tool.__name__: tool for tool in runtime._sdk_tools(local)}
-            profile_description = registered["get_player_profile"]._test_tool_options[
-                "description_override"
-            ]
-            opening = json.loads(await registered["lookup_opening"](START_FEN, []))
-            profile = json.loads(await registered["get_player_profile"]([], [], 3))
-            await runtime.close()
+        registered = {tool.__name__: tool for tool in adapter.build_sdk_tools()}
+        profile_description = registered["get_player_profile"]._test_tool_options[
+            "description_override"
+        ]
+        opening = json.loads(await registered["lookup_opening"](START_FEN, []))
+        profile = json.loads(await registered["get_player_profile"]([], [], 3))
 
         self.assertEqual("A00", opening["data"]["eco"])
         self.assertEqual(0, profile["data"]["analyzed_games"])
@@ -569,9 +526,9 @@ class RuntimeOpenAITests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             ["lookup_opening", "get_player_profile"],
-            [record.name for record in local.budget.records],
+            [record.name for record in adapter.budget.records],
         )
-        self.assertTrue(all(record.permission == "read" for record in local.budget.records))
+        self.assertTrue(all(record.permission == "read" for record in adapter.budget.records))
 
 
 @unittest.skipUnless(importlib.util.find_spec("agents"), "optional Agent SDK is not installed")
@@ -595,13 +552,12 @@ class LockedSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
         request = _request("session-1").model_copy(
             update={"allowed_tools": ["analyze_position"]}
         )
-        local = _LocalRunContext(
-            request=request,
-            tools=object(),
-            budget=_ToolBudget(max_total=6, max_engine=2),
+        adapter = OpenAIToolAdapter(
+            request=request, tools=object(), agents=runtime._agents,
+            schema_adapter="openai", debug_event=lambda *args, **kwargs: None,
         )
 
-        tool = runtime._sdk_tools(local)[0]
+        tool = adapter.build_sdk_tools()[0]
 
         self.assertEqual(
             {"compare_candidates", "find_best_move", "explain_position"},

@@ -797,6 +797,8 @@ class ChessAgentService:
                     if exc.error.code == "agent_timeout"
                     else "invalid_output"
                     if exc.error.code == "invalid_agent_response"
+                    else "runtime_failure"
+                    if exc.error.code == "agent_runtime_error"
                     else "provider_failure"
                 )
                 raise
