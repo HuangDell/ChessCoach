@@ -13,6 +13,8 @@ from server.core.knowledge import (
     get_corpus_status,
     get_index_status,
     inspect_book,
+    inspect_book_blocks,
+    load_book_image,
     list_books,
     build_index,
     LanceDBKnowledgeRetriever,
@@ -35,7 +37,12 @@ def _parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect", help="inspect ordered chunks for one book")
     inspect.add_argument("book_id")
     inspect.add_argument("--limit", type=int, default=10)
+    inspect.add_argument("--blocks", action="store_true", help="show original text/image/table blocks")
     inspect.add_argument("--data-dir", dest="command_data_dir", help=argparse.SUPPRESS)
+    export = commands.add_parser("export-image", help="copy a preserved image resource to a new local file")
+    export.add_argument("image_id")
+    export.add_argument("output", type=Path, help="new output file; existing files are never overwritten")
+    export.add_argument("--data-dir", dest="command_data_dir", help=argparse.SUPPRESS)
     search = commands.add_parser("search", help="search the active local knowledge index")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=5, choices=range(1, 6))
@@ -174,7 +181,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "books":
             return _print_books(data_dir)
         if arguments.command == "inspect":
+            if arguments.blocks:
+                blocks = inspect_book_blocks(data_dir, arguments.book_id, arguments.limit)
+                for ordinal, block in enumerate(blocks):
+                    print(f"\n[{ordinal}] {block.kind} | {' > '.join(block.heading_path)} | {block.source_locator}")
+                    print(block.text)
+                    if block.image_id:
+                        print(f"Image: {block.image_id} | unrecognized; no FEN")
+                        print(f"Label: {block.label} | Caption: {block.caption} | Alt: {block.alt_text}")
+                return 0
             return _print_inspection(data_dir, arguments.book_id, arguments.limit)
+        if arguments.command == "export-image":
+            image = load_book_image(data_dir, arguments.image_id)
+            with arguments.output.open("xb") as handle:
+                handle.write(image.content)
+            print(f"Exported {image.source_path} to {arguments.output}")
+            return 0
         if arguments.command == "search":
             return _print_search(data_dir, arguments.query, arguments.skill_id, arguments.limit)
     except (KnowledgeError, OSError, ValueError) as exc:

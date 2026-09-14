@@ -249,6 +249,8 @@ python -m server.knowledge status
 python -m server.knowledge build
 python -m server.knowledge books
 python -m server.knowledge inspect BOOK_ID --limit 5
+python -m server.knowledge inspect BOOK_ID --blocks --limit 20
+python -m server.knowledge export-image IMAGE_ID /path/to/data/diagram.png
 ```
 
 以上命令默认使用 `CHESSCOACH_DATA_DIR`，也可在命令前增加 `--data-dir /path/to/data`。`build` 每次
@@ -256,8 +258,16 @@ python -m server.knowledge inspect BOOK_ID --limit 5
 `<DATA_DIR>/knowledge/corpus.sqlite3`；任一本受支持书籍失败或构建期间源文件变化时保留旧 corpus。
 书籍正文、生成数据库和人工检查输出只留在本机数据目录，不进入仓库。
 
+corpus v3（schema 3）保留 EPUB 正文中引用的原始图片资源、内联 SVG 标记、图号、图注、alt、
+按阅读顺序排列的正文块，以及着法表格的单元格和 HTML。图片以 BLOB 存入 SQLite，重复资源只存
+一次；`chunk_blocks` 关联检索分块与原始块，便于找回图片前后文。`inspect --blocks` 可查看这些
+关联素材，`export-image` 可导出图片（不覆盖已有文件）。这一步不做 OCR 或棋盘识别，也不生成
+FEN；图片在正文中保留未识别占位符。缺失或外部图片引用会使构建明确失败并保留旧 corpus。
+旧 v2 corpus 仍可查看书籍和分块；使用新素材接口或重建索引前需运行 `build`，随后运行 `index`。
+已有 benchmark 的 chunk 引用应绑定旧 corpus 快照，不能直接迁移到新分块。
+
 当前已实现本地 Qwen3-Embedding-8B、LanceDB 向量与全文混合检索、RRF 排名融合，以及两条教练
-路径和 Sources 展示。`build` 只构建文本语料；实际检索还需要安装 `rag` extra、准备完整的本地
+路径和 Sources 展示。`build` 只构建语料及关联素材；实际检索还需要安装 `rag` extra、准备完整的本地
 embedding 模型目录，并执行 `index`：
 
 ```bash

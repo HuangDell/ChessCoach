@@ -1,7 +1,11 @@
 """Local book corpus construction and inspection APIs."""
-from .corpus import build_corpus, get_corpus_status, inspect_book, list_books, load_corpus_snapshot
+from .corpus import (
+    build_corpus, get_corpus_status, inspect_book, inspect_book_blocks,
+    list_books, load_book_image, load_corpus_snapshot,
+)
 from .models import (
     Book,
+    BookImage,
     BookInspection,
     BookNotFoundError,
     BookParseError,
@@ -37,6 +41,7 @@ from .index import (
 
 __all__ = [
     "Book",
+    "BookImage",
     "BookInspection",
     "BookNotFoundError",
     "BookParseError",
@@ -56,6 +61,8 @@ __all__ = [
     "build_corpus",
     "get_corpus_status",
     "inspect_book",
+    "inspect_book_blocks",
+    "load_book_image",
     "list_books",
     "load_corpus_snapshot",
     "Embedder",

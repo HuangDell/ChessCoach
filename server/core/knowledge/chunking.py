@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 from .models import Book, Chunk, Paragraph
 
@@ -131,7 +132,7 @@ def _split_long_paragraph(paragraph: Paragraph) -> list[Paragraph]:
     if current:
         sentence_groups.append("".join(current).strip())
     return [
-        Paragraph(text=value, heading_path=paragraph.heading_path, source_locator=paragraph.source_locator)
+        replace(paragraph, text=value)
         for value in sentence_groups
     ]
 
@@ -170,13 +171,27 @@ def chunk_book(book: Book) -> tuple[Chunk, ...]:
                 text=text,
                 text_hash=text_hash,
                 unit_count=count_units(text),
+                source_locators=tuple(dict.fromkeys(
+                    locator for part in parts
+                    for locator in (part.source_locators or (part.source_locator,))
+                )),
             )
         )
         ordinal += 1
+        overlap = _tail_overlap(text)
+        remaining = len(overlap)
+        overlap_sources: list[str] = []
+        for part in reversed(parts):
+            overlap_sources[:0] = part.source_locators or (part.source_locator,)
+            remaining -= len(part.text)
+            if remaining <= 0:
+                break
+            remaining -= 2  # Joining paragraphs inserts two newlines.
         return Paragraph(
-            text=_tail_overlap(text),
+            text=overlap,
             heading_path=heading_path,
             source_locator=last_locator,
+            source_locators=tuple(dict.fromkeys(overlap_sources)),
         )
 
     for chapter in book.chapters:

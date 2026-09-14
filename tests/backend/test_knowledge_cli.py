@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 from server.knowledge import main
-from server.core.knowledge import list_books
+from server.core.knowledge import list_books, inspect_book_blocks
+from tests.backend.test_knowledge_corpus import _epub_bytes
 
 
 class KnowledgeCliTests(unittest.TestCase):
@@ -41,7 +42,7 @@ class KnowledgeCliTests(unittest.TestCase):
         code, output, errors = self._run("status")
         self.assertEqual(0, code)
         self.assertIn("Corpus: ready", output)
-        self.assertIn("Version: book-corpus-v1 (schema 1)", output)
+        self.assertIn("Version: book-corpus-v3 (schema 3)", output)
         self.assertIn("Unsupported files: later.pdf", output)
         self.assertEqual("", errors)
 
@@ -71,6 +72,25 @@ class KnowledgeCliTests(unittest.TestCase):
         code, _output, errors = self._run("inspect", "missing", "--limit", "1")
         self.assertEqual(1, code)
         self.assertIn("not present", errors)
+
+    def test_inspect_blocks_and_export_image_without_overwriting(self) -> None:
+        (self.data_dir / "knowledge/books/diagram.epub").write_bytes(
+            _epub_bytes(first='<p>Diagram 12.</p><img src="cover.png" alt="White to move"/>')
+        )
+        self.assertEqual(0, self._run("build")[0])
+        book = next(book for book in list_books(self.data_dir) if book.format == "epub")
+        code, output, errors = self._run("inspect", book.book_id, "--blocks")
+        self.assertEqual(0, code)
+        self.assertIn("unrecognized; no FEN", output)
+        self.assertIn("White to move", output)
+        self.assertEqual("", errors)
+        block = next(block for block in inspect_book_blocks(self.data_dir, book.book_id) if block.image_id)
+        destination = self.data_dir / "diagram.png"
+        self.assertEqual(0, self._run("export-image", block.image_id, str(destination))[0])
+        self.assertEqual(b"not-a-real-image", destination.read_bytes())
+        destination.write_bytes(b"keep existing")
+        self.assertEqual(1, self._run("export-image", block.image_id, str(destination))[0])
+        self.assertEqual(b"keep existing", destination.read_bytes())
 
 
 if __name__ == "__main__":

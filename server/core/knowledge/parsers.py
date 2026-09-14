@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
+import hashlib
+from html import escape
 from html.parser import HTMLParser
 import io
 from pathlib import Path, PurePosixPath
@@ -12,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 import zipfile
 
-from .models import Book, BookParseError, Chapter, Paragraph
+from .models import Book, BookImage, BookParseError, Chapter, Paragraph
 
 
 SUPPORTED_EXTENSIONS = frozenset({".epub", ".txt", ".md", ".markdown"})
@@ -215,6 +218,7 @@ class _HtmlNode:
     tag: str
     attrs: dict[str, str] = field(default_factory=dict)
     children: list[_HtmlNode | str] = field(default_factory=list)
+    start_tag: str = ""
 
 
 class _HtmlTreeBuilder(HTMLParser):
@@ -228,13 +232,13 @@ class _HtmlTreeBuilder(HTMLParser):
         self.stack = [self.root]
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        node = _HtmlNode(tag.casefold(), {key.casefold(): value or "" for key, value in attrs})
+        node = _HtmlNode(tag.casefold(), {key.casefold(): value or "" for key, value in attrs}, start_tag=self.get_starttag_text())
         self.stack[-1].children.append(node)
         if node.tag not in self._VOID_TAGS:
             self.stack.append(node)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        node = _HtmlNode(tag.casefold(), {key.casefold(): value or "" for key, value in attrs})
+        node = _HtmlNode(tag.casefold(), {key.casefold(): value or "" for key, value in attrs}, start_tag=self.get_starttag_text())
         self.stack[-1].children.append(node)
 
     def handle_endtag(self, tag: str) -> None:
@@ -248,8 +252,28 @@ class _HtmlTreeBuilder(HTMLParser):
         self.stack[-1].children.append(data)
 
 
-_HTML_IGNORED = frozenset({"script", "style", "nav", "noscript", "svg"})
+_HTML_IGNORED = frozenset({"head", "script", "style", "nav", "noscript", "svg"})
 _HTML_BLOCKS = frozenset({"p", "li", "blockquote", "pre", "code", "caption", "figcaption"})
+_HTML_HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _html_nodes(node: _HtmlNode) -> Iterator[_HtmlNode]:
+    yield node
+    for child in node.children:
+        if isinstance(child, _HtmlNode):
+            yield from _html_nodes(child)
+
+
+def _html_bytes(node: _HtmlNode) -> bytes:
+    # Preserve markup (including SVG attribute case and table spans) as inert data.
+    def serialize(item: _HtmlNode | str) -> str:
+        if isinstance(item, str):
+            return escape(item)
+        if item.start_tag.endswith("/>"):
+            return item.start_tag
+        original_tag = re.match(r"<\s*([^\s/>]+)", item.start_tag).group(1)
+        return item.start_tag + "".join(serialize(child) for child in item.children) + f"</{original_tag}>"
+    return serialize(node).encode("utf-8")
 
 
 def _node_text(node: _HtmlNode, *, preserve_lines: bool = False) -> str:
@@ -301,7 +325,10 @@ def _decode_epub_document(raw: bytes, href: str, source_name: str) -> str:
         ) from exc
 
 
-def _parse_html_document(raw: bytes, href: str, source_name: str) -> Chapter | None:
+def _parse_html_document(
+    raw: bytes, href: str, source_name: str,
+    load_image: Callable[[str, bytes | None], BookImage],
+) -> Chapter | None:
     text = _decode_epub_document(raw, href, source_name)
     parser = _HtmlTreeBuilder()
     try:
@@ -330,11 +357,88 @@ def _parse_html_document(raw: bytes, href: str, source_name: str) -> Chapter | N
     fallback_title = document_title or normalize_text(Path(href).stem)
     headings: list[str] = []
     first_heading = ""
-    extracted: list[tuple[str, tuple[str, ...]]] = []
+    extracted: list[Paragraph] = []
 
-    def walk(node: _HtmlNode) -> None:
+    def emit(value: str, **metadata) -> None:
+        if value:
+            extracted.append(Paragraph(
+                text=value, heading_path=_visible_heading_path(headings, fallback_title),
+                source_locator=f"{href}#block-{len(extracted) + 1}", **metadata,
+            ))
+
+    def image_block(node: _HtmlNode, caption: str) -> None:
+        if node.tag == "svg":
+            path = f"{href}#inline-svg-{len(extracted) + 1}"
+            image = load_image(path, _html_bytes(node))
+            alt = normalize_text(node.attrs.get("aria-label", ""))
+        else:
+            src = node.attrs.get("src", "")
+            if not src:
+                raise BookParseError(f"Cannot parse '{source_name}': image in '{href}' has no src.")
+            path = _resolve_archive_href(href, src, source_name)
+            image = load_image(path, None)
+            alt = normalize_text(node.attrs.get("alt", "") or node.attrs.get("title", ""))
+        previous = extracted[-1].text if extracted else ""
+        label = ""
+        for candidate in (caption, previous, alt):
+            match = re.match(r"^(?:Example|Diagram|Diag\.)\s*\d+[A-Za-z]?\b", candidate, re.IGNORECASE)
+            if match:
+                label = match.group(0)
+                break
+        emit(f"[image:{image.image_id}; unrecognized]" + (f" {label}" if label else ""),
+             kind="image", image_id=image.image_id, alt_text=alt, label=label, caption=caption)
+
+    def walk_content(node: _HtmlNode, caption: str) -> None:
+        # Split around media/table blocks, including images inside ordinary paragraphs.
+        pending: list[str] = []
+
+        def flush() -> None:
+            emit(normalize_text("".join(pending)))
+            pending.clear()
+
+        for child in node.children:
+            if isinstance(child, str):
+                pending.append(child)
+            elif child.tag in _HTML_BLOCKS | _HTML_HEADINGS or any(
+                n.tag in {"img", "svg", "table"} | _HTML_BLOCKS | _HTML_HEADINGS for n in _html_nodes(child)
+            ):
+                flush()
+                walk(child, caption)
+            else:
+                pending.append(_node_text(child))
+        flush()
+
+    def table_block(node: _HtmlNode, caption: str) -> None:
+        rows: list[tuple[str, ...]] = []
+        for row in _html_nodes(node):
+            if row.tag == "tr":
+                cells = tuple(_node_text(cell) for cell in row.children
+                              if isinstance(cell, _HtmlNode) and cell.tag in {"th", "td"})
+                if cells:
+                    rows.append(cells)
+        table_caption = " ".join(_node_text(n) for n in _html_nodes(node) if n.tag == "caption")
+        text = "\n".join(([table_caption] if table_caption else []) + [" | ".join(row) for row in rows])
+        emit(text, kind="table", table_rows=tuple(rows), caption=table_caption,
+             table_html=_html_bytes(node).decode("utf-8"))
+        # Preserve embedded assets even for tables used for page layout.
+        for child in _html_nodes(node):
+            if child.tag in {"img", "svg"}:
+                image_block(child, caption)
+
+    def walk(node: _HtmlNode, caption: str = "") -> None:
         nonlocal first_heading
+        if node.tag in {"img", "svg"}:
+            image_block(node, caption)
+            return
         if node.tag in _HTML_IGNORED:
+            return
+        if node.tag == "figure" or node.attrs.get("role") == "figure" or (
+            set(node.attrs.get("class", "").split()) & {"fig", "figcenter", "figure"}
+        ):
+            caption = " ".join(_node_text(n) for n in _html_nodes(node)
+                               if n.tag == "figcaption" or "caption" in n.attrs.get("class", "").split())
+        if node.tag == "table":
+            table_block(node, caption)
             return
         if len(node.tag) == 2 and node.tag[0] == "h" and node.tag[1] in "123456":
             heading = _node_text(node)
@@ -343,31 +447,21 @@ def _parse_html_document(raw: bytes, href: str, source_name: str) -> Chapter | N
                 if not first_heading:
                     first_heading = heading
             return
-        if node.tag in _HTML_BLOCKS:
+        if node.tag in _HTML_BLOCKS and not any(
+            n.tag in {"img", "svg", "table"} for n in _html_nodes(node)
+        ):
             value = _node_text(node, preserve_lines=node.tag in {"pre", "code"})
-            if value:
-                extracted.append(
-                    (
-                        value,
-                        _visible_heading_path(headings, fallback_title),
-                    )
-                )
+            emit(value)
             return
-        for child in node.children:
-            if isinstance(child, _HtmlNode):
-                walk(child)
+        walk_content(node, caption)
 
     walk(body_node or parser.root)
     if not extracted:
         return None
-    paragraphs = tuple(
-        Paragraph(text=value, heading_path=heading_path, source_locator=f"{href}#block-{index}")
-        for index, (value, heading_path) in enumerate(extracted, start=1)
-    )
     return Chapter(
         title=first_heading or fallback_title,
         source_locator=href,
-        paragraphs=paragraphs,
+        paragraphs=tuple(extracted),
     )
 
 
@@ -513,6 +607,22 @@ def _parse_epub(source_name: str, content: bytes, book_id: str) -> Book:
                 frozenset(item.attrib.get("properties", "").casefold().split()),
             )
 
+        image_types = {path: media for path, media, _properties in manifest.values()}
+        images: dict[str, BookImage] = {}
+
+        def load_image(path: str, inline: bytes | None) -> BookImage:
+            if path not in images:
+                data = inline if inline is not None else _read_archive_file(
+                    archive, archive_names.get(path, path), source_name
+                )
+                image_id = hashlib.sha256(f"{book_id}\0{path}".encode("utf-8")).hexdigest()
+                images[path] = BookImage(
+                    image_id=image_id, source_path=path,
+                    media_type="image/svg+xml" if inline is not None else image_types.get(path, "application/octet-stream"),
+                    content_hash=hashlib.sha256(data).hexdigest(), content=data,
+                )
+            return images[path]
+
         chapters: list[Chapter] = []
         for itemref in spine_node:
             if (
@@ -535,7 +645,7 @@ def _parse_epub(source_name: str, content: bytes, book_id: str) -> Book:
                     f"Cannot parse '{source_name}': EPUB is missing spine document '{href}'."
                 )
             chapter = _parse_html_document(
-                _read_archive_file(archive, archive_name, source_name), href, source_name
+                _read_archive_file(archive, archive_name, source_name), href, source_name, load_image
             )
             if chapter is not None:
                 chapters.append(chapter)
@@ -555,6 +665,7 @@ def _parse_epub(source_name: str, content: bytes, book_id: str) -> Book:
             source=_metadata_value(metadata, "source"),
             source_uri=_source_uri(metadata),
             rights=_metadata_value(metadata, "rights"),
+            images=tuple(images.values()),
         )
 
 

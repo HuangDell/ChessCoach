@@ -10,12 +10,15 @@
 ```bash
 .venv/bin/python -m tests.evals.rag.validate_dataset \
   --dataset-dir .chess-review/knowledge/benchmarks/zh-en-v1 \
-  --corpus .chess-review/knowledge/corpus.sqlite3
+  --corpus .chess-review/knowledge/benchmarks/zh-en-v1/corpus-v2.sqlite3
 ```
 
 校验器只读显式指定的 corpus，不加载项目全局配置，不调用 embedding、Engine 或网络。校验查询
 身份、corpus 指纹、段落 hash、引用位置，以及合成局面的 FEN、SAN 重放、轮走方和候选着合法性。
 通过不代表相关性标注、英文翻译或棋理已经经过人工验收。
+
+这批标注绑定已冻结的 v2 语料（444 chunks）。主 corpus 的 v3 图片/表格保留改变了分块，不能用
+旧标注直接评测新语料；需重新定位、复核证据并冻结新版本。
 
 ## 查询翻译约定
 

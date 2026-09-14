@@ -52,6 +52,9 @@ unsupported。存在有效书籍时，不支持的文件不会阻止构建；没
 解析行为：
 
 - EPUB 根据 spine 阅读顺序提取正文块、标题层级及书籍元数据。
+- EPUB 保留正文引用的图片原始字节、内联 SVG 标记，以及每次引用的来源位置、图号、图注和 alt。
+  同一图片资源去重保存，图片块按阅读顺序与前后文相邻；正文含未识别占位符，不生成 FEN。
+- 着法表格同时保留可检索的逐行文本、单元格数组和 HTML（包括合并单元格属性）。
 - Markdown 识别标题、段落和代码块；TXT 按段落组织。
 - 文本使用 NFKC 规范化，统一换行和空白，尽量保留棋谱符号。
 - 保留书名、作者、语言、章节路径、来源位置，以及来源 URI、rights 等可用元数据。
@@ -79,18 +82,27 @@ CJK 字符通常逐字符计数，英文单词及连续棋谱符号组合按规�
 `text_hash` 和 `unit_count`。`text_hash` 是正文 hash；`chunk_id` 由书籍 ID、标题路径、序号和正文
 共同计算，保证相同输入的稳定身份。
 
+`source_locators` 通过 `chunk_blocks` 关联原始块；拆分和重叠也保留来源关联，因此可以从命中分块
+找回完整表格或图片，再根据书内块顺序取其前后文。图片识别和棋盘合法性验证尚未实现。
+
 源码：[chunking.py](../server/core/knowledge/chunking.py)、[models.py](../server/core/knowledge/models.py)。
 
 ## 4. SQLite 语料快照
 
 `python -m server.knowledge build` 全量扫描、解析、分块，在同目录临时 SQLite 中写入 `meta`、
-`books`、`chunks`，完成外键与完整性校验，再原子替换 `<DATA_DIR>/knowledge/corpus.sqlite3`。
+`books`、`chunks`、`images`、`blocks`、`chunk_blocks`，完成外键与完整性校验，再原子替换
+`<DATA_DIR>/knowledge/corpus.sqlite3`。`images` 存资源路径、媒体类型、hash 和 BLOB；`blocks` 存
+有序文本、图片引用及表格；`chunk_blocks` 存检索分块到原始块的关联。
 受支持来源解析失败、源文件变化或发布前存储失败时保留旧 corpus。
 
-当前 corpus version 为 `book-corpus-v2`，schema version 为 2。读取索引构建用快照时，按固定顺序
+当前 corpus version 为 `book-corpus-v3`，schema version 为 3。读取索引构建用快照时，按固定顺序
 组合语料版本、源集合 hash、chunk ID 和正文 hash 计算 `corpus_fingerprint`。
 
 这一步不需要 embedding 模型、网络或生成模型，也不建立检索索引。
+
+可用 `inspect BOOK_ID --blocks --limit 20` 查看原始块，用 `export-image IMAGE_ID OUTPUT` 导出
+图片；导出不覆盖现有文件。v2 可继续查看旧书籍和分块，但新素材接口及索引快照要求重建。
+升级前应冻结已有 benchmark 使用的 corpus，旧 chunk 标注不能直接用于 v3 评测。
 
 源码：[corpus.py](../server/core/knowledge/corpus.py)。
 

@@ -14,6 +14,7 @@ from urllib.parse import quote
 from .chunking import MAX_UNITS, OVERLAP_UNITS, TARGET_UNITS, chunk_book
 from .models import (
     BookInspection,
+    BookImage,
     BookNotFoundError,
     BookSummary,
     BuildResult,
@@ -25,6 +26,7 @@ from .models import (
     CorpusSnapshot,
     CorpusStatus,
     KnowledgeError,
+    Paragraph,
     SCHEMA_VERSION,
 )
 from .parsers import SUPPORTED_EXTENSIONS, parse_book
@@ -150,6 +152,38 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             UNIQUE (book_id, ordinal)
         );
         CREATE INDEX chunks_book_order ON chunks(book_id, ordinal);
+        CREATE TABLE images (
+            image_id TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+            source_path TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            content BLOB NOT NULL,
+            UNIQUE(book_id, source_path)
+        );
+        CREATE TABLE blocks (
+            book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            source_locator TEXT NOT NULL,
+            heading_path TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('text', 'image', 'table')),
+            text TEXT NOT NULL,
+            image_id TEXT REFERENCES images(image_id),
+            alt_text TEXT NOT NULL,
+            label TEXT NOT NULL,
+            caption TEXT NOT NULL,
+            table_rows TEXT NOT NULL,
+            table_html TEXT NOT NULL,
+            PRIMARY KEY(book_id, ordinal),
+            UNIQUE(book_id, source_locator)
+        );
+        CREATE TABLE chunk_blocks (
+            chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+            book_id TEXT NOT NULL,
+            block_ordinal INTEGER NOT NULL,
+            PRIMARY KEY(chunk_id, book_id, block_ordinal),
+            FOREIGN KEY(book_id, block_ordinal) REFERENCES blocks(book_id, ordinal)
+        );
         """
     )
 
@@ -288,6 +322,26 @@ def build_corpus(data_dir: str | os.PathLike[str]) -> BuildResult:
                         )
                         for chunk in chunks
                     ],
+                )
+                connection.executemany(
+                    "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?)",
+                    [(image.image_id, book.book_id, image.source_path, image.media_type,
+                      image.content_hash, image.content) for image in book.images],
+                )
+                blocks = [paragraph for chapter in book.chapters for paragraph in chapter.paragraphs]
+                connection.executemany(
+                    "INSERT INTO blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(book.book_id, ordinal, block.source_locator,
+                      json.dumps(block.heading_path, ensure_ascii=False), block.kind, block.text,
+                      block.image_id, block.alt_text, block.label, block.caption,
+                      json.dumps(block.table_rows, ensure_ascii=False), block.table_html)
+                     for ordinal, block in enumerate(blocks)],
+                )
+                block_ordinals = {block.source_locator: ordinal for ordinal, block in enumerate(blocks)}
+                connection.executemany(
+                    "INSERT INTO chunk_blocks VALUES (?, ?, ?)",
+                    [(chunk.chunk_id, book.book_id, block_ordinals[locator])
+                     for chunk in chunks for locator in chunk.source_locators],
                 )
             connection.commit()
             foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -436,6 +490,20 @@ def list_books(data_dir: str | os.PathLike[str]) -> tuple[BookSummary, ...]:
     )
 
 
+def _chunk_source_locators(connection: sqlite3.Connection, book_id: str | None = None) -> dict[str, tuple[str, ...]]:
+    # Older snapshots remain inspectable; source blocks are available after rebuild.
+    if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_blocks'").fetchone():
+        return {}
+    grouped: dict[str, list[str]] = {}
+    for row in connection.execute('''
+        SELECT cb.chunk_id, b.source_locator FROM chunk_blocks cb JOIN blocks b
+        ON b.book_id=cb.book_id AND b.ordinal=cb.block_ordinal
+        WHERE (? IS NULL OR cb.book_id=?) ORDER BY cb.chunk_id, cb.block_ordinal
+    ''', (book_id, book_id)):
+        grouped.setdefault(row["chunk_id"], []).append(row["source_locator"])
+    return {key: tuple(values) for key, values in grouped.items()}
+
+
 def inspect_book(
     data_dir: str | os.PathLike[str], book_id: str, limit: int = 10
 ) -> BookInspection:
@@ -465,6 +533,7 @@ def inspect_book(
             """,
             (book_id, limit),
         ).fetchall()
+        source_locators = _chunk_source_locators(connection, book_id)
     except sqlite3.Error as exc:
         raise CorpusReadError("The current corpus cannot be inspected; run the build command again.") from exc
     finally:
@@ -497,9 +566,55 @@ def inspect_book(
                 text=item["text"],
                 text_hash=item["text_hash"],
                 unit_count=item["unit_count"],
+                source_locators=source_locators.get(item["chunk_id"], ()),
             )
         )
     return BookInspection(book=summary, chunks=tuple(chunks))
+
+
+def inspect_book_blocks(
+    data_dir: str | os.PathLike[str], book_id: str, limit: int = 10
+) -> tuple[Paragraph, ...]:
+    """Inspect original reading-order blocks, including unrecognized image references."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    _knowledge_dir, _books_dir, corpus_path = _paths(data_dir)
+    connection = _read_connection(corpus_path)
+    try:
+        if connection.execute("SELECT 1 FROM books WHERE book_id=?", (book_id,)).fetchone() is None:
+            raise BookNotFoundError(f"Book '{book_id}' is not present in the current corpus.")
+        rows = connection.execute(
+            "SELECT * FROM blocks WHERE book_id=? ORDER BY ordinal LIMIT ?", (book_id, limit)
+        ).fetchall()
+        return tuple(Paragraph(
+            text=row["text"], heading_path=tuple(json.loads(row["heading_path"])),
+            source_locator=row["source_locator"], kind=row["kind"], image_id=row["image_id"],
+            alt_text=row["alt_text"], label=row["label"], caption=row["caption"],
+            table_rows=tuple(tuple(cells) for cells in json.loads(row["table_rows"])),
+            table_html=row["table_html"],
+        ) for row in rows)
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        raise CorpusReadError("Cannot read source blocks; rebuild the corpus with the current version.") from exc
+    finally:
+        connection.close()
+
+
+def load_book_image(data_dir: str | os.PathLike[str], image_id: str) -> BookImage:
+    """Load one preserved resource without rendering or interpreting it."""
+    _knowledge_dir, _books_dir, corpus_path = _paths(data_dir)
+    connection = _read_connection(corpus_path)
+    try:
+        row = connection.execute("SELECT * FROM images WHERE image_id=?", (image_id,)).fetchone()
+        if row is None:
+            raise CorpusReadError(f"Image '{image_id}' is not present in the current corpus.")
+        return BookImage(
+            image_id=row["image_id"], source_path=row["source_path"], media_type=row["media_type"],
+            content_hash=row["content_hash"], content=bytes(row["content"]),
+        )
+    except sqlite3.Error as exc:
+        raise CorpusReadError("Cannot read image resources; rebuild the corpus with the current version.") from exc
+    finally:
+        connection.close()
 
 
 def load_corpus_snapshot(data_dir: str | os.PathLike[str]) -> CorpusSnapshot:
@@ -521,6 +636,7 @@ def load_corpus_snapshot(data_dir: str | os.PathLike[str]) -> CorpusSnapshot:
             ORDER BY b.book_id, c.ordinal
             """
         ).fetchall()
+        source_locators = _chunk_source_locators(connection)
     except sqlite3.Error as exc:
         raise CorpusReadError("The current corpus cannot be indexed; rebuild it.") from exc
     finally:
@@ -536,6 +652,7 @@ def load_corpus_snapshot(data_dir: str | os.PathLike[str]) -> CorpusSnapshot:
             chunk_id=row["chunk_id"], book_id=row["book_id"], ordinal=row["ordinal"],
             heading_path=heading_path, source_locator=row["source_locator"], text=row["text"],
             text_hash=row["text_hash"], unit_count=row["unit_count"],
+            source_locators=source_locators.get(row["chunk_id"], ()),
         )
         records.append(CorpusChunkRecord(
             chunk=chunk, title=row["title"], author=row["author"], language=row["language"],

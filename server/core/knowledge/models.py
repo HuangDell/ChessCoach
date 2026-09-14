@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-CORPUS_VERSION = "book-corpus-v2"
-SCHEMA_VERSION = 2
+CORPUS_VERSION = "book-corpus-v3"
+SCHEMA_VERSION = 3
 
 
 class KnowledgeError(Exception):
@@ -34,6 +34,24 @@ class Paragraph:
     text: str
     heading_path: tuple[str, ...]
     source_locator: str
+    kind: str = "text"
+    image_id: str | None = None
+    alt_text: str = ""
+    label: str = ""
+    caption: str = ""
+    table_rows: tuple[tuple[str, ...], ...] = ()
+    table_html: str = ""
+    # Used by overlap fragments to retain all original block associations.
+    source_locators: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BookImage:
+    image_id: str
+    source_path: str
+    media_type: str
+    content_hash: str
+    content: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +74,7 @@ class Book:
     source: str = ""
     source_uri: str = ""
     rights: str = ""
+    images: tuple[BookImage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +87,7 @@ class Chunk:
     text: str
     text_hash: str
     unit_count: int
+    source_locators: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

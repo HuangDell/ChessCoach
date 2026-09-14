@@ -17,6 +17,10 @@ from server.core.knowledge import (
     get_corpus_status,
     inspect_book,
     list_books,
+    inspect_book_blocks,
+    load_book_image,
+    load_corpus_snapshot,
+    CorpusReadError,
 )
 from server.core.knowledge.chunking import MAX_UNITS, count_units
 import server.core.knowledge.corpus as corpus_module
@@ -82,6 +86,68 @@ class KnowledgeCorpusTests(unittest.TestCase):
         path = self.books_dir / name
         path.write_bytes(content)
         return path
+
+    def test_epub_preserves_image_bytes_context_and_move_table_order(self) -> None:
+        body = '''<h1>Combinations</h1><p><b>Example 12.</b></p>
+          <div class="figcenter"><img src="cover.png" alt="White to move"/>
+          <p class="caption">Diagram 12. Before the exchange.</p></div>
+          <p>White is a piece behind.</p>
+          <table><caption>Main line</caption><tr><th>Move</th><th>White</th><th>Black</th></tr>
+          <tr><td>1.</td><td>Kt × Kt</td><td>B × Kt</td></tr>
+          <tr><td>2.</td><td>Q - R 5 ch</td><td></td></tr></table>
+          <p>Now compare the alternatives.</p>'''
+        self._write("diagrams.epub", _epub_bytes(first=body))
+        result = build_corpus(self.data_dir)
+        with sqlite3.connect(result.corpus_path) as connection:
+            connection.row_factory = sqlite3.Row
+            image = connection.execute("SELECT * FROM images").fetchone()
+            self.assertEqual(b"not-a-real-image", image["content"])
+            self.assertEqual(hashlib.sha256(image["content"]).hexdigest(), image["content_hash"])
+            self.assertEqual("OPS/cover.png", image["source_path"])
+            blocks = connection.execute("SELECT * FROM blocks ORDER BY ordinal").fetchall()
+            diagram = next(b for b in blocks if b["kind"] == "image")
+            self.assertEqual(image["image_id"], diagram["image_id"])
+            self.assertEqual("White to move", diagram["alt_text"])
+            self.assertEqual("Diagram 12. Before the exchange.", diagram["caption"])
+            self.assertIn("12", diagram["label"])
+            self.assertIn("unrecognized", diagram["text"])
+            table = next(b for b in blocks if b["kind"] == "table")
+            self.assertEqual([["Move", "White", "Black"], ["1.", "Kt × Kt", "B × Kt"],
+                              ["2.", "Q - R 5 ch", ""]], json.loads(table["table_rows"]))
+            self.assertLess(diagram["ordinal"], table["ordinal"])
+            combined = "\n".join(row["text"] for row in blocks)
+            self.assertLess(combined.index("White is a piece behind"), combined.index("1. | Kt × Kt | B × Kt"))
+            self.assertLess(combined.index("2. | Q - R 5 ch"), combined.index("Now compare"))
+            self.assertEqual(1, combined.count("1. | Kt × Kt | B × Kt"))
+            linked = connection.execute('''SELECT c.text FROM chunks c JOIN chunk_blocks cb
+                ON c.chunk_id=cb.chunk_id WHERE cb.book_id=? AND cb.block_ordinal=?''',
+                (diagram["book_id"], diagram["ordinal"])).fetchall()
+            self.assertTrue(any(image["image_id"] in row["text"] for row in linked))
+
+    def test_inline_images_and_image_only_chapters_are_not_dropped(self) -> None:
+        self._write("inline.epub", _epub_bytes(
+            first='<h1>Inline</h1><p>Before <img src="cover.png" alt="A"/> after.</p>',
+            second='<img src="cover.png" alt="B"/>',
+        ))
+        result = build_corpus(self.data_dir)
+        with sqlite3.connect(result.corpus_path) as connection:
+            self.assertEqual(1, connection.execute("SELECT count(*) FROM images").fetchone()[0])
+            blocks = connection.execute("SELECT kind,text FROM blocks ORDER BY ordinal").fetchall()
+            self.assertEqual(["text", "image", "text", "image"], [b[0] for b in blocks])
+            self.assertEqual("Before", blocks[0][1])
+            self.assertEqual("after.", blocks[2][1])
+
+    def test_missing_or_external_image_preserves_previous_corpus(self) -> None:
+        self._write("valid.txt", b"Keep this corpus.")
+        path = build_corpus(self.data_dir).corpus_path
+        baseline = path.read_bytes()
+        for src in ("missing.png", "https://example.com/board.png", "../../outside.png"):
+            with self.subTest(src=src):
+                bad = self._write("bad.epub", _epub_bytes(first=f'<p>Diagram</p><img src="{src}"/>'))
+                with self.assertRaises(BookParseError):
+                    build_corpus(self.data_dir)
+                self.assertEqual(baseline, path.read_bytes())
+                bad.unlink()
 
     def test_epub_uses_spine_metadata_headings_and_body_blocks(self) -> None:
         first = """
@@ -275,7 +341,7 @@ class KnowledgeCorpusTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-            self.assertEqual({"meta", "books", "chunks"}, tables)
+            self.assertEqual({"meta", "books", "chunks", "images", "blocks", "chunk_blocks"}, tables)
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
             self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
             chunk_columns = {
@@ -295,7 +361,8 @@ class KnowledgeCorpusTests(unittest.TestCase):
                 }.issubset(chunk_columns)
             )
             meta = dict(connection.execute("SELECT key, value FROM meta"))
-            self.assertEqual("book-corpus-v1", meta["corpus_version"])
+            self.assertEqual("book-corpus-v3", meta["corpus_version"])
+            self.assertEqual("3", meta["schema_version"])
             self.assertEqual(result.source_collection_hash, meta["source_collection_hash"])
             self.assertEqual(
                 {"max_units": 480, "overlap_units": 40, "target_units": 320},
@@ -303,6 +370,54 @@ class KnowledgeCorpusTests(unittest.TestCase):
             )
         finally:
             connection.close()
+
+    def test_blocks_and_images_roundtrip_and_legacy_snapshot_is_readable(self) -> None:
+        self._write("book.epub", _epub_bytes(first='<p>Example 3.</p><img src="cover.png"/>'))
+        result = build_corpus(self.data_dir)
+        book_id = list_books(self.data_dir)[0].book_id
+        blocks = inspect_book_blocks(self.data_dir, book_id)
+        diagram = next(block for block in blocks if block.kind == "image")
+        self.assertEqual("Example 3", diagram.label)
+        self.assertEqual(b"not-a-real-image", load_book_image(self.data_dir, diagram.image_id).content)
+        self.assertTrue(any(diagram.source_locator in record.chunk.source_locators
+                            for record in load_corpus_snapshot(self.data_dir).chunks))
+        with sqlite3.connect(result.corpus_path) as connection:
+            connection.executescript("DROP TABLE chunk_blocks; DROP TABLE blocks; DROP TABLE images;")
+            connection.execute("UPDATE meta SET value='book-corpus-v2' WHERE key='corpus_version'")
+            connection.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+        self.assertEqual(book_id, list_books(self.data_dir)[0].book_id)
+        self.assertTrue(inspect_book(self.data_dir, book_id).chunks)
+        with self.assertRaisesRegex(CorpusReadError, "rebuild"):
+            inspect_book_blocks(self.data_dir, book_id)
+        with self.assertRaisesRegex(CorpusReadError, "stale"):
+            load_corpus_snapshot(self.data_dir)
+
+    def test_large_table_retains_rows_spans_and_links_across_chunks(self) -> None:
+        body = '<h1>Moves</h1><table><tr><th colspan="3">Main line</th></tr>'
+        body += ''.join(f'<tr><td>{n}.</td><td>White move {n}</td><td>Black move {n}</td></tr>' for n in range(1, 101))
+        body += '</table>'
+        self._write("table.epub", _epub_bytes(first=body))
+        build_corpus(self.data_dir)
+        book = list_books(self.data_dir)[0]
+        table = next(b for b in inspect_book_blocks(self.data_dir, book.book_id) if b.kind == "table")
+        self.assertEqual(101, len(table.table_rows))
+        self.assertIn('colspan="3"', table.table_html)
+        chunks = inspect_book(self.data_dir, book.book_id, 30).chunks
+        related = [chunk for chunk in chunks if table.source_locator in chunk.source_locators]
+        self.assertGreater(len(related), 1)
+        self.assertTrue(all(chunk.unit_count <= MAX_UNITS for chunk in related))
+        self.assertIn('100. | White move 100 | Black move 100', '\n'.join(c.text for c in related))
+
+    def test_inline_svg_preserves_vector_markup_as_unrecognized_asset(self) -> None:
+        self._write("vector.epub", _epub_bytes(first='''<h1>Diagram</h1><svg xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 80 80" aria-label="Chess diagram"><rect x="0" y="0" width="80" height="80"/></svg>'''))
+        build_corpus(self.data_dir)
+        book = list_books(self.data_dir)[0]
+        diagram = next(b for b in inspect_book_blocks(self.data_dir, book.book_id) if b.kind == "image")
+        image = load_book_image(self.data_dir, diagram.image_id)
+        self.assertEqual('image/svg+xml', image.media_type)
+        self.assertIn(b'viewBox="0 0 80 80"', image.content)
+        self.assertIn('unrecognized', diagram.text)
 
 
 if __name__ == "__main__":
