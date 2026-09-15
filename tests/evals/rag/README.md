@@ -4,8 +4,9 @@
 指定的本机数据目录，不作为公共 fixture 提交。
 
 这是独立于 Agent 26 条 portfolio 的 **RAG Benchmark（40 条）**，不混入其指标。
-当前 v3 语料对应 `tests/evals/rag/datasets/zh-en-v2/`（模型辅助复核，未人工验收）；
-历史草案位于 `tests/evals/rag/datasets/zh-en-v1/`，两目录均被 Git 忽略。
+v3 语料的首轮标签位于 `tests/evals/rag/datasets/zh-en-v2/`；实际翻译候选补审后的标签位于
+`tests/evals/rag/datasets/zh-en-v3-pooled-live-translation/`（均为模型辅助复核，未人工验收）。
+历史草案位于 `tests/evals/rag/datasets/zh-en-v1/`，这些目录均被 Git 忽略。
 它从 `.chess-review/knowledge/benchmarks/zh-en-v1/` 整体迁入，数据版本及来源指纹不变。
 新 checkout 不附带本地数据；校验器仍支持 `--dataset-dir` 指定其他本机目录。
 
@@ -16,6 +17,8 @@ tests/evals/rag/
 ├── validate_dataset.py       # 仅数据完整性校验
 ├── prepare_dataset.py        # 按显式审查决策物化新版标签
 ├── runner.py                 # 独立索引、40题检索、重评分
+├── translate.py              # 显式调用模型并冻结实际英文查询
+├── review_pool.py            # 新候选分片、显式模型评审结果合并
 └── datasets/zh-en-v1/         # 历史本地素材；zh-en-v2 使用 corpus-v3.sqlite3
     ├── manifest.json
     ├── queries.jsonl         # 模型输入
@@ -29,7 +32,8 @@ tests/evals/rag/
 ```
 
 后续检索报告、译文缓存和 trace 统一写到 `reports/rag/<run-id>/`（Git 忽略）。
-准备阶段缺口分析见 [ANALYSIS.md](ANALYSIS.md)，实测进展见 [RESULTS.md](RESULTS.md)。
+准备阶段缺口分析见 [ANALYSIS.md](ANALYSIS.md)，首轮检索见 [RESULTS.md](RESULTS.md)，
+最新实际译文对照见 [TRANSLATION_RESULTS.md](TRANSLATION_RESULTS.md)。
 
 `queries.jsonl` 只含查询 ID、中文原文、LLM 起草的英文参考译文和可用局面上下文；`labels.json`
 单独保存答案要点、来源判断、类型和来源组。模型/翻译器不得读取 labels。
@@ -84,7 +88,14 @@ tests/evals/rag/
 ```
 
 `run.json` 记录查询 hash、索引/embedding 指纹及代码版本，`report.json` 记录评分用 labels hash。
-校验/评分测试：`.venv/bin/python -m unittest tests.backend.test_rag_dataset_validation tests.backend.test_rag_prepare_dataset tests.backend.test_rag_runner`。
+专项验证（所有模型/检索调用使用 fake，数据使用临时目录）：
+
+```bash
+.venv/bin/python -m unittest \
+  tests.backend.test_rag_dataset_validation tests.backend.test_rag_prepare_dataset \
+  tests.backend.test_rag_runner tests.backend.test_rag_translation \
+  tests.backend.test_rag_translated_retrieval tests.backend.test_rag_review_pool
+```
 
 ## 查询翻译约定
 
@@ -94,8 +105,52 @@ tests/evals/rag/
 
 草案的 `query_en_reference` 由当前助手起草，是可审查参考译文，不是已配置生产 endpoint 的翻译
 调用结果，不含翻译延迟或 usage。生产检索器当前不自动执行这一翻译步骤，本任务不修改生产链路。
-后续 runner 应记录实际英文查询、翻译模型及版本、耗时、usage，并缓存冻结译文以便 BM25、dense、
-hybrid 使用相同输入。分别报告固定参考译文的检索效果与包含实时翻译的完整链路效果。
+`translate.py` 复用项目配置边界中的 Agent endpoint/model/provider/credential，发起独立 Responses
+调用。只发送中文问题和固定翻译提示词；不发送参考英文、FEN、标签、答案或教材。运行前配置与
+Agent portfolio 相同的模型环境变量；这是显式网络评测，默认单元测试不会调用模型。
+
+```bash
+.venv/bin/python -m tests.evals.rag.translate \
+  --dataset-dir tests/evals/rag/datasets/zh-en-v2 \
+  --output-dir reports/rag/v3-live-translation
+
+.venv/bin/python -m tests.evals.rag.runner run \
+  --dataset-dir tests/evals/rag/datasets/zh-en-v2 \
+  --data-dir reports/rag/index-v3-cu128 \
+  --output-dir reports/rag/v3-en-translated \
+  --translations-dir reports/rag/v3-live-translation \
+  --model-path /path/to/Qwen3-Embedding-8B --device cuda:0 --batch-size 1
+```
+
+已有索引直接复用，不重新编码书籍。两条命令均拒绝覆盖已有输出目录。
+每题译文、耗时、usage、错误和模型/输入/prompt hash 原子保存，三路共用同一冻结译文。
+检索输出复制译文快照并保存实际查询；查询集不匹配时拒绝运行。翻译失败计作失败/未命中，
+不回退参考译文。翻译耗时单列；两个独立阶段逐题耗时相加只是延迟估算，不是实测端到端延迟。
+
+新召回的未标注候选须先模型补审，再用同一新版标签比较三组。比较命令保留原报告，检查查询、
+语料、索引、embedding 和上下文模式一致；输出记录统一标签 hash：
+
+```bash
+.venv/bin/python -m tests.evals.rag.review_pool prepare \
+  --dataset-dir tests/evals/rag/datasets/zh-en-v2 \
+  --retrieval-dir reports/rag/v3-en-translated \
+  --output-dir reports/rag/v3-translation-review
+
+# 三个审阅者分别填写 shard-A/B/C.json 的 reviewer、decisions、translation_reviews。
+# 保留原始 items/translations 及其 hash，不提供参考译文、旧标签或检索排名。
+.venv/bin/python -m tests.evals.rag.review_pool merge \
+  --dataset-dir tests/evals/rag/datasets/zh-en-v2 \
+  --corpus tests/evals/rag/datasets/zh-en-v2/corpus-v3.sqlite3 \
+  --reviews reports/rag/v3-translation-review/shard-A.json \
+            reports/rag/v3-translation-review/shard-B.json \
+            reports/rag/v3-translation-review/shard-C.json \
+  --output tests/evals/rag/datasets/zh-en-v3-pooled-live-translation
+
+.venv/bin/python -m tests.evals.rag.runner compare \
+  --dataset-dir tests/evals/rag/datasets/zh-en-v3-pooled-live-translation \
+  --run-dirs reports/rag/v3-zh-direct reports/rag/v3-en-reference reports/rag/v3-en-translated \
+  --output reports/rag/v3-translation-comparison.json
+```
 
 ## 标注与评测边界
 
@@ -116,4 +171,12 @@ hybrid 使用相同输入。分别报告固定参考译文的检索效果与包�
 - 首轮检索对照为 BM25、dense、RRF hybrid，使用相同语料、译文、技能输入与 top-k，报告 @3/@5。
   证据不足样例单独评估，不放入普通 Recall 分母；生成正确性和引用支持关系另行评分。
 
-检索诊断 runner 已实现；实际 LLM 翻译调用和端到端生成评测尚未实现。
+检索诊断和实际 LLM 翻译调用已实现；生产路径自动翻译、局面上下文对照和端到端生成评测仍未实现。
+当前按用户要求采用 sub-agent 模型评审，暂不安排人工验收；不将模型评审称为人工标注。
+## 已验证局面上下文
+
+已完成固定真实译文＋确定性棋盘上下文的 40 条对照，见
+[局面上下文结果与 P03/P04/P06 诊断](CONTEXT_RESULTS.md)。
+`run --context-mode verified_board_v1` 追加合法重放得到的棋盘事实；默认仍为 question-only。
+新增 `diagnose` 可检查已知证据在完整候选中的排名。完整棋子列表未解决三题漏检，
+新池还有 57 对未标注，本轮数字仅是旧标签下的已知证据下界。

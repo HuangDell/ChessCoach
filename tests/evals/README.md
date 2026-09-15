@@ -6,13 +6,13 @@ Agent portfolio 与 RAG 是两个独立 Benchmark，共用 `tests/evals/` 目录
 | Benchmark | 数据与入口 | 评估范围 | 当前状态 |
 | --- | --- | --- | --- |
 | Agent portfolio（26 条 baseline） | 本目录 `agent_baseline_v1.json`、`run_portfolio.py` | 工具编排、grounding、预算与降级 | 可运行 deterministic / live；工具为 fixture，不执行真实 RAG |
-| RAG 中文查询 / 英文教材（40 条） | [rag/](rag/README.md)、`rag/datasets/zh-en-v2/`、`rag/runner.py` | 书籍检索相关性、证据边界；后续单独评价生成 | v3 索引与中文/英文检索诊断已运行；标注为模型辅助复核 |
+| RAG 中文查询 / 英文教材（40 条） | [rag/](rag/README.md)、`rag/runner.py`、`rag/translate.py` | 书籍检索相关性、查询翻译、证据边界；后续单独评价生成 | v3 索引、中文/参考英文/实际译文对照已运行；标注为模型辅助复核 |
 
 RAG 本地数据已从 `.chess-review/knowledge/benchmarks/zh-en-v1/` 移到
 `tests/evals/rag/datasets/zh-en-v1/`；真实问题、标注及教材快照继续被 Git 忽略。
 新 checkout 不包含这些本地素材，需显式准备数据。代码与说明进入版本控制。
 Agent 输出沿用 `reports/<report-name>.json`；RAG 后续运行产物使用
-`reports/rag/<run-id>/`，不写入 Agent 报告。RAG 待完善项见 [现状分析](rag/ANALYSIS.md)。
+`reports/rag/<run-id>/`，不写入 Agent 报告。最新进展见 [实际翻译对照](rag/TRANSLATION_RESULTS.md)。
 
 下文保留 Agent portfolio 的使用说明；Explanation 对比和 orchestration 研究入口另行独立。
 

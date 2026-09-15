@@ -377,8 +377,10 @@ usage 的 `context_last_input_tokens` / `context_peak_input_tokens` 记录教练
 测试工具编排与回答约束；[RAG Benchmark](tests/evals/rag/README.md) 的 40 条草案测试中文问题对
 英文教材的检索与证据支持。二者不合并。RAG 当前本地数据位于
 `tests/evals/rag/datasets/zh-en-v2/`（Git 忽略，v1 历史快照保留），已支持独立索引、
-中文/固定英文查询的三路检索诊断及补标后重评分；标注为 sub-agent 模型辅助复核，
-不等同人工验收，见 [RAG 实测进展](tests/evals/rag/RESULTS.md)。
+中文/固定英文/实际模型译文的三路检索诊断、冻结译文及补标后统一重评分；标注为 sub-agent 模型辅助复核，
+不等同人工验收；实际译文补审标签另存新版目录，见 [RAG 实际翻译对照](tests/evals/rag/TRANSLATION_RESULTS.md)。
+已加入合法重放生成的局面上下文消融入口，40 条实测和 P03/P04/P06 的候选排名诊断见
+[局面上下文对照](tests/evals/rag/CONTEXT_RESULTS.md)。完整棋子列表尚未解决三题的已知证据漏检。
 
 Phase 0 的 26 个 case、ID 和 v1 baseline 保持不变；`agent-portfolio-v2` 在其上增加 summary、
 reference/action、recent improvement、training diversity/stale source、storage、stale/cancel、
