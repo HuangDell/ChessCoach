@@ -23,11 +23,12 @@ Agent runs are non-streaming and bounded by `CHESS_AGENT_MAX_TURNS`,
 `CHESS_AGENT_MAX_TOOL_CALLS`, `CHESS_AGENT_MAX_ENGINE_CALLS`, and `CHESS_AGENT_TIMEOUT`.
 `CHESS_AGENT_RUN_MAX_RECORDS` bounds the run log and defaults to 1000.
 
-Set `CHESS_AGENT_DEBUG=1` to print timestamped, redacted run/model/tool activity and exact local
-validation paths to the terminal. Model input, output, tool payloads, FEN, PV, and reasoning are never
-printed. When `CHESS_AGENT_RAW_TRACE` is unset, it inherits `CHESS_AGENT_DEBUG`; an explicit `0` or `1`
-always wins. Raw tracing covers both Ask Coach Responses calls and bounded Explanation Chat
-Completions calls. Exact request and response bodies are stored under
+Set `DEBUG=1` to enable timestamped Agent/Explanation lifecycle diagnostics, all HTTP access
+logs, and local model/RAG traces. The default is off; business failure summaries still log at WARNING.
+Model input, output, tool payloads, credentials, FEN, PV, and reasoning are never printed.
+`CHESS_AGENT_DEBUG` and `CHESS_AGENT_RAW_TRACE` are removed and ignored: replace them with `DEBUG=1`
+and restart. There is no separate access-log or raw-trace switch. Raw tracing covers both Ask Coach
+Responses calls and bounded Explanation Chat Completions calls. Exact request and response bodies are stored under
 `<DATA_DIR>/agent/traces/<timestamp>-<trace-id>/`; headers are excluded and the two paths share one
 newest-20-directory retention quota. These files can contain personal chess, conversation, learning
 memory, model output, tool payloads, and reasoning.

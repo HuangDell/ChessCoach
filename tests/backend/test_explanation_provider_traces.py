@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import httpx
 
+from server import config
 from server.core.explanation.models import ExplanationRequest
 from server.core.explanation.providers import (
     ExplanationProviderError,
@@ -100,6 +101,58 @@ class ExplanationProviderTraceTests(unittest.TestCase):
                 self.assertEqual(body, files[1].read_bytes())
                 self.assertNotIn(b"must-not-be-written", files[0].read_bytes())
                 self.assertIn("explanation-ply-17-abcdef012345", files[0].parent.name)
+
+    def test_authentication_error_has_safe_metadata(self) -> None:
+        for status in (401, 403):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as data_dir:
+                provider, _ = self._provider(data_dir)
+                with patch(
+                    "server.core.explanation.providers.httpx.Client",
+                    side_effect=lambda **kwargs: _Client(
+                        outcome=(status, b'{"code":"INVALID_API_KEY","message":"private-secret"}'),
+                        **kwargs,
+                    ),
+                ), self.assertRaises(ExplanationProviderError) as raised:
+                    provider.explain_position(_request())
+                self.assertEqual("authentication_failed", raised.exception.reason)
+                self.assertEqual(status, raised.exception.http_status)
+                self.assertNotIn("private-secret", str(raised.exception))
+                self.assertIn("CHESS_EXPLANATION_API_KEY", str(raised.exception))
+
+    def test_debug_logs_lifecycle_usage_and_trace_without_body(self) -> None:
+        body = b'{"choices":[{"message":{"content":"private-model-output"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"private":"secret"}}'
+        for debug in (False, True):
+            with self.subTest(debug=debug), tempfile.TemporaryDirectory() as data_dir:
+                provider, _ = self._provider(data_dir)
+                with patch.object(config, "DEBUG", debug), patch(
+                    "server.core.explanation.providers.httpx.Client",
+                    side_effect=lambda **kwargs: _Client(outcome=(200, body), **kwargs),
+                ), patch("server.core.explanation.providers.logger") as logger:
+                    provider.explain_position(_request())
+                if not debug:
+                    logger.debug.assert_not_called()
+                    continue
+                text = str(logger.debug.call_args_list)
+                for event in ("explanation_model_started", "explanation_model_response",
+                              "explanation_model_usage", "explanation_trace_saved"):
+                    self.assertIn(event, text)
+                self.assertIn("prompt_tokens", text)
+                for secret in ("private-model-output", "private position", "must-not-be-written", "secret"):
+                    self.assertNotIn(secret, text)
+
+    def test_invalid_and_http_error_bodies_are_not_echoed(self) -> None:
+        for status, body, reason in (
+            (500, b'private-secret', "http_error"),
+            (200, b'private-secret', "invalid_response"),
+            (200, b'{"choices":[{"message":{"content":""}}]}', "invalid_response"),
+        ):
+            with self.subTest(status=status, body=body), tempfile.TemporaryDirectory() as data_dir:
+                provider, _ = self._provider(data_dir)
+                with patch("server.core.explanation.providers.httpx.Client",
+                           side_effect=lambda **kwargs: _Client(outcome=(status, body), **kwargs)), self.assertRaises(ExplanationProviderError) as raised:
+                    provider.explain_position(_request())
+                self.assertEqual(reason, raised.exception.reason)
+                self.assertNotIn("private-secret", str(raised.exception))
 
     def test_timeout_keeps_request_and_trace_failure_does_not_change_success(self) -> None:
         with tempfile.TemporaryDirectory(prefix="explanation-timeout-") as data_dir:

@@ -21,9 +21,9 @@ class GenerateExplanationsBody(BaseModel):
     force: bool = False
 
 
-def _error(code: str, message: str, status_code: int) -> JSONResponse:
+def _error(code: str, message: str, status_code: int, *, reason: str | None = None) -> JSONResponse:
     return JSONResponse(
-        {"error": {"code": code, "message": message}}, status_code=status_code
+        {"error": {"code": code, "message": message, **({"reason": reason} if reason else {})}}, status_code=status_code
     )
 
 
@@ -59,5 +59,5 @@ def post_game_explanations(
     except ExplanationNotFoundError as exc:
         return _error("explanation_input_not_found", str(exc), 404)
     except ExplanationError as exc:
-        return _error("explanation_failed", str(exc), 503)
+        return _error("explanation_failed", str(exc), 503, reason=exc.reason)
     return JSONResponse(result)

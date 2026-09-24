@@ -119,6 +119,8 @@ CHESS_EXPLANATION_API_KEY=... \
 CLI。explanation prompt v6 将固定教练规则和输出契约保留为可缓存公共前缀，并把局面、合法 SAN、
 允许的 evidence 与个性化 memory 集中在末尾 `position_context`。模型失败不会修改
 `analysis.json`，也不会影响 Engine Review。
+讲解失败提示按局面保留，重试成功后清除；批量讲解遇到鉴权失败会停止并显示剩余数量。
+鉴权失败时检查独立的 `CHESS_EXPLANATION_API_KEY` 和 endpoint 配置，修改后重启服务。
 正面局面的 `core_problem` 字段兼容保留，用于解释成功解决的挑战，界面显示为 What worked。
 
 Explanation 和 Ask Coach 的初始上下文、`get_review_context` 模型返回使用同一个纯函数 facts 投影。
@@ -166,8 +168,7 @@ reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可
 | `CHESS_AGENT_MAX_ENGINE_CALLS` | 单 run 最大 Engine 工具调用 | `2` |
 | `CHESS_AGENT_TIMEOUT` | 单 run wall-clock 秒数 | `120` |
 | `CHESS_AGENT_RUN_MAX_RECORDS` | `runs.jsonl` 最多记录数 | `1000` |
-| `CHESS_AGENT_DEBUG` | 在终端输出带时间戳的脱敏 Agent 诊断 | `0` |
-| `CHESS_AGENT_RAW_TRACE` | 将两条模型路径最近 20 个 HTTP trace 的原始 body 写入本地文件 | 未设置时继承 `CHESS_AGENT_DEBUG` |
+| `DEBUG` | `1` 开启 HTTP 访问日志、Agent/Explanation 详细诊断和本地模型/RAG trace；其他值关闭 | `0` |
 | `CHESS_AGENT_CONTEXT_TOKENS` | endpoint/model 有效上下文容量；`0` 使用模型默认 | `deepseek-flash` 为 `1000000`，其他为 `128000` |
 | `CHESS_AGENT_CONTEXT_TRIGGER_RATIO` | 上下文压缩软阈值比例 | `0.9` |
 | `CHESS_AGENT_CONTEXT_TARGET_RATIO` | 压缩后输入目标比例 | `0.6` |
@@ -179,12 +180,14 @@ reference 复用当前棋盘已完成的 live best-moves，浏览器不提交可
 调试 Agent 对话时可运行：
 
 ```bash
-CHESS_WEB_OPEN=0 CHESS_AGENT_DEBUG=1 uv run python -m server.web.runner
+CHESS_WEB_OPEN=0 DEBUG=1 uv run python -m server.web.runner
 ```
 
-该模式输出 run/model/tool 生命周期、耗时、usage、失败阶段，以及不含字段值的结构校验路径；终端
-始终不打印模型输入、输出或工具正文。`CHESS_AGENT_RAW_TRACE` 未设置时继承该 DEBUG 开关；显式
-设为 `0` 或 `1` 时始终优先。raw trace 同时覆盖 Ask Coach 的 Responses 请求与 Explanation 的 Chat
+`DEBUG=1` 是唯一调试开关，统一输出所有 HTTP 请求的访问日志、Agent/Explanation 生命周期、耗时、
+usage（供应商提供时）、失败阶段和不含字段值的校验诊断。关闭时不输出访问日志、不新增 trace，
+但业务失败的安全摘要仍会打印。终端不打印密钥、模型输入、输出或工具正文。
+旧 `CHESS_AGENT_DEBUG` / `CHESS_AGENT_RAW_TRACE` 已移除，不再生效；请将本地配置改为 `DEBUG=1` 后重启。
+raw trace 同时覆盖 Ask Coach 的 Responses 请求与 Explanation 的 Chat
 Completions 请求。原始 body 会写到 `<DATA_DIR>/agent/traces/<timestamp>-<trace_id>/`，不包含 HTTP
 header，两个功能合并只保留最近 20 个目录。这些文件可能包含棋局、对话、个性化 memory、模型输出、
 工具数据和 reasoning，只能保留在本机。
@@ -447,9 +450,9 @@ SQLite 会话测试停滞时可运行 `timeout 35s .venv/bin/python -m tests.bac
 
 ### RAG 检索诊断记录
 
-`CHESS_AGENT_DEBUG=1` 时，Agent、Explanation 和 CLI 的每次实际书籍检索会原子写入
+`DEBUG=1` 时，Agent、Explanation 和 CLI 的每次实际书籍检索会原子写入
 `<DATA_DIR>/knowledge/traces/<timestamp>-<trace_id>.json`，保留最近 100 次记录。
-此开关独立于 `CHESS_AGENT_RAW_TRACE`；关闭 DEBUG 时不写 RAG trace。
+模型 HTTP trace 与 RAG trace 共用 DEBUG；关闭时均不新增记录。
 
 schema v1 记录原始与扩展查询、skill 参数、请求/实际 limit、索引和 embedding fingerprint、
 向量维度、双路全部候选正文及来源、cosine distance/BM25 score（缺失时为 null）、RRF

@@ -27,7 +27,7 @@ def _logging_config() -> dict:
         formatter["datefmt"] = "%Y-%m-%dT%H:%M:%S%z"
     value["loggers"]["chesscoach"] = {
         "handlers": ["default"],
-        "level": "DEBUG" if config.AGENT_DEBUG else "INFO",
+        "level": "DEBUG" if config.DEBUG else "INFO",
         "propagate": False,
     }
     return value
@@ -93,7 +93,7 @@ def main() -> int:
             host=config.WEB_HOST,
             port=config.WEB_PORT,
             log_level="info",
-            access_log=False,
+            access_log=config.DEBUG,
             log_config=log_config,
         )
     finally:

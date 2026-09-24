@@ -50,6 +50,7 @@ let currentGameId = null;
 let engineReview = null;
 let criticalPositions = [];
 let explanationArtifact = null;
+let explanationStatuses = {};
 let activeCriticalId = null;
 let defaultReviewSide = "auto";
 let boardOrientationPreference = "review";
@@ -165,12 +166,11 @@ let showThreatsByDefault = false;
       analyzing,
       criticalPositions,
       engineReview,
-      player,
-      mistakes,
+      player, mistakes,
       activeCriticalId,
       reviewedMoveNode: navigation.reviewedMoveNode(),
       timeline,
-      explanationArtifact,
+      explanationArtifact, explanationStatuses,
     }),
     onSelectCritical: selectCritical,
     onSelectEngineMove: selectEngineMove,
@@ -198,10 +198,9 @@ let showThreatsByDefault = false;
     $,
     api: reviewApi,
     getSnapshot: () => ({
-      currentGameId,
-      player,
+      currentGameId, player,
       criticalPositions,
-      explanationArtifact,
+      explanationArtifact, explanationStatuses,
       activeCritical: activeCritical(),
     }),
     setState: (patch) => {
@@ -209,6 +208,7 @@ let showThreatsByDefault = false;
       if ("engineReview" in patch) engineReview = patch.engineReview;
       if ("criticalPositions" in patch) criticalPositions = patch.criticalPositions;
       if ("explanationArtifact" in patch) explanationArtifact = patch.explanationArtifact;
+      if ("explanationStatuses" in patch) explanationStatuses = patch.explanationStatuses;
       if ("activeCriticalId" in patch) activeCriticalId = patch.activeCriticalId;
     },
     setWorkflowState,

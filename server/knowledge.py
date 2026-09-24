@@ -122,7 +122,7 @@ def _print_index(data_dir: Path) -> int:
 def _print_search(data_dir: Path, query: str, skill_ids: list[str], limit: int) -> int:
     retriever = LanceDBKnowledgeRetriever(
         data_dir, _embedder(), enabled=config.KNOWLEDGE_ENABLED,
-        trace_store=KnowledgeTraceStore(data_dir) if config.AGENT_DEBUG else None,
+        trace_store=KnowledgeTraceStore(data_dir) if config.DEBUG else None,
     )
     try:
         with knowledge_trace_context("cli"):
@@ -175,9 +175,12 @@ def _print_inspection(data_dir: Path, book_id: str, limit: int) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    if config.AGENT_DEBUG:
-        logging.basicConfig(level=logging.WARNING)
-        logging.getLogger("chesscoach.agent").setLevel(logging.DEBUG)
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
+    logging.getLogger("chesscoach").setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
     arguments = _parser().parse_args(argv)
     data_dir = _data_dir(arguments)
     try:

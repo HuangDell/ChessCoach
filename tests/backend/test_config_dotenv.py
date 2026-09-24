@@ -14,7 +14,7 @@ ROOT = Path(__file__).parents[2]
 
 
 class DotenvConfigTests(unittest.TestCase):
-    def _raw_trace_value(self, debug: str | None, raw_trace: str | None) -> bool:
+    def _debug_value(self, debug: str | None, legacy: str | None = None) -> bool:
         with tempfile.TemporaryDirectory(prefix="chesscoach-config-") as directory:
             project_root = Path(directory) / "project"
             server_dir = project_root / "server"
@@ -24,15 +24,16 @@ class DotenvConfigTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PYTHONPATH"] = str(project_root)
             for key, value in (
-                ("CHESS_AGENT_DEBUG", debug),
-                ("CHESS_AGENT_RAW_TRACE", raw_trace),
+                ("DEBUG", debug),
+                ("CHESS_AGENT_DEBUG", legacy),
+                ("CHESS_AGENT_RAW_TRACE", legacy),
             ):
                 if value is None:
                     environment.pop(key, None)
                 else:
                     environment[key] = value
             result = subprocess.run(
-                [sys.executable, "-c", "from server import config; print(int(config.AGENT_RAW_TRACE))"],
+                [sys.executable, "-c", "from server import config; print(int(config.DEBUG))"],
                 cwd=directory,
                 env=environment,
                 check=True,
@@ -41,11 +42,13 @@ class DotenvConfigTests(unittest.TestCase):
             )
             return result.stdout.strip() == "1"
 
-    def test_raw_trace_inherits_debug_only_when_unset(self) -> None:
-        self.assertFalse(self._raw_trace_value("0", None))
-        self.assertTrue(self._raw_trace_value("1", None))
-        self.assertFalse(self._raw_trace_value("1", "0"))
-        self.assertTrue(self._raw_trace_value("0", "1"))
+    def test_debug_is_the_only_switch(self) -> None:
+        self.assertFalse(self._debug_value(None))
+        self.assertFalse(self._debug_value("0"))
+        self.assertTrue(self._debug_value("1"))
+        self.assertFalse(self._debug_value("true"))
+        self.assertFalse(self._debug_value(None, "1"))
+        self.assertTrue(self._debug_value("1", "0"))
 
     def test_repo_dotenv_loads_without_overriding_process_environment(self) -> None:
         with tempfile.TemporaryDirectory(prefix="chesscoach-dotenv-") as directory:
@@ -57,7 +60,7 @@ class DotenvConfigTests(unittest.TestCase):
             (server_dir / "__init__.py").write_text("", encoding="utf-8")
             shutil.copy2(ROOT / "server" / "config.py", server_dir / "config.py")
             (project_root / ".env").write_text(
-                "CHESS_WEB_PORT=9123\nCHESS_WEB_OPEN=0\nCHESS_AGENT_RAW_TRACE=1\n",
+                "CHESS_WEB_PORT=9123\nCHESS_WEB_OPEN=0\nDEBUG=1\n",
                 encoding="utf-8",
             )
 
@@ -65,6 +68,7 @@ class DotenvConfigTests(unittest.TestCase):
             environment["PYTHONPATH"] = str(project_root)
             environment["CHESS_WEB_PORT"] = "9456"
             environment.pop("CHESS_WEB_OPEN", None)
+            environment.pop("DEBUG", None)
             result = subprocess.run(
                 [
                     sys.executable,
@@ -72,7 +76,7 @@ class DotenvConfigTests(unittest.TestCase):
                     (
                         "import json; from server import config; "
                         "print(json.dumps({'port': config.WEB_PORT, 'open': config.WEB_OPEN, "
-                        "'raw_trace': config.AGENT_RAW_TRACE}))"
+                        "'raw_trace': config.DEBUG}))"
                     ),
                 ],
                 cwd=working_dir,

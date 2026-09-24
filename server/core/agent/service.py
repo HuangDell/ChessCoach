@@ -832,7 +832,8 @@ class ChessAgentService:
                 validation_errors = list(telemetry.validation_errors) or validation_errors
             duration_ms = max(0, round((time.monotonic() - started) * 1000))
             if status != "success":
-                logger.debug(
+                logger.log(
+                    logging.DEBUG if status in {"cancelled", "stale"} else logging.WARNING,
                     "event=run_failed run=%s status=%s error_code=%s failure_stage=%s duration_ms=%s",
                     run_request.run_id,
                     status,
@@ -979,7 +980,7 @@ def create_default_agent_service(
                     batch_size=config.KNOWLEDGE_BATCH_SIZE,
                 ),
                 enabled=True,
-                trace_store=KnowledgeTraceStore(root) if config.AGENT_DEBUG else None,
+                trace_store=KnowledgeTraceStore(root) if config.DEBUG else None,
             )
         except Exception:
             # Knowledge is optional and reports a typed unavailable result when no retriever exists.
@@ -1005,7 +1006,7 @@ def create_default_agent_service(
         timeout_seconds=config.AGENT_TIMEOUT,
         knowledge_retriever=knowledge_retriever,
     )
-    if raw_trace_store is None and config.AGENT_RAW_TRACE:
+    if raw_trace_store is None and config.DEBUG:
         raw_trace_store = RawHttpTraceStore(root)
     try:
         runtime = create_openai_runtime(
@@ -1017,7 +1018,7 @@ def create_default_agent_service(
             openai_api_key=config.OPENAI_API_KEY,
             domain_tools_factory=service.tools_for_runtime,
             session_provider=service.session_for_runtime,
-            debug=config.AGENT_DEBUG,
+            debug=config.DEBUG,
             raw_trace_store=raw_trace_store,
         )
     except Exception as exc:  # optional Agent initialization must not prevent Web startup

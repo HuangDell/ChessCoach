@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 import threading
 from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import ValidationError
+
+from server import config
 
 from server.core.explanation.builder import (
     EXPLANATION_SCHEMA_VERSION,
@@ -32,8 +36,16 @@ from server.core.storage import (
 )
 
 
+logger = logging.getLogger("chesscoach.explanation")
+
+
 class ExplanationError(RuntimeError):
     """A generation, grounding, or persistence error safe to return through the local API."""
+
+    def __init__(self, message: str, *, reason: str = "generation_failed", http_status: int | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.http_status = http_status
 
 
 class ExplanationNotFoundError(ExplanationError):
@@ -235,6 +247,47 @@ def generate_explanations(
     provider: ExplanationProvider | None = None,
     knowledge_retriever: KnowledgeRetriever | None = None,
 ) -> dict:
+    """Own the terminal outcome log, including preparation and persistence failures."""
+    started = time.monotonic()
+    progress = {"stage": "input", "critical_id": critical_id or "all"}
+    if config.DEBUG:
+        logger.debug("event=explanation_started game=%s critical=%s", game_id, progress["critical_id"])
+    try:
+        result = _generate_explanations(
+            game_id, review_side=review_side, critical_id=critical_id, force=force,
+            provider=provider, knowledge_retriever=knowledge_retriever, progress=progress,
+        )
+    except Exception as exc:
+        logger.warning(
+            "event=explanation_failed game=%s critical=%s stage=%s reason=%s http_status=%s exception_type=%s duration_ms=%s",
+            game_id, progress["critical_id"], progress["stage"],
+            getattr(exc, "reason", "internal_error"), getattr(exc, "http_status", None),
+            type(exc).__name__, round((time.monotonic() - started) * 1000),
+        )
+        raise
+    for error in result["errors"]:
+        logger.warning(
+            "event=explanation_failed game=%s critical=%s stage=%s reason=%s http_status=%s duration_ms=%s",
+            game_id, error["critical_id"], error["stage"], error["reason"], error.get("http_status"),
+            round((time.monotonic() - started) * 1000),
+        )
+    if config.DEBUG:
+        logger.debug("event=explanation_completed game=%s generated=%s cached=%s failed=%s duration_ms=%s",
+                     game_id, len(result["generated"]), len(result["cached"]), len(result["errors"]),
+                     round((time.monotonic() - started) * 1000))
+    return result
+
+
+def _generate_explanations(
+    game_id: str,
+    *,
+    progress: dict,
+    review_side: str | None = None,
+    critical_id: str | None = None,
+    force: bool = False,
+    provider: ExplanationProvider | None = None,
+    knowledge_retriever: KnowledgeRetriever | None = None,
+) -> dict:
     """Generate one or every critical explanation, reusing unchanged validated entries."""
     try:
         analysis = load_analysis(game_id, review_side=review_side)
@@ -253,11 +306,13 @@ def generate_explanations(
     if not critical_positions:
         raise ExplanationNotFoundError("This analysis has no critical positions to explain.")
 
+    progress["stage"] = "configuration"
     try:
         active_provider = provider or configured_provider()
     except ExplanationProviderError as exc:
-        raise ExplanationError(str(exc)) from exc
+        raise ExplanationError(str(exc), reason=exc.reason, http_status=exc.http_status) from exc
     provider_info = active_provider.info
+    progress["stage"] = "input"
     requests: list[tuple[dict, ExplanationRequest]] = []
     try:
         for position in critical_positions:
@@ -278,8 +333,9 @@ def generate_explanations(
     }
     generated: list[str] = []
     cached: list[str] = []
-    errors: list[dict[str, str]] = []
+    errors: list[dict] = []
 
+    progress["stage"] = "cache"
     with _lock_for(game_id, side):
         try:
             existing = load_explanations(game_id, review_side=side)
@@ -297,6 +353,7 @@ def generate_explanations(
             current_index_fingerprint = ""
 
         for position, base_request in requests:
+            progress.update(stage="cache", critical_id=base_request.critical_id)
             prior = next(
                 (
                     item
@@ -308,13 +365,17 @@ def generate_explanations(
                 None,
             )
             if prior is not None and not force:
+                if config.DEBUG:
+                    logger.debug("event=explanation_cache_hit game=%s critical=%s", game_id, base_request.critical_id)
                 cached.append(base_request.critical_id)
                 continue
+            progress["stage"] = "knowledge"
             with knowledge_trace_context("explanation", game_id=game_id,
                                          critical_id=base_request.critical_id):
                 knowledge_context, knowledge_status, index_fingerprint, citations = _retrieve_knowledge(
                     knowledge_retriever, position
                 )
+            progress["stage"] = "input"
             request = build_request(analysis, position, knowledge_context=knowledge_context)
             request = request.model_copy(update={
                 "knowledge_status": knowledge_status,
@@ -323,13 +384,22 @@ def generate_explanations(
             })
             request = request.model_copy(update={"input_hash": _request_hash(request, provider_info)})
             try:
+                progress["stage"] = "model"
                 response = active_provider.explain_position(request)
+                progress["stage"] = "validation"
                 explanation = _validated_explanation(response.text, request)
             except (ExplanationProviderError, ExplanationError) as exc:
                 if critical_id:
-                    raise ExplanationError(str(exc)) from exc
-                errors.append({"critical_id": request.critical_id, "error": str(exc)})
+                    raise ExplanationError(str(exc), reason=exc.reason, http_status=exc.http_status) from exc
+                errors.append({"critical_id": request.critical_id, "error": str(exc),
+                               "reason": exc.reason, "http_status": exc.http_status,
+                               "stage": progress["stage"]})
+                if exc.reason == "authentication_failed":
+                    break
                 continue
+            if config.DEBUG:
+                logger.debug("event=explanation_validated game=%s critical=%s", game_id, request.critical_id)
+            progress["stage"] = "persistence"
             entry = {
                 **explanation.model_dump(mode="json"),
                 "input_hash": request.input_hash,
@@ -346,11 +416,11 @@ def generate_explanations(
             try:
                 store_explanations(game_id, side, artifact)
             except (OSError, ValueError) as exc:
-                raise ExplanationError(f"Could not save explanations: {exc}") from exc
+                raise ExplanationError("Could not save explanations. Check data directory permissions and disk space.", reason="storage_failed") from exc
             generated.append(request.critical_id)
 
     if not generated and not cached and errors:
-        raise ExplanationError(errors[0]["error"])
+        raise ExplanationError(errors[0]["error"], reason=errors[0]["reason"], http_status=errors[0]["http_status"])
     return {
         "artifact": artifact,
         "generated": generated,

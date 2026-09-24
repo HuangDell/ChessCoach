@@ -332,9 +332,9 @@ export CHESS_KNOWLEDGE_MODEL_PATH=/path/to/Qwen3-Embedding-8B
 
 ### RAG 检索诊断记录
 
-`CHESS_AGENT_DEBUG=1` 时，Agent、Explanation 和 CLI 的每次实际书籍检索会原子写入
+`DEBUG=1` 时，Agent、Explanation 和 CLI 的每次实际书籍检索会原子写入
 `<DATA_DIR>/knowledge/traces/<timestamp>-<trace_id>.json`，保留最近 100 次记录。
-此开关独立于 `CHESS_AGENT_RAW_TRACE`；关闭 DEBUG 时不写 RAG trace。
+模型 HTTP trace 与 RAG trace 共用 DEBUG；关闭时均不新增记录。
 
 schema v1 记录原始与扩展查询、skill 参数、请求/实际 limit、索引和 embedding fingerprint、
 向量维度、双路全部候选正文及来源、cosine distance/BM25 score（缺失时为 null）、RRF

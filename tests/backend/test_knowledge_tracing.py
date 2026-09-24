@@ -119,14 +119,12 @@ class KnowledgeTracingTests(unittest.TestCase):
         self.assertEqual(len(self.records()), 3)
         self.assertFalse(list(self.store.root.glob('*.tmp')))
 
-    def test_cli_debug_switch_is_independent_of_raw_trace(self):
+    def test_cli_debug_controls_trace(self):
         from contextlib import redirect_stdout
         import io
         from server import config, knowledge
         for debug in (False, True):
-            with self.subTest(debug=debug), patch.object(config, "AGENT_DEBUG", debug), patch.object(
-                config, "AGENT_RAW_TRACE", False
-            ), patch.object(knowledge, "_embedder", return_value=Embedder()), patch.object(
+            with self.subTest(debug=debug), patch.object(config, "DEBUG", debug), patch.object(knowledge, "_embedder", return_value=Embedder()), patch.object(
                 LanceDBKnowledgeRetriever, "_open", return_value=(Table(), "index")
             ), redirect_stdout(io.StringIO()):
                 knowledge._print_search(self.tmp.name, "query", [], 2)

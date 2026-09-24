@@ -30,6 +30,7 @@ export function createReviewArtifacts({
       engineReview: null,
       criticalPositions: [],
       explanationArtifact: null,
+      explanationStatuses: {},
       activeCriticalId: null,
     });
   }
@@ -51,6 +52,8 @@ export function createReviewArtifacts({
     button.disabled = true;
     $("generate-explanations-all").disabled = true;
     let failures = 0;
+    let stopped = false;
+    let lastFailure = "";
     for (let index = 0; index < targets.length; index += 1) {
       if (token !== generation) return;
       setWorkflowState(
@@ -59,7 +62,9 @@ export function createReviewArtifacts({
         "The Engine review and board remain available.",
         `${index} / ${targets.length}`
       );
-      $("explanation-status").textContent = `Generating ${targets[index].critical_id}…`;
+      const id = targets[index].critical_id;
+      setState({ explanationStatuses: { ...getSnapshot().explanationStatuses, [id]: "Generating…" } });
+      renderCritical(getSnapshot().activeCritical);
       try {
         const data = await api.generateExplanations(snapshot.currentGameId, {
           review_side: snapshot.player,
@@ -67,14 +72,25 @@ export function createReviewArtifacts({
           force: !all && currentExists,
         });
         if (token !== generation) return;
-        if (data.error) throw new Error(apiErrorMessage(data.error, "Explanation failed."));
-        setState({ explanationArtifact: data.artifact || getSnapshot().explanationArtifact });
+        if (data.error) {
+          const error = new Error(apiErrorMessage(data.error, "Explanation failed."));
+          error.payload = data;
+          throw error;
+        }
+        setState({
+          explanationArtifact: data.artifact || getSnapshot().explanationArtifact,
+          explanationStatuses: { ...getSnapshot().explanationStatuses, [id]: "" },
+        });
       } catch (error) {
         if (token !== generation) return;
         failures += 1;
-        $("explanation-status").textContent = error.message || "Explanation failed.";
+        lastFailure = error.message || "Explanation failed.";
+        stopped = error.payload?.error?.reason === "authentication_failed";
+        if (stopped && all) lastFailure += ` Batch stopped; ${targets.length - index} positions remain unexplained.`;
+        setState({ explanationStatuses: { ...getSnapshot().explanationStatuses, [id]: lastFailure } });
       }
       snapshot = getSnapshot();
+      if (stopped) break;
     }
     if (token !== generation) return;
     busy = false;
@@ -87,7 +103,7 @@ export function createReviewArtifacts({
       failures || ready < total ? "partial_ready" : "review_ready",
       failures ? "Engine review ready · some explanations failed" : "Review ready",
       failures
-        ? "Retry from any key position; Engine facts are unaffected."
+        ? lastFailure
         : `${ready} grounded explanations available.`,
       `Explanations ${ready} / ${total}`
     );
@@ -105,6 +121,7 @@ export function createReviewArtifacts({
       engineReview: null,
       criticalPositions: [],
       explanationArtifact: null,
+      explanationStatuses: {},
       activeCriticalId: null,
     });
     if (!currentGameId) {

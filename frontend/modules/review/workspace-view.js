@@ -244,9 +244,8 @@ export function createWorkspaceView({
     ).length;
     $("generate-explanations-all").textContent = `Explain remaining key positions (${missing})`;
     $("generate-explanations-all").hidden = missing === 0;
-    $("explanation-status").textContent = explanation
-      ? "Saved with this game."
-      : "";
+    $("explanation-status").textContent = snapshot.explanationStatuses?.[critical.critical_id]
+      || (explanation ? "Saved with this game." : "");
     wireVariationLinks();
   }
 

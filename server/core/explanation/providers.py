@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
+import time
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -14,8 +16,16 @@ from server.core.explanation.models import ExplanationRequest, ProviderResponse
 from server.core.storage.agent_traces import RawHttpTraceStore
 
 
+logger = logging.getLogger("chesscoach.explanation")
+
+
 class ExplanationProviderError(RuntimeError):
     """A model transport or availability failure safe to show through the local API."""
+
+    def __init__(self, message: str, *, reason: str = "provider_error", http_status: int | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.http_status = http_status
 
 
 @dataclass(frozen=True)
@@ -107,6 +117,10 @@ class OpenAICompatibleProvider(ExplanationProvider):
                 payload["thinking"] = {"type": "enabled", "budget_tokens": {"low": 1024, "medium": 4096, "high": 8192}[self._reasoning_effort]}
             else:
                 payload["reasoning_effort"] = self._reasoning_effort
+        started = time.monotonic()
+        trace_path = None
+        if config.DEBUG:
+            logger.debug("event=explanation_model_started critical=%s", request.critical_id)
         try:
             url = _chat_completions_url(self._base_url)
             trace_id = f"explanation-{request.critical_id}-{request.input_hash[:12]}"
@@ -121,34 +135,65 @@ class OpenAICompatibleProvider(ExplanationProvider):
             if self._raw_trace_store is not None:
                 client_options["event_hooks"] = self._raw_trace_store.sync_event_hooks()
             with trace_context, httpx.Client(**client_options) as client:
-                response = client.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                    timeout=config.EXPLANATION_TIMEOUT,
-                )
+                try:
+                    response = client.post(
+                        url,
+                        json=payload,
+                        headers=headers,
+                        timeout=config.EXPLANATION_TIMEOUT,
+                    )
+                finally:
+                    if self._raw_trace_store is not None:
+                        trace_path = self._raw_trace_store.current_directory()
+                if config.DEBUG:
+                    logger.debug("event=explanation_model_response critical=%s http_status=%s duration_ms=%s",
+                                 request.critical_id, response.status_code,
+                                 round((time.monotonic() - started) * 1000))
         except httpx.TimeoutException as exc:
             raise ExplanationProviderError(
-                f"The explanation model timed out after {config.EXPLANATION_TIMEOUT} seconds."
+                f"The explanation model timed out after {config.EXPLANATION_TIMEOUT} seconds.",
+                reason="timeout",
             ) from exc
         except httpx.HTTPError as exc:
             raise ExplanationProviderError(
-                f"Could not reach the explanation model at {self._base_url}."
+                "Could not reach the explanation model. Check its endpoint and network connection.",
+                reason="connection_failed",
             ) from exc
+        finally:
+            if config.DEBUG and trace_path is not None:
+                logger.debug("event=explanation_trace_saved critical=%s path=%s", request.critical_id, trace_path)
         if response.status_code != 200:
-            detail = (response.text or "").strip().replace("\n", " ")[:240]
+            # Do not echo arbitrary provider bodies: they may contain credentials or prompts.
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            error = body.get("error", body) if isinstance(body, dict) else {}
+            code = error.get("code") if isinstance(error, dict) else None
+            if response.status_code in {401, 403} or code in ("INVALID_API_KEY", "invalid_api_key"):
+                raise ExplanationProviderError(
+                    "Explanation authentication failed. Check CHESS_EXPLANATION_API_KEY and "
+                    "CHESS_EXPLANATION_BASE_URL, then restart the server.",
+                    reason="authentication_failed", http_status=response.status_code,
+                )
             raise ExplanationProviderError(
-                f"The explanation model returned HTTP {response.status_code}"
-                + (f": {detail}" if detail else ".")
+                f"The explanation model returned HTTP {response.status_code}. Try again later or check the provider.",
+                reason="http_error", http_status=response.status_code,
             )
         try:
-            content = response.json()["choices"][0]["message"]["content"]
+            body = response.json()
+            content = body["choices"][0]["message"]["content"]
+            usage = body.get("usage")
+            if config.DEBUG and isinstance(usage, dict):
+                counts = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                          if type(usage.get(key)) is int}
+                logger.debug("event=explanation_model_usage critical=%s usage=%s", request.critical_id, counts)
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ExplanationProviderError(
-                "The model response was not OpenAI-compatible chat-completions JSON."
+                "The model response was not OpenAI-compatible chat-completions JSON.", reason="invalid_response",
             ) from exc
         if not isinstance(content, str) or not content.strip():
-            raise ExplanationProviderError("The explanation model returned an empty response.")
+            raise ExplanationProviderError("The explanation model returned an empty response.", reason="invalid_response")
         return ProviderResponse(text=content.strip())
 
 

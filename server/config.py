@@ -527,13 +527,8 @@ if AGENT_REASONING_EFFORT not in {"", "low", "medium", "high"}:
 EXPLANATION_REASONING_EFFORT: str = os.environ.get("CHESS_EXPLANATION_REASONING_EFFORT", "").strip().lower()
 if EXPLANATION_REASONING_EFFORT not in {"", "low", "medium", "high"}:
     EXPLANATION_REASONING_EFFORT = ""
-# Emit timestamped, redacted Agent lifecycle and validation diagnostics to the terminal.
-AGENT_DEBUG: bool = os.environ.get("CHESS_AGENT_DEBUG", "0") == "1"
-# Persist exact model request/response bodies locally without HTTP headers. When unset, raw tracing
-# follows terminal debug mode; either explicit value always wins. Both model paths share the newest
-# twenty trace directories.
-_agent_raw_trace = os.environ.get("CHESS_AGENT_RAW_TRACE")
-AGENT_RAW_TRACE: bool = AGENT_DEBUG if _agent_raw_trace is None else _agent_raw_trace == "1"
+# One switch for terminal diagnostics, HTTP access logs, and local model/RAG traces.
+DEBUG: bool = os.environ.get("DEBUG", "0") == "1"
 
 # --- Puzzle mode (server.core.puzzles / puzzle_rating) ------------------------------------------
 # A tactical trainer built on the same board, Engine, and DATA_DIR substrate. Puzzles

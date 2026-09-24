@@ -622,6 +622,59 @@ class BoundedExplanationContractTests(_BackendBaselineCase):
         self.assertEqual("think", hint.json()["kind"])
         self.assertEqual(200, profile.status_code)
 
+    def test_authentication_failure_is_logged_without_debug_and_returned_safely(self) -> None:
+        from server.core.explanation.providers import OpenAICompatibleProvider
+        from tests.backend.test_explanation_provider_traces import _Client
+        provider = OpenAICompatibleProvider(base_url="https://example.test/v1", model="test", api_key="secret-key")
+        with patch.object(config, "DEBUG", False), patch(
+            "server.core.explanation.service.configured_provider", return_value=provider
+        ), patch("server.core.explanation.providers.httpx.Client", side_effect=lambda **kwargs: _Client(
+            outcome=(401, b'{"code":"INVALID_API_KEY","message":"private-secret"}'), **kwargs
+        )), self.assertLogs("chesscoach.explanation", level="WARNING") as logs:
+            response = self.request("POST", f"/api/games/{GAME_ID}/explanations",
+                                    json={"review_side": "white", "critical_id": CRITICAL_ID})
+        self.assertEqual(503, response.status_code)
+        self.assertEqual("explanation_failed", response.json()["error"]["code"])
+        self.assertEqual("authentication_failed", response.json()["error"]["reason"])
+        self.assertEqual(1, len(logs.records))
+        self.assertIn("stage=model", logs.output[0])
+        self.assertIn("http_status=401", logs.output[0])
+        self.assertIn("reason=authentication_failed", logs.output[0])
+        for secret in ("secret-key", "private-secret"):
+            self.assertNotIn(secret, str(logs.output) + response.text)
+        self.assertFalse((Path(self._data.name) / "games" / GAME_ID / "explanations.json").exists())
+        self.assertFalse((Path(self._data.name) / "agent" / "traces").exists())
+
+    def test_explanation_failure_stages_have_terminal_logs(self) -> None:
+        cases = (
+            ("server.core.explanation.service.build_request", ValueError("private-input"), "input"),
+            ("server.core.explanation.service._validated_explanation", ValueError("private-output"), "validation"),
+            ("server.core.explanation.service.store_explanations", OSError("private-path"), "persistence"),
+        )
+        from server.core.explanation.service import generate_explanations
+        for target, error, stage in cases:
+            with self.subTest(stage=stage), patch.object(config, "DEBUG", False), patch(
+                target, side_effect=error
+            ), self.assertLogs("chesscoach.explanation", level="WARNING") as logs:
+                with self.assertRaises(Exception):
+                    generate_explanations(GAME_ID, review_side="white", critical_id=CRITICAL_ID,
+                                          provider=_SuccessfulExplanationProvider())
+            self.assertEqual(1, len(logs.records))
+            self.assertIn(f"stage={stage}", logs.output[0])
+            self.assertNotIn(str(error), logs.output[0])
+
+    def test_debug_explanation_lifecycle_and_cache(self) -> None:
+        from server.core.explanation.service import generate_explanations
+        provider = _SuccessfulExplanationProvider()
+        with patch.object(config, "DEBUG", True), self.assertLogs("chesscoach.explanation", level="DEBUG") as logs:
+            for _ in range(2):
+                generate_explanations(GAME_ID, review_side="white", critical_id=CRITICAL_ID, provider=provider)
+        text = "\n".join(logs.output)
+        self.assertEqual(2, text.count("event=explanation_completed"))
+        self.assertIn("event=explanation_cache_hit", text)
+        self.assertIn("event=explanation_validated", text)
+        self.assertEqual(1, provider.calls)
+
     def test_missing_explanation_input_uses_not_found_envelope(self) -> None:
         response = self.request(
             "POST",

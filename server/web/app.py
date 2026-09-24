@@ -125,7 +125,7 @@ async def _lifespan(app: FastAPI):
     app.state.learning_status = initialize_learning()
     service = getattr(app.state, "agent_service", None)
     owns_agent_service = service is None
-    raw_trace_store = RawHttpTraceStore(config.DATA_DIR) if config.AGENT_RAW_TRACE else None
+    raw_trace_store = RawHttpTraceStore(config.DATA_DIR) if config.DEBUG else None
     app.state.raw_trace_store = raw_trace_store
     try:
         app.state.explanation_provider = configured_provider(
