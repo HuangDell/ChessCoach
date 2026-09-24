@@ -239,6 +239,9 @@ DEEP_ANALYSIS_DEPTH: int = int(os.environ.get("CHESS_DEEP_ANALYSIS_DEPTH", "22")
 DEEP_ANALYSIS_MULTIPV: int = max(3, int(os.environ.get("CHESS_DEEP_ANALYSIS_MULTIPV", "3")))
 CRITICAL_MIN: int = max(0, int(os.environ.get("CHESS_CRITICAL_MIN", "3")))
 CRITICAL_MAX: int = max(CRITICAL_MIN, int(os.environ.get("CHESS_CRITICAL_MAX", "8")))
+HIGHLIGHT_MAX: int = 3
+GREAT_MOVE_GAP: float = 12.0
+BRILLIANT_MIN_MATERIAL: int = 2
 ANALYSIS_PROFILE_VERSION: str = os.environ.get(
     "CHESS_ANALYSIS_PROFILE_VERSION", "engine-analysis-v1"
 ).strip() or "engine-analysis-v1"

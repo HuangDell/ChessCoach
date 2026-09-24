@@ -163,6 +163,8 @@ def summarize_session(sess: ReviewSession) -> dict:
         "sweep_depth": sess.sweep_depth,
         "analysis_profile": (sess.engine_analysis.get("profile") or {}).get("version"),
         "num_critical_positions": len(sess.engine_analysis.get("critical_positions") or []),
+        "classification_version": sess.engine_analysis.get("classification_version"),
+        "classification_summary": sess.engine_analysis.get("summary") or {},
     }
 
 

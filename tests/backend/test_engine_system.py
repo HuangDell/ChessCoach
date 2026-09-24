@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import tempfile
+import time
+from unittest.mock import patch
 import unittest
 
 import chess
 
 from server import config
-from server.core import engine
+from server.core import engine, fact_extraction
 from server.core.game_analysis import analyze_game
 
 
@@ -59,7 +61,10 @@ class RealEngineSystemTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_short_game_analysis_is_legal_versioned_and_closes_engine_pool(self) -> None:
-        session = analyze_game(FOOLS_MATE, player="white", depth=4)
+        started = time.monotonic()
+        with patch.object(engine, "analyse", wraps=engine.analyse) as calls:
+            session = analyze_game(FOOLS_MATE, player="white", depth=4)
+        print(f"\nPositive review system fixture: {calls.call_count} engine calls, {time.monotonic() - started:.3f}s")
         artifact = session.engine_analysis
 
         self.assertEqual(2, artifact["schema_version"])
@@ -69,6 +74,11 @@ class RealEngineSystemTests(unittest.TestCase):
         self.assertIn("Stockfish", artifact["engine"]["name"])
         self.assertEqual({"Threads": 1, "Hash": 16}, artifact["engine"]["options"])
         self.assertEqual(4, artifact["summary"]["plies"])
+        self.assertEqual("complete", artifact["summary"]["positive_verification"])
+        for side in ("white", "black"):
+            self.assertEqual(2, sum(artifact["summary"]["classifications_by_side"][side].values()))
+        self.assertEqual([m["classification"] for m in artifact["moves"]],
+                         [n["classification"] for n in session.timeline[:-1]])
         self.assertGreaterEqual(len(artifact["critical_positions"]), 1)
 
         board = chess.Board()
@@ -81,7 +91,7 @@ class RealEngineSystemTests(unittest.TestCase):
 
         for critical in artifact["critical_positions"]:
             position = chess.Board(critical["fen_before"])
-            self.assertEqual(1, critical["facts"]["facts_version"])
+            self.assertEqual(fact_extraction.FACTS_VERSION, critical["facts"]["facts_version"])
             self.assertEqual(critical["critical_id"], critical["facts"]["critical_id"])
             self.assertEqual(4, critical["deep_depth"])
             self.assertLessEqual(len(critical["candidates"]), 3)

@@ -1983,3 +1983,16 @@ body.puzzle-mode .navigation-col { display: none !important; }
   .navigation-col .review-workspace { max-height: none; }
   .navigation-col .review-position-list { max-height: none; overflow: visible; }
 }
+
+/* Positive move awards share the same palette across notation and review. */
+.glyph.brilliant { color: #26c6b8; }
+.glyph.great { color: #66a9e8; }
+.glyph.best, .glyph.excellent { color: #96c86b; }
+.glyph.good { color: #b0bd90; }
+.tag.brilliant, .review-class.brilliant, .position-dot.brilliant { background: #26c6b8; color: #142522; }
+.tag.great, .review-class.great, .position-dot.great { background: #66a9e8; color: #14202b; }
+.tag.excellent, .review-class.excellent, .position-dot.excellent { background: #96c86b; color: #182512; }
+.move-statistics { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+.move-statistics th, .move-statistics td { padding: 3px 6px; text-align: right; }
+.move-statistics th:first-child { text-align: left; font-weight: 400; }
+.move-statistics .glyph { display: inline-block; min-width: 20px; }

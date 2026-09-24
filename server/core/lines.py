@@ -14,8 +14,7 @@ import chess
 from server import config
 from server.core import engine
 from server.core import tablebase
-from server.core.evaluation import classify
-from server.core.game_analysis import _signed_cp
+from server.core.evaluation import classify, signed_cp
 
 
 _PIECE_VALUES = {
@@ -254,6 +253,8 @@ def _settle_leaf(after_board: chess.Board, pv_uci: list[str], depth: int) -> che
     leaf = after_board.copy(stack=False)
     last_capture = push_pv(leaf, pv_uci)
     for _ in range(3):  # cap: at most a few extensions to settle the trade
+        if leaf.is_game_over(claim_draw=True):
+            break
         pending_recapture = (
             last_capture
             and bool(leaf.move_stack)
@@ -302,7 +303,7 @@ def engine_line(
         "side_to_move": "white" if board.turn == chess.WHITE else "black",
         "depth": depth,
         "eval": eval_str(best.cp, best.mate),
-        "eval_cp": round(_signed_cp(best.cp, best.mate)),
+        "eval_cp": round(signed_cp(best.cp, best.mate)),
         "win_percent": round(best.win_percent, 1),
         "best_san": best_line_san[0] if best_line_san else None,
         "line_san": best_line_san,
@@ -368,7 +369,7 @@ def engine_line(
             win_after = 100.0 - after.win_percent  # back to the mover's perspective
             refutation_uci = after.pv_uci[:12]
             refutation_san = pv_to_san(after_board, after.pv_uci)
-            after_eval_cp = -round(_signed_cp(after.cp, after.mate))
+            after_eval_cp = -round(signed_cp(after.cp, after.mate))
             # Walk the refutation line to a QUIESCENT leaf (resolving any trade left hanging at
             # the engine's horizon), then count material from the mover's side.
             if settle_material:

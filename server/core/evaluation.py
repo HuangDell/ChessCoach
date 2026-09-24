@@ -8,7 +8,11 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-Classification = Literal["best", "good", "inaccuracy", "mistake", "blunder"]
+from server import config
+
+Classification = Literal["brilliant", "great", "best", "excellent", "good", "inaccuracy", "mistake", "blunder"]
+CLASSIFICATIONS = ("brilliant", "great", "best", "excellent", "good", "inaccuracy", "mistake", "blunder")
+POSITIVE_CLASSIFICATIONS = frozenset(CLASSIFICATIONS[:5])
 
 # Lichess sigmoid constant for cp -> win%.
 _WIN_K = 0.00368208
@@ -24,7 +28,7 @@ BLUNDER_DROP = 15.0
 MISTAKE_DROP = 10.0
 INACCURACY_DROP = 5.0
 
-# A move within this win% of the engine's best is considered "best".
+# Non-top moves below this win%-loss cutoff are excellent.
 BEST_EPS = 2.0
 
 
@@ -75,8 +79,10 @@ def classify(
         return "mistake"
     if drop >= inacc:
         return "inaccuracy"
-    if is_best or drop <= BEST_EPS:
+    if is_best:
         return "best"
+    if drop < min(BEST_EPS, inacc):
+        return "excellent"
     return "good"
 
 
@@ -197,3 +203,9 @@ def classify_speed(time_control: str | None, event: str | None = None) -> Speed:
         if kw in blob:
             return kw  # type: ignore[return-value]
     return "unknown"
+
+
+def signed_cp(cp: int | None, mate: int | None) -> float:
+    if mate is not None:
+        return float(config.MATE_SCORE_CP) if mate > 0 else float(-config.MATE_SCORE_CP)
+    return float(cp if cp is not None else 0)

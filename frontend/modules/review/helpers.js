@@ -70,7 +70,9 @@ export function classColor(classification) {
   );
 }
 
-const CLASS_GLYPHS = { blunder: "??", mistake: "?", inaccuracy: "?!", best: "✓" };
+export const POSITIVE_CLASSES = ["brilliant", "great", "best", "excellent", "good"];
+export const MOVE_CLASSES = [...POSITIVE_CLASSES, "inaccuracy", "mistake", "blunder"];
+const CLASS_GLYPHS = { brilliant: "!!", great: "!", best: "★", excellent: "✓", good: "•", blunder: "??", mistake: "?", inaccuracy: "?!" };
 
 export function classGlyph(classification) {
   const glyph = CLASS_GLYPHS[classification];

@@ -15,6 +15,8 @@ so history is essentially free to record and trivial to backfill when the heuris
 """
 from __future__ import annotations
 
+from server.core.evaluation import POSITIVE_CLASSIFICATIONS
+
 import json
 import os
 import re
@@ -880,6 +882,8 @@ def build_game_record(sess: ReviewSession, data_dir: Optional[str] = None) -> di
     critical_summaries: list[dict] = []
     move_by_ply = {int(m.ply): m for m in sess.mistakes}
     for position in (sess.engine_analysis or {}).get("critical_positions", []) or []:
+        if position.get("classification") in POSITIVE_CLASSIFICATIONS:
+            continue
         facts = position.get("facts") or {}
         category = str(facts.get("primary_category") or "uncategorized")
         phase = str(

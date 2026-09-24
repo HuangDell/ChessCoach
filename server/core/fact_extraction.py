@@ -11,7 +11,7 @@ from collections.abc import Iterable
 import chess
 
 
-FACTS_VERSION = 1
+FACTS_VERSION = 2
 DEFAULT_LINE_PLIES = 8
 
 _PIECE_NAMES = {
@@ -801,6 +801,8 @@ def extract_facts(critical: dict, *, line_plies: int = DEFAULT_LINE_PLIES) -> di
         best_result,
         replies,
     )
+    if critical.get("classification") in {"brilliant", "great", "best", "excellent", "good"}:
+        motifs = []  # Error motifs must not describe a successful move as a failure.
     names = [item["name"] for item in motifs]
     primary = next((name for name in _PRIMARY_ORDER if name in names), None)
     secondary = [name for name in names if name != primary]
@@ -853,5 +855,7 @@ def extract_facts(critical: dict, *, line_plies: int = DEFAULT_LINE_PLIES) -> di
         "primary_category": primary,
         "primary_category_group": _CATEGORY_GROUPS.get(primary) if primary else None,
         "secondary_categories": secondary,
-        "classification_evidence": primary_motif["evidence_refs"] if primary_motif else [],
+        "classification_reason": critical.get("classification_reason") or {},
+        "classification_evidence": (["classification_reason"] if critical.get("classification_reason")
+                                    else primary_motif["evidence_refs"] if primary_motif else []),
     }

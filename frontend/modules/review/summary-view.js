@@ -1,5 +1,5 @@
 import { escapeHtml } from "../core/dom.js";
-import { pieceGlyph } from "./helpers.js";
+import { MOVE_CLASSES, classGlyph, pieceGlyph } from "./helpers.js";
 
 export function createReviewSummaryView({ $, getSnapshot, onSelectMistake }) {
   function renderMistakes() {
@@ -44,16 +44,24 @@ export function createReviewSummaryView({ $, getSnapshot, onSelectMistake }) {
     (session.mistakes || []).forEach((mistake) => {
       if (counts[mistake.classification] != null) counts[mistake.classification] += 1;
     });
+    const summary = session.classification_summary || {};
+    const bySide = summary.classifications_by_side;
+    const classificationTable = session.classification_version && bySide
+      ? `<table class="move-statistics" aria-label="Move classifications"><thead><tr><th>Moves</th><th>White</th><th>Black</th></tr></thead><tbody>` +
+        MOVE_CLASSES.map((label) => `<tr><th scope="row">${classGlyph(label)} ${label[0].toUpperCase() + label.slice(1)}</th><td>${Number(bySide.white?.[label] || 0)}</td><td>${Number(bySide.black?.[label] || 0)}</td></tr>`).join("") +
+        `</tbody></table>` + (summary.positive_verification === "incomplete"
+          ? `<p class="muted">Highlight verification incomplete. Reanalyze to retry.</p>` : "")
+      : `<p class="muted">Reanalyze to identify highlights and both sides’ move statistics.</p>`;
     scoreboard.innerHTML =
       `<div class="sb-opening" title="Opening">${escapeHtml(session.opening || "—")}</div>` +
       `<div class="sb-acc">` +
       `<span class="sb-acc-main"><b>${accuracy}</b><span class="sb-acc-lbl">accuracy (${sideLabel})</span></span>` +
       `<span class="sb-acc-opp">opponent ${opponentAccuracy}</span>` +
-      `</div><div class="sb-counts">` +
+      `</div>` + classificationTable + (session.classification_version ? "" : `<div class="sb-counts">` +
       scoreChip("blunder", counts.blunder, "Blunders") +
       scoreChip("mistake", counts.mistake, "Mistakes") +
       scoreChip("inaccuracy", counts.inaccuracy, "Inaccuracies") +
-      `</div>`;
+      `</div>`);
     scoreboard.hidden = false;
     scoreboard.querySelectorAll(".chip[data-cls]").forEach((element) =>
       element.addEventListener("click", () => {

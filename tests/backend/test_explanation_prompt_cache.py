@@ -65,7 +65,7 @@ class ExplanationPromptCacheTests(unittest.TestCase):
                 marker = "position_context:\n"
                 prefix_one, context_one = request_one.user_prompt.split(marker, 1)
                 prefix_two, context_two = request_two.user_prompt.split(marker, 1)
-                self.assertEqual(4, request_one.prompt_version)
+                self.assertEqual(6, request_one.prompt_version)
                 self.assertEqual(request_one.system_prompt, request_two.system_prompt)
                 self.assertEqual(prefix_one, prefix_two)
                 for dynamic in (
@@ -85,7 +85,7 @@ class ExplanationPromptCacheTests(unittest.TestCase):
                     self.assertIn(dynamic, context_two)
                 parsed = json.loads(context_two)
                 self.assertEqual(
-                    {"allowed_evidence_refs", "engine", "expected"}, set(parsed)
+                    {"allowed_evidence_refs", "engine", "expected", "teaching_book_passages"}, set(parsed)
                 )
                 self.assertEqual(request_two.expected, parsed["expected"])
                 self.assertEqual(request_two.payload, parsed["engine"])

@@ -49,6 +49,31 @@ python -m server.doctor
 从 Games -> Import 粘贴或上传 PGN。分析流程为全盘快速扫描、关键局面选择、MultiPV 深度分析和
 确定性 facts 提取。FEN、合法着重放、评价、分类和训练判定都不依赖模型。
 
+对局摘要显示白黑双方的 Brilliant、Great、Best、Excellent、Good、Inaccuracy、Mistake、Blunder
+数量，棋谱显示双方标签。Key positions 在原有错误位置之外，额外精选当前复盘方最多 3 个
+Brilliant/Great；切换复盘方可查看对手的精彩着法。Engine 页面提供无需模型的分类依据、变化线
+和弃子接受后的回放；这些正面局面不进入错误训练候选或弱项画像。
+
+正面分类参考 Chess.com 的含义，使用本项目的保守规则，不保证与该平台一致：
+
+- 保留现有等级分/时限适配的错误阈值及准确率公式。未达到错误阈值时，引擎首选为 Best；其他
+  着法损失小于 `min(2 个胜率百分点, inaccuracy 阈值)` 为 Excellent，其余为 Good。
+- Great 要求深度验证为首选、存在其他合法选择、次佳至少差 12 个胜率百分点，且走后胜率不低于 50%。
+  唯一合法应手不算 Great。
+- Brilliant 要求 Best/Excellent、走后胜率不低于 50%，并验证马/象/车/后的真实弃子。对手合法吃子后，
+  最佳应对仍不差，且变化线平稳后净物质投入至少 2 点；普通兑子、立即回吃、单纯挂子不算。
+  还需深度候选中存在另一个胜率低于 75% 的选择。优先级为 Brilliant、Great、基础评价。
+
+全盘扫描后会对双方基础正面着法进行深度 MultiPV（至少 3 条）比较，并进一步检查疑似弃子，
+因此首次分析比仅筛失误更慢；进度显示验证阶段，已完成结果使用版本化缓存。有限搜索、仅检查
+新暴露棋子的直接吃子和保守的物质投入条件可能漏掉复杂妙手；没有获奖不代表没有精彩之处。
+追加引擎验证失败时保留基础评价并提示识别未完成，再次打开分析会重试。
+
+analysis schema 仍为 2，新增 `classification_version=1`、逐步 `base_classification` /
+`classification_reason` / `positive_verification` 以及 `summary.classifications_by_side`；
+原 `summary.classifications` 仍表示当前复盘方。facts v2 保存可引用的分类证据。
+旧分析与讲解仍可读取；旧数据提示重新分析以补齐双方统计和精彩着法，不自动批量迁移。
+
 未载入棋局时，直接在标准初始局面移动棋子会自动进入 `Free analysis` 临时工作区。每步合法着都会
 获得 Stockfish 评价，可逐步撤销或整体重置；当前单线路只存在于页面会话，不保存到 Games，也不
 导出 PGN。可点击工作区中的 `Import PGN` 直接展开 Games 导入表单，粘贴或上传棋局；仅展开
@@ -85,9 +110,10 @@ CHESS_EXPLANATION_API_KEY=... \
 ```
 
 `auto` 只选择这条 API provider；base URL 或 model 缺失时 explanation 明确 unavailable，不回退
-CLI。explanation prompt v4 将固定教练规则和输出契约保留为可缓存公共前缀，并把局面、合法 SAN、
+CLI。explanation prompt v6 将固定教练规则和输出契约保留为可缓存公共前缀，并把局面、合法 SAN、
 允许的 evidence 与个性化 memory 集中在末尾 `position_context`。模型失败不会修改
 `analysis.json`，也不会影响 Engine Review。
+正面局面的 `core_problem` 字段兼容保留，用于解释成功解决的挑战，界面显示为 What worked。
 
 Explanation 和 Ask Coach 的初始上下文、`get_review_context` 模型返回使用同一个纯函数 facts 投影。
 保留全部 motifs、分类证据、move effects、deltas、变化线结果和对手最佳回复；三份 snapshots

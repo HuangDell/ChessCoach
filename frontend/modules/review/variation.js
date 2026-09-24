@@ -47,7 +47,7 @@ export function createReviewVariation({
     setContext({ boardLastMove: uci ? [uci.slice(0, 2), uci.slice(2, 4)] : null });
     renderBoard();
     $("variation-play").textContent = current.playing ? "Ⅱ" : "▶";
-    $("variation-label").textContent = `${current.kind === "best" ? "Best line" : "Played line"} · ${step} / ${current.ucis.length}`;
+    $("variation-label").textContent = `${current.kind === "sacrifice" ? "Sacrifice accepted" : current.kind === "best" ? "Best line" : "Played line"} · ${step} / ${current.ucis.length}`;
     document.querySelectorAll(".san-move[data-variation]").forEach((button) => {
       button.classList.toggle(
         "active",
@@ -59,7 +59,8 @@ export function createReviewVariation({
 
   function start(kind, step = 0, autoplay = false) {
     const critical = getActiveCritical();
-    const line = critical && (kind === "played" ? critical.played_line : critical.best_line);
+    const line = critical && (kind === "sacrifice" ? critical.classification_reason?.sacrifice?.line
+      : kind === "played" ? critical.played_line : critical.best_line);
     if (!critical || !line || !(line.uci || []).length) return;
     stop(false);
     const game = board.createGame(critical.fen_before);
@@ -104,8 +105,9 @@ export function createReviewVariation({
     if (current.index >= current.ucis.length) current.index = 0;
     current.playing = true;
     if (current.timer) clearInterval(current.timer);
+    const active = current;
     current.timer = setInterval(() => {
-      if (!current) return;
+      if (current !== active) return;
       if (current.index >= current.ucis.length) {
         clearInterval(current.timer);
         current.timer = null;

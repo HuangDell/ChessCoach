@@ -12,6 +12,7 @@ export function createAnalysisProgress({ $, setWorkflowState }) {
     const phaseLabels = {
       queued: "Queued",
       scanning: "Scanning every position",
+      verifying_positive: "Verifying good moves and sacrifices",
       selecting_critical: "Selecting key positions",
       deep_analysis: "Deep-analyzing key positions",
       extracting_facts: "Preparing engine facts",
@@ -23,6 +24,7 @@ export function createAnalysisProgress({ $, setWorkflowState }) {
     const workflowState = {
       queued: "ready_to_analyze",
       scanning: "analyzing_scan",
+      verifying_positive: "analyzing_deep",
       selecting_critical: "analyzing_scan",
       deep_analysis: "analyzing_deep",
       extracting_facts: "extracting_facts",

@@ -1,6 +1,7 @@
 import { escapeHtml } from "../core/dom.js";
 import { categoryLabel } from "../core/format.js";
 import {
+  POSITIVE_CLASSES,
   criticalSwingLabel,
   reviewMoveLabel,
   scoreLabel,
@@ -116,6 +117,12 @@ export function createWorkspaceView({
   }
 
   function factsProblemHtml(critical) {
+    const reason = critical.classification_reason || critical.facts?.classification_reason;
+    if (POSITIVE_CLASSES.includes(critical.classification)) {
+      if (reason?.sacrifice) return `A sound ${escapeHtml(reason.sacrifice.piece)} sacrifice invests ${Number(reason.sacrifice.material_invested)} material points while preserving the position against best defense.`;
+      if (critical.classification === "great" && reason) return `The best move preserves the position; the next candidate loses ${Number(reason.candidate_gap).toFixed(1)} percentage points of win chance.`;
+      return `This ${escapeHtml(critical.classification)} move preserves the position’s evaluation.`;
+    }
     const motifs = (critical.facts && critical.facts.motifs) || [];
     if (motifs.length) {
       return motifs
@@ -164,7 +171,7 @@ export function createWorkspaceView({
       `<section class="explanation-section"><h3>Engine result</h3><div class="engine-fallback">` +
       `White eval ${escapeHtml(scoreLabel(move.eval_before))} → ${escapeHtml(scoreLabel(move.eval_after))}; ` +
       `the move lost ${Number(move.win_percent_loss || 0).toFixed(1)} percentage points for the mover.</div></section>` +
-      `<section class="explanation-section"><h3>Better move</h3><p><strong>${escapeHtml(best.san || "—")}</strong></p></section>` +
+      `<section class="explanation-section"><h3>Engine choice</h3><p><strong>${escapeHtml(best.san || "—")}</strong></p></section>` +
       variationBlockHtml(move.best_pv || { uci: [], san: [] }, "best", "Best line", "");
     $("ai-explanation-content").textContent = "Structured explanations are available for key positions. You can ask Coach about this move below.";
     $("ai-explanation-action").hidden = true;
@@ -194,16 +201,20 @@ export function createWorkspaceView({
     $("critical-prev").disabled = index <= 0;
     $("critical-next").disabled = index < 0 || index >= snapshot.criticalPositions.length - 1;
 
+    const positive = POSITIVE_CLASSES.includes(critical.classification);
+    for (const id of ["retry-critical", "train-critical"]) {
+      if ($(id)) $(id).hidden = positive;
+    }
     let html = "";
     if (explanation) {
       html += `<section class="explanation-section"><h3>You played</h3><p><strong>${escapeHtml(explanation.played_move)}</strong></p></section>`;
       html += `<section class="explanation-section"><h3>Why it looked reasonable</h3><p>${escapeHtml(explanation.why_it_looked_reasonable)}</p></section>`;
-      html += `<section class="explanation-section"><h3>Core problem</h3><p>${escapeHtml(explanation.core_problem)}</p></section>`;
+      html += `<section class="explanation-section"><h3>${positive ? "What worked" : "Core problem"}</h3><p>${escapeHtml(explanation.core_problem)}</p></section>`;
       html += `<section class="explanation-section"><h3>Engine recommendation</h3><p><strong>${escapeHtml(explanation.recommended_move)}</strong></p></section>`;
       html += `<section class="explanation-section"><h3>Why it works</h3><ul class="explanation-list">${explanation.why_recommended.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
       html += variationBlockHtml(critical.played_line, "played", "Played line", explanation.played_line_summary);
       html += variationBlockHtml(critical.best_line, "best", "Best line", explanation.best_line_summary);
-      html += `<section class="explanation-section"><h3>Error category</h3><div class="category-row">${[explanation.primary_category, ...explanation.secondary_categories].filter(Boolean).map((item) => `<span class="category-chip">${escapeHtml(categoryLabel(item))}</span>`).join("") || '<span class="muted">Uncategorized</span>'}</div></section>`;
+      html += `<section class="explanation-section"><h3>${positive ? "Themes" : "Error category"}</h3><div class="category-row">${[explanation.primary_category, ...explanation.secondary_categories].filter(Boolean).map((item) => `<span class="category-chip">${escapeHtml(categoryLabel(item))}</span>`).join("") || '<span class="muted">Uncategorized</span>'}</div></section>`;
       html += `<section class="explanation-section"><h3>Transferable principle</h3><p>${escapeHtml(explanation.transferable_principle)}</p></section>`;
       html += `<section class="explanation-section"><h3>Next-time checklist</h3><ul class="explanation-list">${explanation.next_time_checklist.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
       html += knowledgeSourcesHtml(explanation.knowledge_citations || []);
@@ -214,12 +225,14 @@ export function createWorkspaceView({
     {
       html += `<div class="engine-fallback"><strong>Engine review is ready.</strong> AI explanation is optional; every statement below comes from the stored analysis and deterministic facts.</div>`;
       html += `<section class="explanation-section"><h3>You played</h3><p><strong>${escapeHtml(reviewMoveLabel(critical))}</strong></p></section>`;
-      html += `<section class="explanation-section"><h3>Core problem</h3><p>${factsProblemHtml(critical)}</p></section>`;
+      html += `<section class="explanation-section"><h3>${positive ? "What worked" : "Core problem"}</h3><p>${factsProblemHtml(critical)}</p></section>`;
       html += `<section class="explanation-section"><h3>Engine recommendation</h3><p><strong>${escapeHtml(bestMove)}</strong> · ${escapeHtml(critical.criticality || "critical")}</p></section>`;
       html += `<section class="explanation-section"><h3>Why it works</h3><ul class="explanation-list">${factReasons(critical).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
       html += variationBlockHtml(critical.played_line, "played", "Played line", "");
+      const sacrificeLine = critical.classification_reason?.sacrifice?.line;
+      if (sacrificeLine) html += variationBlockHtml(sacrificeLine, "sacrifice", "If the sacrifice is accepted", "");
       html += variationBlockHtml(critical.best_line, "best", "Best line", "");
-      html += `<section class="explanation-section"><h3>Error category</h3><div class="category-row">${categories.map((item) => `<span class="category-chip">${escapeHtml(categoryLabel(item))}</span>`).join("") || '<span class="muted">No deterministic motif was assigned.</span>'}</div></section>`;
+      html += `<section class="explanation-section"><h3>${positive ? "Themes" : "Error category"}</h3><div class="category-row">${categories.map((item) => `<span class="category-chip">${escapeHtml(categoryLabel(item))}</span>`).join("") || '<span class="muted">No deterministic motif was assigned.</span>'}</div></section>`;
     }
     $("explanation-content").innerHTML = html;
     $("explanation-action").hidden = false;
@@ -265,9 +278,7 @@ export function createWorkspaceView({
       return;
     }
 
-    const label = verdict.classification === "best" && !verdict.is_engine_best
-      ? "good"
-      : verdict.classification;
+    const label = verdict.classification;
     const toWhiteWinChance = (value) => {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return value;

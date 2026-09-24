@@ -165,9 +165,7 @@ export function createReviewNavigation({
     const better = move.is_engine_best
       ? "Engine's top choice."
       : `Best was <b>${move.better_move_san}</b>.`;
-    const label = move.classification === "best" && !move.is_engine_best
-      ? "good"
-      : move.classification;
+    const label = move.classification;
     $("verdict").innerHTML =
       `<span class="tag ${label}">${label}</span>` +
       `<b>${move.move_san}</b> — win ${move.win_before}% → ${move.win_after}% ` +
@@ -180,9 +178,7 @@ export function createReviewNavigation({
     if (!state.exploreVerdict) return "";
     if (state.exploreVerdict.error) return ` <span class="line">couldn't evaluate that move</span>`;
     const move = state.exploreVerdict;
-    const label = move.classification === "best" && !move.is_engine_best
-      ? "good"
-      : move.classification;
+    const label = move.classification;
     return (
       ` <span class="tag ${label}">${label}</span>` +
       `<b>${escapeHtml(move.move_san)}</b> — win ${move.win_before}% → ${move.win_after}%` +

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from server import config
+from server.core.evaluation import POSITIVE_CLASSIFICATIONS
 
 
 def _importance(move: dict) -> float:
@@ -52,9 +53,10 @@ def select_critical_moves(
     review_side: str,
     thresholds: tuple[float, float, float],
 ) -> list[dict]:
-    """Return up to the configured maximum Stage 1 move records, highest priority first."""
+    """Return ranked errors plus a separate, bounded selection of verified highlights."""
     reviewed = [move for move in moves if move.get("side") == review_side]
-    meaningful = [move for move in reviewed if _is_meaningful(move, thresholds[0])]
+    errors = [move for move in reviewed if move.get("classification") not in POSITIVE_CLASSIFICATIONS]
+    meaningful = [move for move in errors if _is_meaningful(move, thresholds[0])]
 
     # If the game has fewer than the target number of clear errors, add only moves with a real
     # measurable loss. This keeps the usual output near 3-8 without inventing mistakes in clean play.
@@ -62,7 +64,7 @@ def select_critical_moves(
         known = {int(move["ply"]) for move in meaningful}
         fallbacks = [
             move
-            for move in reviewed
+            for move in errors
             if int(move["ply"]) not in known
             and (
                 float(move.get("win_percent_loss") or 0.0) >= 1.0
@@ -75,6 +77,12 @@ def select_critical_moves(
     merged = _merge_forced_followups(meaningful, thresholds[1])
     ranked = sorted(merged, key=lambda move: (-_importance(move), int(move["ply"])))
     selected = ranked[: config.CRITICAL_MAX]
+    highlights = sorted(
+        [move for move in reviewed if move.get("classification") in {"brilliant", "great"}],
+        key=lambda m: (0 if m["classification"] == "brilliant" else 1,
+                       -float((m.get("classification_reason") or {}).get("candidate_gap") or 0), int(m["ply"])),
+    )
+    selected.extend(highlights[:config.HIGHLIGHT_MAX])
     for priority, move in enumerate(selected, start=1):
         move["critical_priority"] = priority
         move["critical_score"] = _importance(move)

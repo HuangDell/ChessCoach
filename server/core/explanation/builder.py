@@ -13,7 +13,7 @@ from server.core.facts_projection import (
     FactsProjectionError, fact_evidence_refs, project_facts,
 )
 
-PROMPT_VERSION = 5
+PROMPT_VERSION = 6
 EXPLANATION_SCHEMA_VERSION = 1
 
 
@@ -181,7 +181,9 @@ def build_request(
             "Chess Facts into concise, concrete English instruction. Engine/Facts are authoritative: "
             "do not recalculate or guess moves, alter classifications or categories, or invent tactics. "
             "Use only the supplied played_line, best_line, and multi_pv variations. State what the user "
-            "missed before explaining the recommendation. Describe board reasons rather than saying "
+            "missed for an error; for positive classifications describe what worked, and use core_problem "
+            "for the challenge solved, never invent an error. Explain classification_reason as supplied. "
+            "Describe board reasons rather than saying "
             "'the engine says', never output hidden reasoning, and be conservative when evidence is "
             "limited. why_it_looked_reasonable may describe only an observable intent. For "
             "multiple_good_moves, say the first choice need not be memorized; for only_move, name the "
@@ -207,7 +209,8 @@ def build_request(
             "你是国际象棋复盘教练。你只负责把给定的 Engine 结果和确定性 Chess Facts 转成简洁、"
             "具体的简体中文教学解释。Engine/Facts 是唯一事实来源：不要重新计算或猜测最佳着，不要"
             "改变 classification 或错误分类，不要声称输入 JSON 中不存在的战术；所有变化只能来自"
-            "给定的合法 played_line、best_line 或 multi_pv。先说明用户漏看了什么，再解释推荐着。"
+            "给定的合法 played_line、best_line 或 multi_pv。错误着先说明遗漏；正面着法先说明好在哪里，"
+            "core_problem 表示成功解决的挑战，不得编造失误；分类依据只能来自 classification_reason。"
             "不要用‘引擎说’代替棋盘上的具体原因，不要输出思维过程。事实不足时明确保守表述，不要"
             "编造用户心理；why_it_looked_reasonable 只能描述这步棋表面上可观察的意图。"
             "criticality=multiple_good_moves 时说明无需死记第一选择；criticality=only_move 时说明"

@@ -131,6 +131,8 @@ def load(pgn: str, player: str = "auto") -> Optional[ReviewSession]:
         if payload.get("profile_id") != profile_id:
             return None
         sess = ReviewSession.model_validate(payload["session"])
+        if (sess.engine_analysis.get("summary") or {}).get("positive_verification") == "incomplete":
+            return None  # Reopening retries optional verification after an Engine failure.
         # Fresh open: drop any saved navigation state.
         sess.current_index = 0
         sess.explore_fen = None

@@ -6,6 +6,8 @@ learning signal.
 """
 from __future__ import annotations
 
+from server.core.evaluation import POSITIVE_CLASSIFICATIONS
+
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -540,6 +542,8 @@ def map_analysis_position(
 ) -> list[EvidenceMapping]:
     """Return all deterministic mappings for one position without duplicates."""
 
+    if position.get("classification") in POSITIVE_CLASSIFICATIONS:
+        return []
     combined = [
         *map_fact_evidence(position),
         *map_composite_evidence(position, analysis=analysis, history_record=history_record),

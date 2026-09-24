@@ -24,7 +24,11 @@ from server.core import critical
 from server.core import engine
 from server.core import fact_extraction
 from server.core import game_identity
+from server.core.positive_moves import CLASSIFICATION_VERSION, classify_positive
 from server.core.evaluation import (
+    signed_cp,
+    CLASSIFICATIONS,
+    POSITIVE_CLASSIFICATIONS,
     aggregate_accuracy,
     classify,
     classify_speed,
@@ -49,12 +53,6 @@ class _PosEval:
     is_terminal: bool
     terminal_winner: chess.Color | None = None
     terminal_draw: bool = False
-
-
-def _signed_cp(cp: int | None, mate: int | None) -> float:
-    if mate is not None:
-        return float(config.MATE_SCORE_CP) if mate > 0 else float(-config.MATE_SCORE_CP)
-    return float(cp if cp is not None else 0)
 
 
 def _evaluate_position(board: chess.Board, *, depth: int) -> _PosEval:
@@ -89,7 +87,7 @@ def _evaluate_position(board: chess.Board, *, depth: int) -> _PosEval:
     best = res.best
     return _PosEval(
         win_stm=win_percent_from_score(best.cp, best.mate),
-        cp_stm=_signed_cp(best.cp, best.mate),
+        cp_stm=signed_cp(best.cp, best.mate),
         raw_cp=best.cp,
         raw_mate=best.mate,
         best_pv_uci=list(best.pv_uci),
@@ -172,6 +170,21 @@ def _is_losing_mate(score: dict) -> bool:
     if "winning" in score:
         return not bool(score["winning"])
     return int(score.get("value") or 0) < 0
+
+
+def _move_signals(before_score: dict, after_score: dict, win_before: float, win_after: float) -> list[str]:
+    signals: list[str] = []
+    if _is_winning_mate(before_score) and not _is_winning_mate(after_score):
+        signals.append("missed_mate")
+    if not _is_losing_mate(before_score) and _is_losing_mate(after_score):
+        signals.append("allowed_mate")
+    if win_before >= 75.0 and win_after < 60.0:
+        signals.append("missed_win")
+    if win_before >= 65.0 and win_after < 60.0:
+        signals.append("winning_to_equal")
+    if 40.0 <= win_before <= 60.0 and win_after < 35.0:
+        signals.append("equal_to_losing")
+    return signals
 
 
 def _pv_to_san(board: chess.Board, pv_uci: list[str], *, max_plies: int = 12) -> list[str]:
@@ -278,6 +291,13 @@ def _make_analysis_profile(
     profile = {
         "version": config.ANALYSIS_PROFILE_VERSION,
         "preset": config.ANALYSIS_PRESET,
+        "classification": {
+            "version": CLASSIFICATION_VERSION,
+            "great_gap": config.GREAT_MOVE_GAP,
+            "minimum_investment": config.BRILLIANT_MIN_MATERIAL,
+            "highlight_max": config.HIGHLIGHT_MAX,
+            "multipv": max(3, config.DEEP_ANALYSIS_MULTIPV),
+        },
         "scan": {"depth": scan_depth, "multipv": 1},
         "deep": {"depth": deep_depth, "multipv": config.DEEP_ANALYSIS_MULTIPV},
         "critical": {
@@ -445,19 +465,7 @@ def analyze_game(
         if eval_at.raw_cp is not None and eval_next.raw_cp is not None:
             cp_loss = round(max(0.0, float(eval_at.raw_cp + eval_next.raw_cp)), 1)
 
-        signals: list[str] = []
-        before_mover_score = scores_before["mover"]
-        after_mover_score = scores_after["mover"]
-        if _is_winning_mate(before_mover_score) and not _is_winning_mate(after_mover_score):
-            signals.append("missed_mate")
-        if not _is_losing_mate(before_mover_score) and _is_losing_mate(after_mover_score):
-            signals.append("allowed_mate")
-        if win_before >= 75.0 and win_after < 60.0:
-            signals.append("missed_win")
-        if win_before >= 65.0 and win_after < 60.0:
-            signals.append("winning_to_equal")
-        if 40.0 <= win_before <= 60.0 and win_after < 35.0:
-            signals.append("equal_to_losing")
+        signals = _move_signals(scores_before["mover"], scores_after["mover"], win_before, win_after)
 
         stage_moves.append(
             {
@@ -543,38 +551,83 @@ def analyze_game(
         )
         all_my_moves.append(review)
 
-    mistakes = [
-        m for m in all_my_moves if m.classification in ("inaccuracy", "mistake", "blunder")
-    ]
+    # Verify every positive move for both sides, reusing these deep results for highlights.
+    verified_positions: dict[int, dict] = {}
+    positive_moves = [move for move in stage_moves if move["classification"] in POSITIVE_CLASSIFICATIONS]
+    _report("verifying_positive", 0, len(positive_moves))
+    for done, stage_move in enumerate(positive_moves, 1):
+        before, played = steps[int(stage_move["ply"]) - 1]
+        stage_move["base_classification"] = stage_move["classification"]
+        try:
+            position = _deep_critical(stage_move, before, played, review_color=my_turn,
+                                      depth=deep_depth, multipv=max(3, config.DEEP_ANALYSIS_MULTIPV))
+            label, evidence = classify_positive(before, position, thresholds)
+        except (chess.engine.EngineError, OSError, TimeoutError, RuntimeError):
+            stage_move["positive_verification"] = "unavailable"
+        else:
+            # All consumers use the same final label and deep evaluation for verified moves.
+            stage_move.update({
+                "classification": label, "base_classification": evidence["base_classification"],
+                "classification_reason": evidence, "positive_verification": "complete",
+                "best_move": position["candidates"][0]["move"],
+                "best_pv": position["best_line"],
+                "scores": position["scores"], "eval_before": position["eval_before"],
+                "eval_after": position["eval_after"],
+                "win_percent_before": position["verified_win_before_povs"],
+                "win_percent_after": position["verified_win_after_povs"],
+                "win_percent_loss": position["win_loss"],
+                "centipawn_loss": position["centipawn_loss"],
+            })
+            stage_move["signals"] = _move_signals(
+                position["scores"]["before"]["mover"], position["scores"]["after"]["mover"],
+                evidence["best_win_percent"], evidence["played_win_percent"],
+            )
+            position["signals"] = stage_move["signals"]
+            position.update(classification=label, base_classification=evidence["base_classification"],
+                            classification_reason=evidence)
+            verified_positions[int(stage_move["ply"])] = position
+        _report("verifying_positive", done, len(positive_moves))
+
+    moves_by_ply = {move["ply"]: move for move in stage_moves}
+    for review in all_my_moves:
+        move = moves_by_ply[review.ply]
+        review.classification = move["classification"]
+        review.win_before = move["win_percent_before"]["mover"]
+        review.win_after = move["win_percent_after"]["mover"]
+        review.win_swing = move["win_percent_loss"]
+        review.best_move_san = move["best_move"]["san"]
+        review.best_line_uci = move["best_pv"]["uci"]
+        review.best_line_san = move["best_pv"]["san"]
+        if review.classification in ("inaccuracy", "mistake", "blunder") and not review.comment:
+            position = verified_positions.get(review.ply) or {}
+            review.comment = _mistake_comment(review.win_before, review.win_after, review.best_move_san,
+                                              review.best_line_san, (position.get("played_line") or {}).get("san", [])[1:7])
+        for field, phase in (("eval_before", "before"), ("eval_after", "after")):
+            score = move["scores"][phase]["mover"]
+            value = signed_cp(score["value"] if score["type"] == "cp" else None,
+                               score["value"] if score["type"] == "mate" else None)
+            if score.get("type") == "mate" and score.get("value") == 0:
+                value = config.MATE_SCORE_CP if score.get("winning") else -config.MATE_SCORE_CP
+            setattr(review, field, value)
+    mistakes = [m for m in all_my_moves if m.classification in ("inaccuracy", "mistake", "blunder")]
 
     _report("selecting_critical", 0, len(stage_moves))
     selected = critical.select_critical_moves(stage_moves, me, thresholds)
     _report("selecting_critical", len(stage_moves), len(stage_moves))
-
-    deep_depth = int(analysis_profile["deep"]["depth"])
     deep_total = len(selected)
     critical_positions: list[dict] = []
     _report("deep_analysis", 0, deep_total, critical_done=0, critical_total=deep_total)
     for done, stage_move in enumerate(selected, start=1):
         step_index = int(stage_move["ply"]) - 1
         before, played = steps[step_index]
-        critical_positions.append(
-            _deep_critical(
-                stage_move,
-                before,
-                played,
-                review_color=my_turn,
-                depth=deep_depth,
-                multipv=config.DEEP_ANALYSIS_MULTIPV,
-            )
-        )
-        _report(
-            "deep_analysis",
-            done,
-            deep_total,
-            critical_done=done,
-            critical_total=deep_total,
-        )
+        position = verified_positions.get(int(stage_move["ply"]))
+        if position is None:
+            position = _deep_critical(stage_move, before, played, review_color=my_turn,
+                                      depth=deep_depth, multipv=config.DEEP_ANALYSIS_MULTIPV)
+        position.update(priority=stage_move.get("critical_priority"),
+                        critical_score=stage_move.get("critical_score"))
+        critical_positions.append(position)
+        _report("deep_analysis", done, deep_total, critical_done=done, critical_total=deep_total)
 
     _report(
         "extracting_facts",
@@ -595,6 +648,11 @@ def analyze_game(
             critical_total=deep_total,
         )
     timeline = _build_timeline(steps, pos_evals, final_board, all_my_moves, mistakes, my_turn)
+    for node in timeline:
+        move = moves_by_ply.get(node.get("ply"))
+        if move:
+            node.update(classification=move["classification"], best_uci=move["best_move"]["uci"],
+                        best_san=move["best_move"]["san"])
     initial_fen = game.board().fen()
     game_id = game_identity.game_id_for_moves(
         [move.uci() for _before, move in steps],
@@ -603,6 +661,7 @@ def analyze_game(
     engine_info = engine.info()
     engine_analysis = {
         "schema_version": 2,
+        "classification_version": CLASSIFICATION_VERSION,
         "game_id": game_id,
         "review_side": me,
         "profile": analysis_profile,
@@ -614,6 +673,12 @@ def analyze_game(
         "headers": headers,
         "result": headers.get("Result", "*"),
         "summary": {
+            "classifications_by_side": {
+                side: {label: sum(m["side"] == side and m["classification"] == label for m in stage_moves)
+                       for label in CLASSIFICATIONS} for side in ("white", "black")
+            },
+            "positive_verification": "incomplete" if any(
+                m.get("positive_verification") == "unavailable" for m in stage_moves) else "complete",
             "positions_scanned": len(pos_evals),
             "plies": len(stage_moves),
             "critical_positions": len(critical_positions),
@@ -621,7 +686,7 @@ def analyze_game(
             "reviewed_moves": len(all_my_moves),
             "classifications": {
                 label: sum(1 for move in all_my_moves if move.classification == label)
-                for label in ("best", "good", "inaccuracy", "mistake", "blunder")
+                for label in CLASSIFICATIONS
             },
         },
         "moves": stage_moves,
@@ -735,7 +800,7 @@ def _deep_critical(
         after_line = engine.analyse(after.fen(), depth=depth, multipv=1).best
         played_eval = _PosEval(
             win_stm=win_percent_from_score(after_line.cp, after_line.mate),
-            cp_stm=_signed_cp(after_line.cp, after_line.mate),
+            cp_stm=signed_cp(after_line.cp, after_line.mate),
             raw_cp=after_line.cp,
             raw_mate=after_line.mate,
             best_pv_uci=list(after_line.pv_uci),
@@ -751,6 +816,9 @@ def _deep_critical(
         None,
     )
 
+    best_scores = candidates[0]["scores"] if candidates else stage_move["scores"]["before"]
+    best_wins = candidates[0]["win_percent"] if candidates else stage_move["win_percent_before"]
+    after_wins = _win_povs(played_eval, after.turn, before.turn, review_color)
     second_gap = candidates[1]["win_gap_from_best"] if len(candidates) > 1 else 100.0
     forced_mate = bool(top_score and _is_winning_mate(top_score))
     if forced_mate:
@@ -760,6 +828,7 @@ def _deep_critical(
     else:
         criticality = "critical"
 
+    verified = stage_move["classification"] in POSITIVE_CLASSIFICATIONS
     return {
         "critical_id": f"ply-{stage_move['ply']}",
         "priority": stage_move.get("critical_priority"),
@@ -771,11 +840,15 @@ def _deep_critical(
         "fen_after": after.fen(),
         "played_move": {"uci": played.uci(), "san": played_san},
         "classification": stage_move["classification"],
-        "eval_before": stage_move["eval_before"],
-        "eval_after": stage_move["eval_after"],
-        "scores": stage_move["scores"],
-        "win_loss": stage_move["win_percent_loss"],
-        "centipawn_loss": stage_move["centipawn_loss"],
+        "eval_before": best_scores["white"] if verified else stage_move["eval_before"],
+        "eval_after": played_scores["white"] if verified else stage_move["eval_after"],
+        "scores": {"before": best_scores, "after": played_scores} if verified else stage_move["scores"],
+        "verified_win_after": after_wins["mover"],
+        "verified_win_before_povs": {**best_wins, "black": round(100 - best_wins["white"], 1)},
+        "verified_win_after_povs": after_wins,
+        "win_loss": round(max(0, top_win - after_wins["mover"]), 1) if verified else stage_move["win_percent_loss"],
+        "centipawn_loss": (max(0, top_score["value"] - played_scores["mover"]["value"])
+                            if top_score and top_score["type"] == played_scores["mover"]["type"] == "cp" else None) if verified else stage_move["centipawn_loss"],
         "signals": stage_move["signals"],
         "played_move_rank": played_rank,
         "played_move_in_multipv": played_rank is not None,

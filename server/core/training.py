@@ -6,6 +6,8 @@ Stockfish on demand. Every submission is appended to a local JSONL attempt log.
 """
 from __future__ import annotations
 
+from server.core.evaluation import POSITIVE_CLASSIFICATIONS
+
 import json
 import os
 import threading
@@ -139,6 +141,8 @@ def list_training_positions(data_dir: str | None = None) -> list[dict]:
             accept_swing = float(thresholds[0]) if thresholds else 5.0
             speed = ((analysis.get("profile") or {}).get("review") or {}).get("speed") or "unknown"
             for position in analysis.get("critical_positions", []) or []:
+                if position.get("classification") in POSITIVE_CLASSIFICATIONS:
+                    continue
                 critical_id = position.get("critical_id")
                 fen = position.get("fen_before")
                 played = position.get("played_move") or {}
