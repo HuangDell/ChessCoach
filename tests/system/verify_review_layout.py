@@ -21,7 +21,7 @@ def main():
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
             try:
-                for width, height in [(1920, 1080), (1440, 900), (1280, 720), (390, 844)]:
+                for width, height in [(1920, 1080), (1440, 900), (1440, 600), (1280, 720), (390, 844)]:
                     page = browser.new_page(viewport={'width': width, 'height': height})
                     errors = []
                     requests = []
@@ -71,8 +71,50 @@ def main():
                         board = page.locator('#board')
                         side = page.locator('.side-col')
                         assert abs(nav.bounding_box()['width'] - 400) <= 1
-                        assert page.locator('#review-position-list').evaluate('el => el.scrollHeight > el.clientHeight && el.scrollWidth <= el.clientWidth')
-                        assert page.locator('#review-position-list').evaluate('el => getComputedStyle(el).scrollbarColor') != 'auto'
+                        page.evaluate("""async () => {
+                          const $ = id => document.getElementById(id);
+                          const {createReviewSummaryView} = await import('/modules/review/summary-view.js');
+                          const {createReviewNotation} = await import('/modules/review/notation.js');
+                          createReviewSummaryView({$, getSnapshot:()=>fixture.snapshot, onSelectMistake(){}})
+                            .renderScoreboard({player:'white', accuracy_white:85, accuracy_black:80,
+                              opening:'Test opening', classification_version:1,
+                              classification_summary:{classifications_by_side:{white:{}, black:{}}}});
+                          fixture.snapshot.player = 'white';
+                          fixture.snapshot.engineReview.moves = fixture.snapshot.criticalPositions.map(
+                            item => ({...item, side:'white'}));
+                          fixture.snapshot.timeline = Array.from({length:100}, (_, i) => ({
+                            node:i, ply:i+1, move_number:Math.floor(i/2)+1,
+                            color:i%2 ? 'black' : 'white', move_san:i%2 ? 'e5' : 'e4'}));
+                          createReviewNotation({$, getSnapshot:()=>fixture.snapshot}).render();
+                        }""")
+                        board_box = board.bounding_box()
+                        side_box = side.bounding_box()
+                        for view in ['key', 'mistakes', 'all']:
+                            page.evaluate('(view) => fixture.view.setView(view)', view)
+                            nav.evaluate('el => el.scrollTop = 0')
+                            assert nav.evaluate('el => el.scrollHeight > el.clientHeight')
+                            assert nav.evaluate('el => getComputedStyle(el).overflowY') == 'auto'
+                            assert nav.evaluate('el => getComputedStyle(el).scrollbarColor') != 'auto'
+                            nav.evaluate('el => el.scrollTop = el.scrollHeight')
+                            assert nav.evaluate('el => el.scrollTop > 0')
+                            last = page.locator('#movelist .move-row' if view == 'all'
+                                                else '#review-position-list .position-item').last
+                            last_box = last.bounding_box()
+                            nav_box = nav.bounding_box()
+                            assert last_box['y'] >= nav_box['y']
+                            assert last_box['y'] + last_box['height'] <= nav_box['y'] + nav_box['height'] + 1
+                            assert nav_box['y'] + nav_box['height'] <= height
+                            assert nav.evaluate('el => el.scrollWidth <= el.clientWidth')
+                            assert page.locator('#review-workspace').evaluate("""el =>
+                              [...el.querySelectorAll('*')].every(child =>
+                                !['auto', 'scroll'].includes(getComputedStyle(child).overflowY) ||
+                                child.scrollHeight <= child.clientHeight)
+                            """)
+                            assert board.bounding_box() == board_box
+                            assert side.bounding_box() == side_box
+                            assert page.evaluate('window.scrollY') == 0
+                        page.evaluate("fixture.view.setView('key')")
+                        nav.evaluate('el => el.scrollTop = 0')
                         board_before = board.bounding_box()['width']
                         handle = page.locator('#navigation-resizer')
                         box = handle.bounding_box()

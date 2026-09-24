@@ -1966,8 +1966,19 @@ body.puzzle-mode .navigation-col { display: none !important; }
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
   }
-  .navigation-col .review-workspace { height: calc(100dvh - var(--header-h) - 40px); }
-  .navigation-col .review-position-list { flex-direction: column; overflow-x: hidden; scrollbar-gutter: stable; }
+  .navigation-col {
+    height: calc(100dvh - var(--header-h) - 40px);
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+  .navigation-col .review-workspace { max-height: none; }
+  .navigation-col .review-position-list,
+  .navigation-col .movelist-panel { flex: 0 0 auto; overflow: visible; }
+  .navigation-col .movelist { overflow: visible; }
+  .navigation-col .review-position-list { flex-direction: column; }
   .navigation-col .position-item { flex: 0 0 auto; width: 100%; min-height: 68px; }
 }
 @media (min-width: 901px) and (max-width: 1400px) {
