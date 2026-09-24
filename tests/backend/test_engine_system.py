@@ -47,7 +47,7 @@ class RealEngineSystemTests(unittest.TestCase):
         engine.restart()
         config.DATA_DIR = self.temporary.name
         config.STOCKFISH_PATH = str(STOCKFISH)
-        config.ENGINE_POOL_SIZE = 1
+        config.ENGINE_POOL_SIZE = 2
         config.ENGINE_THREADS = 1
         config.ENGINE_HASH_MB = 16
         config.DEEP_ANALYSIS_DEPTH = 4

@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
 
@@ -332,6 +333,32 @@ def analysis_profile_for_headers(headers: dict[str, str], player: str) -> dict:
     )
 
 
+def _parallel_positions(items, analyze, on_complete):
+    """Bound position work to the Engine pool; publish progress on the caller thread.
+
+    Completion order may vary, but returned results always follow input order. The
+    executor is joined on success or failure, so no work outlives this stage.
+    """
+    workers = max(1, min(config.ENGINE_POOL_SIZE, len(items)))
+    results = [None] * len(items)
+    if workers == 1:
+        for index, item in enumerate(items):
+            results[index] = analyze(item)
+            on_complete(index + 1)
+        return results
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="chess-analysis") as executor:
+        futures = {executor.submit(analyze, item): index for index, item in enumerate(items)}
+        try:
+            for done, future in enumerate(as_completed(futures), 1):
+                results[futures[future]] = future.result()
+                on_complete(done)
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    return results
+
+
 def analyze_game(
     pgn: str,
     player: str = "auto",
@@ -398,7 +425,6 @@ def analyze_game(
     # Evaluate every position once: the position before each move, plus the final one. This is
     # the slow part of the sweep (one fixed-depth engine call per ply ⇒ roughly linear time), so
     # we report progress here for the web board's progress bar.
-    pos_evals: list[_PosEval] = []
     total_positions = len(steps) + 1
 
     def _report(
@@ -425,11 +451,11 @@ def analyze_game(
             pass
 
     _report("scanning", 0, total_positions)
-    for before, _move in steps:
-        pos_evals.append(_evaluate_position(before, depth=depth))
-        _report("scanning", len(pos_evals), total_positions)
-    pos_evals.append(_evaluate_position(final_board, depth=depth))
-    _report("scanning", len(pos_evals), total_positions)
+    pos_evals = _parallel_positions(
+        [before for before, _move in steps] + [final_board],
+        lambda position: _evaluate_position(position, depth=depth),
+        lambda done: _report("scanning", done, total_positions),
+    )
 
     all_my_moves: list[MoveReview] = []
     stage_moves: list[dict] = []
@@ -552,10 +578,10 @@ def analyze_game(
         all_my_moves.append(review)
 
     # Verify every positive move for both sides, reusing these deep results for highlights.
-    verified_positions: dict[int, dict] = {}
     positive_moves = [move for move in stage_moves if move["classification"] in POSITIVE_CLASSIFICATIONS]
     _report("verifying_positive", 0, len(positive_moves))
-    for done, stage_move in enumerate(positive_moves, 1):
+
+    def verify_positive(stage_move: dict) -> dict | None:
         before, played = steps[int(stage_move["ply"]) - 1]
         stage_move["base_classification"] = stage_move["classification"]
         try:
@@ -564,6 +590,7 @@ def analyze_game(
             label, evidence = classify_positive(before, position, thresholds)
         except (chess.engine.EngineError, OSError, TimeoutError, RuntimeError):
             stage_move["positive_verification"] = "unavailable"
+            return None
         else:
             # All consumers use the same final label and deep evaluation for verified moves.
             stage_move.update({
@@ -585,8 +612,16 @@ def analyze_game(
             position["signals"] = stage_move["signals"]
             position.update(classification=label, base_classification=evidence["base_classification"],
                             classification_reason=evidence)
-            verified_positions[int(stage_move["ply"])] = position
-        _report("verifying_positive", done, len(positive_moves))
+            return position
+
+    verified = _parallel_positions(
+        positive_moves, verify_positive,
+        lambda done: _report("verifying_positive", done, len(positive_moves)),
+    )
+    verified_positions = {
+        int(move["ply"]): position for move, position in zip(positive_moves, verified)
+        if position is not None
+    }
 
     moves_by_ply = {move["ply"]: move for move in stage_moves}
     for review in all_my_moves:
@@ -615,9 +650,9 @@ def analyze_game(
     selected = critical.select_critical_moves(stage_moves, me, thresholds)
     _report("selecting_critical", len(stage_moves), len(stage_moves))
     deep_total = len(selected)
-    critical_positions: list[dict] = []
     _report("deep_analysis", 0, deep_total, critical_done=0, critical_total=deep_total)
-    for done, stage_move in enumerate(selected, start=1):
+
+    def analyze_critical(stage_move: dict) -> dict:
         step_index = int(stage_move["ply"]) - 1
         before, played = steps[step_index]
         position = verified_positions.get(int(stage_move["ply"]))
@@ -626,8 +661,13 @@ def analyze_game(
                                       depth=deep_depth, multipv=config.DEEP_ANALYSIS_MULTIPV)
         position.update(priority=stage_move.get("critical_priority"),
                         critical_score=stage_move.get("critical_score"))
-        critical_positions.append(position)
-        _report("deep_analysis", done, deep_total, critical_done=done, critical_total=deep_total)
+        return position
+
+    critical_positions = _parallel_positions(
+        selected, analyze_critical,
+        lambda done: _report("deep_analysis", done, deep_total,
+                             critical_done=done, critical_total=deep_total),
+    )
 
     _report(
         "extracting_facts",

@@ -4,6 +4,7 @@ import copy
 import asyncio
 import os
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -162,6 +163,55 @@ class PositiveClassificationTests(unittest.TestCase):
         self.assertTrue(all(m in result for m in errors))
 
 
+class ParallelPositionTests(unittest.TestCase):
+    def test_concurrent_completion_keeps_input_order_and_bounds_workers(self):
+        barrier = threading.Barrier(2, timeout=5)
+        lock = threading.Lock()
+        active = peak = 0
+        caller = threading.get_ident()
+        progress = []
+
+        def analyze(item):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                barrier.wait()
+                return item * 10
+            finally:
+                with lock:
+                    active -= 1
+
+        def report(done):
+            self.assertEqual(caller, threading.get_ident())
+            progress.append(done)
+
+        with patch.object(config, "ENGINE_POOL_SIZE", 2):
+            results = game_analysis._parallel_positions([3, 1, 4, 2], analyze, report)
+        self.assertEqual([30, 10, 40, 20], results)
+        self.assertEqual(2, peak)
+        self.assertEqual(0, active)
+        self.assertEqual([1, 2, 3, 4], progress)
+
+    def test_failure_joins_running_work_and_propagates(self):
+        barrier = threading.Barrier(2, timeout=5)
+        finished = threading.Event()
+
+        def analyze(item):
+            barrier.wait()
+            if item == 0:
+                raise ValueError("broken analysis")
+            finished.set()
+            return item
+
+        with patch.object(config, "ENGINE_POOL_SIZE", 2):
+            with self.assertRaisesRegex(ValueError, "broken analysis"):
+                game_analysis._parallel_positions([0, 1], analyze, lambda done: None)
+        self.assertTrue(finished.is_set())
+        self.assertFalse(any(t.name.startswith("chess-analysis") for t in threading.enumerate()))
+
+
 class PositivePipelineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="chesscoach-positive-test-")
@@ -176,6 +226,26 @@ class PositivePipelineTests(unittest.TestCase):
                          patch.object(engine, "info", return_value={"name": "Fake", "options": {}})):
             override.start()
             self.addCleanup(override.stop)
+
+    def test_parallel_pipeline_matches_serial_and_reports_on_caller(self):
+        caller = threading.get_ident()
+        events = []
+
+        def progress(event):
+            self.assertEqual(caller, threading.get_ident())
+            events.append(event)
+
+        with patch.object(config, "ENGINE_POOL_SIZE", 1):
+            serial = game_analysis.analyze_game(PGN, player="white", depth=4)
+        with patch.object(config, "ENGINE_POOL_SIZE", 2):
+            parallel = game_analysis.analyze_game(PGN, player="white", depth=4,
+                                                  on_progress=progress)
+        self.assertEqual(serial.engine_analysis, parallel.engine_analysis)
+        self.assertEqual(serial.timeline, parallel.timeline)
+        for phase in ("scanning", "verifying_positive", "deep_analysis"):
+            reports = [event for event in events if event["phase"] == phase]
+            self.assertEqual(list(range(reports[-1]["total"] + 1)),
+                             [event["done"] for event in reports])
 
     def test_final_labels_stats_facts_storage_and_cache_agree(self):
         session = game_analysis.analyze_game(PGN, player="white", depth=4)
@@ -280,7 +350,7 @@ class PositivePipelineTests(unittest.TestCase):
         old_state, old_records = copy.deepcopy(jobs._state), copy.deepcopy(jobs._records)
         try:
             with patch("fastapi.routing.run_in_threadpool", new=inline), \
-                    patch.object(jobs.threading, "Thread", side_effect=thread), \
+                    patch.object(jobs, "threading", SimpleNamespace(Thread=thread)), \
                     patch.object(config, "HISTORY_ENABLED", False):
                 asyncio.run(check())
         finally:

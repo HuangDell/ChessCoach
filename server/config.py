@@ -253,8 +253,8 @@ if ANALYSIS_PRESET not in {"fast", "balanced", "deep"}:
 # this in the analysis profile makes changing the comparison horizon invalidate whole-game caches.
 FACT_LINE_PLIES: int = max(1, int(os.environ.get("CHESS_FACT_LINE_PLIES", "8")))
 
-# Engine process pool size. 1-2 is plenty for a single-user local tool. Default 2 so the
-# Separate pooled workers keep concurrent Web analysis requests from serializing behind one Engine.
+# Shared process limit and per-game position concurrency. Each process uses ENGINE_THREADS
+# CPU threads and ENGINE_HASH_MB hash memory; set the pool to 1 for serial analysis.
 ENGINE_POOL_SIZE: int = int(os.environ.get("CHESS_ENGINE_POOL_SIZE", "2"))
 
 # Per-engine UCI options.
